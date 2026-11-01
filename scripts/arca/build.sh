@@ -9,14 +9,15 @@
 # inject-system-certs target makes test certificates when there is no
 # mkosi.crt. The outputs (the image .raw, the .efi, the usr images, every
 # sysext .raw, the manifests and the .iso if built) are copied to
-# /srv/artifacts/os/<version>/, and /srv/artifacts/os/latest points there.
+# /srv/artifacts/os/<version>/, with this tree's test/metadata.tar.xz for
+# vm-test.sh, and /srv/artifacts/os/latest points there.
 # The last line printed is "version: <version>".
 set -euo pipefail
 
 ARTIFACTS=/srv/artifacts/os
 target=build
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'build: %s\n' "$*" >&2; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
@@ -59,6 +60,7 @@ for f in mkosi.output/*.raw; do
 	files+=("$f")
 done
 files+=(mkosi.output/*.manifest*)
+files+=(test/metadata.tar.xz)
 if [ "$target" = build-iso ]; then
 	iso="mkosi.output/${osname}_${version}.iso"
 	[ -f "$iso" ] || die "no $iso"

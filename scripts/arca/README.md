@@ -23,7 +23,9 @@ scripts/arca/dev-vm.sh destroy        # deletes the project's instances, images 
 ```
 
 `dev-vm.sh` only acts on projects whose name starts with `arcaos-` (`--project arcaos-<name>`); any other project is
-refused with exit 2. `create` adds a `root` disk on the given pool and an `eth0` NIC on the given bridge to the
+refused with exit 2. An existing project must also have its own images and profiles (`features.images=true` and
+`features.profiles=true`); otherwise its image and profile calls would reach the default project's, so `create`,
+`destroy` and `vm-test.sh` refuse it with exit 2. `create` adds a `root` disk on the given pool and an `eth0` NIC on the given bridge to the
 project's `default` profile, launches `images:debian/13` as a VM, and runs `provision-builder.sh` in it. It does not
 start the builder when the host has less than 20 GiB of `MemAvailable`.
 
@@ -57,8 +59,10 @@ scripts/arca/vm-test.sh --project arcaos-dev --vm arcaos-stock --from-builder ar
 ```
 
 `build.sh` runs upstream's `make build` (test certificates are generated when there is no `mkosi.crt`) and copies the
-image, the `.efi`, the `usr` images, every sysext and the manifests to `/srv/artifacts/os/<version>/`, with
-`/srv/artifacts/os/latest` pointing at the newest.
+image, the `.efi`, the `usr` images, every sysext, the manifests and the tree's `test/metadata.tar.xz` to
+`/srv/artifacts/os/<version>/`, with `/srv/artifacts/os/latest` pointing at the newest. `vm-test.sh` takes the image,
+its metadata and the expected ImageId from there, not from the checkout it runs in, and never accepts the builder's
+name as `--vm`.
 
 `vm-test.sh` follows upstream's end-to-end job: it injects a seed (`applications.json`, `provider.json`) into a copy of
 the image, imports it, boots a VM (4 vCPU, 8 GiB, 50 GiB root, vTPM, Secure Boot keys enrolled by the image itself),

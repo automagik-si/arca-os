@@ -7,10 +7,13 @@
 #   dev-vm.sh destroy [--project arcaos-*]
 #
 # It only ever writes inside the named project, which must start with
-# "arcaos-" (anything else exits 2 before any action). The pool and the bridge
-# are arguments, because they differ per host.
+# "arcaos-" (anything else exits 2 before any action). An existing project must
+# also have its own images and profiles (features.images=true and
+# features.profiles=true); otherwise its image and profile calls would act on
+# the default project's, so create and destroy refuse it with exit 2. The pool
+# and the bridge are arguments, because they differ per host.
 #
-# Exit codes: 0 ok, 1 failure, 2 refused (bad project or usage).
+# Exit codes: 0 ok, 1 failure, 2 refused (bad or shared project, usage).
 set -euo pipefail
 
 PROJECT=arcaos-dev
@@ -27,7 +30,7 @@ MIN_MEM_GIB=20
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'dev-vm: %s\n' "$*" >&2; }
 die() { printf 'dev-vm: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'dev-vm: refused: %s\n' "$*" >&2; exit 2; }
@@ -62,6 +65,14 @@ P=(--project "$PROJECT")
 project_exists() { incus project list -f csv -c n | sed 's/ (current)$//' | grep -qx "$PROJECT"; }
 vm_state() { incus list "${P[@]}" -f csv -c ns | awk -F, -v n="$VM" '$1 == n { print $2 }'; }
 mem_avail_gib() { awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo; }
+# Refuse a project that shares the default project's images or profiles.
+require_isolated() {
+	local f v
+	for f in features.images features.profiles; do
+		v=$(incus project get "$PROJECT" "$f" 2>/dev/null || true)
+		[ "$v" = true ] || refuse "project $PROJECT has $f=${v:-unset}; it must have its own images and profiles"
+	done
+}
 
 wait_agent() {
 	local i
@@ -76,16 +87,22 @@ wait_agent() {
 
 do_create() {
 	if [ -z "$POOL" ] || [ -z "$NETWORK" ]; then refuse "create needs --pool and --network"; fi
+	local exists=0
+	if project_exists; then
+		exists=1
+		require_isolated
+	fi
 	incus storage show "$POOL" >/dev/null || die "no storage pool '$POOL'"
 	incus network show "$NETWORK" >/dev/null || die "no network '$NETWORK'"
 
-	if project_exists; then
+	if [ "$exists" -eq 1 ]; then
 		log "project $PROJECT exists"
 	else
 		log "creating project $PROJECT"
 		incus project create "$PROJECT" \
 			-c features.images=true -c features.profiles=true \
 			-c features.storage.volumes=true -c features.networks=false
+		require_isolated
 	fi
 
 	local devs
@@ -163,6 +180,7 @@ do_destroy() {
 		log "no project $PROJECT; nothing to do"
 		return 0
 	fi
+	require_isolated
 	local name fp
 	for name in $(incus list "${P[@]}" -f csv -c n); do
 		log "deleting instance $name"

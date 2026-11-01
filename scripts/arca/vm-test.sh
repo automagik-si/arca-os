@@ -12,8 +12,8 @@
 #   2. Write applications.json and provider.json into a seed tar, dd it into a
 #      copy of the image .raw at seek=4196352 bs=512, and convert that copy to
 #      qcow2 (in the builder with --from-builder, locally with --artifacts).
-#   3. Pull the qcow2 and the seeded applications' sysexts; the image metadata
-#      is this checkout's test/metadata.tar.xz.
+#   3. Pull the qcow2, the seeded applications' sysexts and the build's
+#      test/metadata.tar.xz (build.sh copies it beside the image).
 #   4. incus image import.
 #   5. Create the VM: security.secureboot=false, 4 vCPU, 8 GiB, 50 GiB root, a
 #      vtpm device and systemd.credential.fully-enable-incus-agent=true.
@@ -27,14 +27,19 @@
 #
 # Check sets:
 #   stock  boot, app-listed (each seeded app), secureboot, os-id (ID in
-#          /usr/lib/os-release equals ImageId in mkosi.conf), mode (mode=dev)
+#          /usr/lib/os-release equals the build's ImageId, read from its
+#          <ImageId>_<version>.efi name), mode (mode=dev)
 #   none   no checks
+#
+# The project must start with "arcaos-" and have its own images and profiles
+# (features.images=true, features.profiles=true), and --vm must not name the
+# builder (arcaos-builder, or the --from-builder name).
 #
 # Exit codes: 0 all PASS, 1 a FAIL or an error, 2 refused (usage, project),
 # 3 refused for lack of memory.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+BUILDER_NAME=arcaos-builder
 MIN_MEM_GIB=12
 VM_CPUS=4
 VM_MEMORY=8GiB
@@ -81,7 +86,9 @@ if [ -n "$builder" ] && [ -n "$artifacts" ] || [ -z "$builder$artifacts" ]; then
 fi
 if [ -n "$builder" ]; then
 	printf '%s' "$builder" | grep -Eqx "$name_re" || refuse "bad --from-builder name"
-	[ "$builder" != "$vm" ] || refuse "--vm must not be the builder"
+fi
+if [ "$vm" = "$BUILDER_NAME" ] || [ "$vm" = "$builder" ]; then
+	refuse "--vm must not be the builder"
 fi
 [ "$stop_builder" -eq 0 ] || [ -n "$builder" ] || refuse "--stop-builder needs --from-builder"
 printf '%s' "$seed_apps" | grep -Eqx '[a-z0-9.-]+(,[a-z0-9.-]+)*' || refuse "bad or missing --seed-apps"
@@ -94,11 +101,15 @@ case "$checks" in
 stock | none) ;;
 *) refuse "--checks must be stock or none" ;;
 esac
-[ -f "$ROOT/test/metadata.tar.xz" ] || die "no test/metadata.tar.xz in $ROOT"
-image_id=$(sed -n 's/^ImageId=//p' "$ROOT/mkosi.conf")
-[ -n "$image_id" ] || die "no ImageId in $ROOT/mkosi.conf"
 
 P=(--project "$project")
+# A project without its own images and profiles would import into, and
+# delete from, the default project's images.
+incus project show "$project" >/dev/null 2>&1 || refuse "no project $project"
+for f in features.images features.profiles; do
+	v=$(incus project get "$project" "$f" 2>/dev/null || true)
+	[ "$v" = true ] || refuse "project $project has $f=${v:-unset}; it must have its own images and profiles"
+done
 IFS=, read -r -a apps <<<"$seed_apps"
 apps_json=$(jq -cn --arg a "$seed_apps" '{applications: ($a | split(",") | map({name: .}))}')
 if [ "$provider" = debug ]; then
@@ -152,8 +163,10 @@ ver=${efi##*_}
 ver=${ver%.efi}
 raw="${os}_${ver}.raw"
 [ -f "$raw" ] || { echo "vm-test: no $raw in $src" >&2; exit 1; }
+[ -f metadata.tar.xz ] || { echo "vm-test: no metadata.tar.xz in $src" >&2; exit 1; }
 rm -rf "$out"
 mkdir -p "$out"
+cp metadata.tar.xz "$out/"
 printf "%s\n" "$apps" > "$out/applications.json"
 printf "%s\n" "$provider" > "$out/provider.json"
 tar -C "$out" -cf "$out/seed.tar" applications.json provider.json
@@ -162,6 +175,7 @@ dd if="$out/seed.tar" of="$out/os.raw" seek="$offset" bs=512 conv=notrunc status
 qemu-img convert -f raw -O qcow2 "$out/os.raw" "$out/os.qcow2"
 rm -f "$out/os.raw"
 printf "%s\n" "$ver" > "$out/RELEASE"
+printf "%s\n" "$os" > "$out/OSNAME"
 printf "%s\n" "$src" > "$out/SRC"
 '
 
@@ -172,7 +186,7 @@ if [ -n "$builder" ]; then
 	incus exec "${P[@]}" "$builder" -- bash -c "$PREP" vm-test-prep \
 		"$BUILDER_ARTIFACTS" "$bout" "$apps_json" "$provider_json" "$SEED_OFFSET"
 	log "pulling the qcow2 and sysexts from $builder"
-	for f in os.qcow2 RELEASE SRC; do
+	for f in os.qcow2 metadata.tar.xz RELEASE OSNAME SRC; do
 		incus file pull -q "${P[@]}" "$builder$bout/$f" "$work/"
 	done
 	bsrc=$(cat "$work/SRC")
@@ -190,7 +204,7 @@ else
 	[ -d "$artifacts" ] || die "no artifacts directory $artifacts"
 	log "seeding and converting the image from $artifacts"
 	bash -c "$PREP" vm-test-prep "$artifacts" "$work/prep" "$apps_json" "$provider_json" "$SEED_OFFSET"
-	mv "$work/prep/os.qcow2" "$work/prep/RELEASE" "$work/prep/SRC" "$work/"
+	mv "$work"/prep/{os.qcow2,metadata.tar.xz,RELEASE,OSNAME,SRC} "$work/"
 	if [ "$provider" = debug ]; then
 		for a in "${apps[@]}"; do
 			[ -f "$artifacts/$a.raw" ] || die "no $a.raw in $artifacts"
@@ -199,6 +213,8 @@ else
 	fi
 fi
 release=$(cat "$work/RELEASE")
+image_id=$(cat "$work/OSNAME")
+[ -n "$image_id" ] || die "no ImageId in the artifacts"
 log "release $release, image $image_id, apps ${apps[*]}, provider $provider"
 
 # Step 1: the memory guard, after the builder has stopped.
@@ -214,7 +230,7 @@ if [ -n "$(instance_state "$vm")" ]; then
 	incus delete "${P[@]}" --force "$vm"
 fi
 log "importing the image"
-incus image import -q "${P[@]}" "$ROOT/test/metadata.tar.xz" "$work/os.qcow2" --alias "$alias"
+incus image import -q "${P[@]}" "$work/metadata.tar.xz" "$work/os.qcow2" --alias "$alias"
 rm -f "$work/os.qcow2"
 log "creating $vm"
 incus create -q --vm "${P[@]}" "$alias" "$vm" \
