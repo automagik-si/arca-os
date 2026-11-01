@@ -1,0 +1,5 @@
+Explanation: Arca OS rebuilds Zabbly's kernel with Android binder built in (see kernel/README.md).
+Explanation: Zabbly's own kernel packages must never be installed; its zfs component stays in use.
+Package: linux-image-zabbly linux-zabbly /^linux-(image|headers)-[0-9.]+-zabbly\+(-dbg)?$/
+Pin: origin pkgs.zabbly.com
+Pin-Priority: -1
