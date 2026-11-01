@@ -1,0 +1,1 @@
+{"stateDir":"/var/lib/arca","incus":{"socket":"/var/lib/incus/unix.socket","pools":[]},"identityPhones":[],"listen":{"unix":"/run/arca/arca.sock","tailnet":null,"proxy":null},"tokens":{"hashDir":"/var/lib/arca/tokens"},"kernel":{"projects":[],"scratch":false,"droiddProjects":[],"reservedCidrs":[]}}

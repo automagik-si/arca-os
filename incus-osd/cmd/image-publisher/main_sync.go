@@ -418,6 +418,9 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 		)
 
 		switch {
+		case assetName == "arca.raw.gz":
+			assetComponent = apiupdate.UpdateFileComponentArca
+			assetType = apiupdate.UpdateFileTypeApplication
 		case assetName == "debug.raw.gz":
 			assetComponent = apiupdate.UpdateFileComponentDebug
 			assetType = apiupdate.UpdateFileTypeApplication
@@ -465,6 +468,9 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 			assetType = apiupdate.UpdateFileTypeUpdateUsr
 		case (strings.HasPrefix(assetName, "IncusOS_") || strings.HasPrefix(assetName, "HypervisorOS_")) && strings.HasSuffix(assetName, ".manifest.json.gz"):
 			assetComponent = apiupdate.UpdateFileComponentOS
+			assetType = apiupdate.UpdateFileTypeImageManifest
+		case strings.HasSuffix(assetName, "arca.manifest.json.gz"):
+			assetComponent = apiupdate.UpdateFileComponentArca
 			assetType = apiupdate.UpdateFileTypeImageManifest
 		case strings.HasSuffix(assetName, "debug.manifest.json.gz"):
 			assetComponent = apiupdate.UpdateFileComponentDebug
