@@ -538,7 +538,7 @@ tracer_checks() {
 			sleep 2
 		done
 		out=$(vexec "$ARCA" call watch_report --config "$ARCA_CONFIG" --token-file /root/tracer.secret --args '{}' 2>/dev/null || true)
-		names=$(printf '%s' "$out" | jq -r '.projects[]?.name' 2>/dev/null || true)
+		names=$(printf '%s' "$out" | jq -r '.projects[]?.project' 2>/dev/null || true)
 	fi
 	vexec rm -f /root/tracer.secret
 	if printf '%s\n' "$names" | grep -qxF default; then
