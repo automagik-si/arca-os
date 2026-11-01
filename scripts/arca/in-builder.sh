@@ -8,6 +8,9 @@
 # in the VM (reset and cleaned with `git clean -ffdx`, keeping only the build
 # cache .cache/), and runs the command there as root. It exits with the
 # command's exit code. Build outputs persist under /srv/artifacts/ in the VM.
+# The worktree's git user.name and user.email, when both are set, become the
+# VM checkout's local identity (passed on stdin, never printed), so a build
+# there can read them; otherwise the VM checkout has none.
 # A stopped builder is started first, if the host has the memory for it.
 #
 # Exit codes: the command's, or 2 when refused (dirty tree, bad project, usage).
@@ -19,7 +22,7 @@ VM=arcaos-builder
 MIN_MEM_GIB=20
 VM_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'in-builder: %s\n' "$*" >&2; }
 die() { printf 'in-builder: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'in-builder: refused: %s\n' "$*" >&2; exit 2; }
@@ -73,10 +76,16 @@ git -C "$top" bundle create -q "$tmp/head.bundle" HEAD
 incus file push -q -p "${P[@]}" "$tmp/head.bundle" "$VM/srv/work/.bundles/$name.bundle"
 rm -rf "$tmp"
 
+gname=$(git -C "$top" config user.name 2>/dev/null || true)
+gemail=$(git -C "$top" config user.email 2>/dev/null || true)
+if [ -z "$gname" ] || [ -z "$gemail" ]; then gname='' gemail=''; fi
+
 log "checking out $name at ${sha:0:12} in $VM:/srv/work/$name"
 # shellcheck disable=SC2016  # expanded by the shell in the VM
-incus exec "${P[@]}" "$VM" --env "PATH=$VM_PATH" -- sh -euc '
+printf '%s\n%s\n' "$gname" "$gemail" | incus exec "${P[@]}" "$VM" --env "PATH=$VM_PATH" -- sh -euc '
 	name=$1 sha=$2
+	IFS= read -r gname || true
+	IFS= read -r gemail || true
 	b=/srv/work/.bundles/$name.bundle
 	d=/srv/work/$name
 	install -d -m 0755 /srv/artifacts
@@ -90,6 +99,13 @@ incus exec "${P[@]}" "$VM" --env "PATH=$VM_PATH" -- sh -euc '
 	git checkout -q -f --detach "$sha"
 	git reset -q --hard "$sha"
 	git clean -q -ffdx -e /.cache/
+	if [ -n "$gname" ] && [ -n "$gemail" ]; then
+		git config user.name "$gname"
+		git config user.email "$gemail"
+	else
+		git config --unset-all user.name || true
+		git config --unset-all user.email || true
+	fi
 	rm -f "$b"
 	test "$(git rev-parse HEAD)" = "$sha"
 	test -z "$(git status --porcelain)"

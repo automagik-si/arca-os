@@ -137,6 +137,20 @@ run "$K" --verify-config "$FX/zabbly-no-binder.config" --detect-upstream "$FX/za
 expect "two modes" 2
 run "$K" --verify-config "$FX/zabbly-no-binder.config" --ref 0000000000000000000000000000000000000000
 expect "--ref without --out" 2
+run "$K" --verify-config "$FX/zabbly-no-binder.config" --maintainer 'A Builder <builder@example.invalid>'
+expect "--maintainer without --out" 2
+
+# The maintainer is refused before anything is written: a malformed one, and
+# none at all (a copy of kernel/ outside any git checkout, with no git config).
+run "$K" --out "$T/o1" --maintainer 'no email here'
+expect "--out with a malformed --maintainer" 2
+result "a malformed --maintainer writes nothing" "$([ ! -e "$T/o1" ] && echo 1 || echo 0)"
+mkdir -p "$T/k"
+cp -r "$(dirname "$K")/build-kernel.sh" "$(dirname "$K")/arca.config" "$(dirname "$K")/meta" "$T/k/"
+mkdir -p "$T/home"
+run env HOME="$T/home" XDG_CONFIG_HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="$T" "$T/k/build-kernel.sh" --out "$T/o2"
+expect "--out with no --maintainer and no git identity" 2
+result "no maintainer writes nothing" "$([ ! -e "$T/o2" ] && echo 1 || echo 0)"
 
 printf 'check-fragment: %d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]
