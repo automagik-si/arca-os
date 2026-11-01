@@ -2,9 +2,12 @@
 # Boot an OS image in a fresh test VM and check it, following upstream's E2E
 # job (.github/workflows/tests.yml, "Start the VM" to "Load the extensions").
 #
-#   vm-test.sh --project arcaos-* --vm <name> (--from-builder <vm> | --artifacts <dir>)
+#   vm-test.sh --project arcaos-* --vm <name>
+#              (--from-builder <vm> | --artifacts <dir>)
 #              --seed-apps <a,b,...> --provider debug|images [--server-url <url>]
-#              --checks stock|none [--stop-builder] [--keep]
+#              --checks stock|tracer|none [--stop-builder] [--keep]
+#   vm-test.sh --project arcaos-* --vm <name> --install-media <dir>
+#              --checks stock|tracer|none [--keep]
 #
 # Steps:
 #   1. Refuse to start the test VM when MemAvailable is below 12 GiB (checked
@@ -12,8 +15,9 @@
 #   2. Write applications.json and provider.json into a seed tar, dd it into a
 #      copy of the image .raw at seek=4196352 bs=512, and convert that copy to
 #      qcow2 (in the builder with --from-builder, locally with --artifacts).
-#   3. Pull the qcow2, the seeded applications' sysexts and the build's
-#      test/metadata.tar.xz (build.sh copies it beside the image).
+#   3. Pull the qcow2, the seeded applications' sysexts, the build's
+#      test/metadata.tar.xz (build.sh copies it beside the image), and the
+#      base.manifest and kernel.BUILDINFO when the build has them.
 #   4. incus image import.
 #   5. Create the VM: security.secureboot=false, 4 vCPU, 8 GiB, 50 GiB root, a
 #      vtpm device and systemd.credential.fully-enable-incus-agent=true.
@@ -21,15 +25,36 @@
 #   7. With provider debug, push RELEASE and each seeded application's .raw
 #      into /root/updates/.
 #   8. POST /1.0/system/update/:check, then poll /1.0/applications until every
-#      seeded application is listed, for up to 10 min.
+#      seeded application is listed, for up to 10 min. When arca is one of
+#      them, then poll `systemctl is-active arca.service` for up to 10 min.
 #   9. Run the checks, printing "PASS <check>" or "FAIL <check>" for each.
 # The VM is stopped at the end unless --keep is given.
 #
+# --install-media <dir> takes a directory from tracer-installer.sh on this
+# host instead (an *-installer.img, an optional *-apps.img, seed/, and the
+# manifest and BUILDINFO files beside them). Its seed names the applications
+# and the provider, so --seed-apps and --provider are refused with it. Steps
+# 2-7 become: create an empty VM as in step 5, attach a copy of the installer
+# as USB boot media, start it, and wait up to 30 min for "was successfully
+# installed" in incus-osd's journal; then stop it, remove the media, attach a
+# copy of the apps image (the RESCUE_DATA partition) as a USB disk, and boot
+# the installed system. Step 8 follows.
+#
 # Check sets:
-#   stock  boot, app-listed (each seeded app), secureboot, os-id (ID in
-#          /usr/lib/os-release equals the build's ImageId, read from its
-#          <ImageId>_<version>.efi name), mode (mode=dev)
-#   none   no checks
+#   stock   boot, app-listed (each seeded app), secureboot, os-id (ID in
+#           /usr/lib/os-release equals the build's ImageId, read from its
+#           <ImageId>_<version>.efi name), mode (mode=dev)
+#   tracer  stock, plus kernel (uname -r has -zabbly-arca and equals the
+#           krel in kernel.BUILDINFO), binder-fs, binder-major, binderfs-mount
+#           (binder-control in a binderfs mounted on /tmp/b), arca-active
+#           (active, NRestarts=0 after 120 s), arca-call (a viewer token's
+#           watch_report names the project default), zfs (modprobe zfs under
+#           lockdown), kernel-pkg (base.manifest has linux-image-<krel> at
+#           the BUILDINFO version and no Zabbly linux-image-*-zabbly+)
+#   none    no checks
+# With --install-media, every set but none also checks installed,
+# rescue-applied (incus-osd ran the RESCUE_DATA update) and updates-off
+# (check frequency never, no automatic reboot, provider debug).
 #
 # The project must start with "arcaos-" and have its own images and profiles
 # (features.images=true, features.profiles=true), and --vm must not name the
@@ -49,11 +74,13 @@ BUILDER_ARTIFACTS=/srv/artifacts/os/latest
 # Large files are staged on disk, not under /tmp, which may be a tmpfs.
 STAGE_BASE=${ARCA_VM_TEST_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/arca-os/vm-test}
 OSD_SOCK=/run/incus-os/unix.socket
+ARCA=/usr/local/bin/arca
+ARCA_CONFIG=/usr/lib/arca/node.json
 
-project="" vm="" builder="" artifacts="" seed_apps="" provider="" server_url="" checks=""
+project="" vm="" builder="" artifacts="" media="" seed_apps="" provider="" server_url="" checks=""
 stop_builder=0 keep=0
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'vm-test: %s\n' "$*" >&2; }
 die() { printf 'vm-test: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'vm-test: refused: %s\n' "$*" >&2; exit 2; }
@@ -64,6 +91,7 @@ while [ $# -gt 0 ]; do
 	--vm) [ $# -ge 2 ] || usage; vm=$2; shift 2 ;;
 	--from-builder) [ $# -ge 2 ] || usage; builder=$2; shift 2 ;;
 	--artifacts) [ $# -ge 2 ] || usage; artifacts=$2; shift 2 ;;
+	--install-media) [ $# -ge 2 ] || usage; media=$2; shift 2 ;;
 	--seed-apps) [ $# -ge 2 ] || usage; seed_apps=$2; shift 2 ;;
 	--provider) [ $# -ge 2 ] || usage; provider=$2; shift 2 ;;
 	--server-url) [ $# -ge 2 ] || usage; server_url=$2; shift 2 ;;
@@ -81,9 +109,11 @@ arcaos-*) ;;
 esac
 name_re='[a-z0-9][a-z0-9-]*'
 printf '%s' "$vm" | grep -Eqx "$name_re" || refuse "bad or missing --vm"
-if [ -n "$builder" ] && [ -n "$artifacts" ] || [ -z "$builder$artifacts" ]; then
-	refuse "give exactly one of --from-builder and --artifacts"
-fi
+sources=0
+for s in "$builder" "$artifacts" "$media"; do
+	[ -z "$s" ] || sources=$((sources + 1))
+done
+[ "$sources" -eq 1 ] || refuse "give exactly one of --from-builder, --artifacts and --install-media"
 if [ -n "$builder" ]; then
 	printf '%s' "$builder" | grep -Eqx "$name_re" || refuse "bad --from-builder name"
 fi
@@ -91,6 +121,15 @@ if [ "$vm" = "$BUILDER_NAME" ] || [ "$vm" = "$builder" ]; then
 	refuse "--vm must not be the builder"
 fi
 [ "$stop_builder" -eq 0 ] || [ -n "$builder" ] || refuse "--stop-builder needs --from-builder"
+if [ -n "$media" ]; then
+	[ -z "$seed_apps$provider$server_url" ] || refuse "--install-media takes its applications and provider from its seed"
+	[ -d "$media" ] || refuse "no install media directory $media"
+	media=$(cd "$media" && pwd)
+	[ -f "$media/seed/applications.json" ] || refuse "no seed/applications.json in $media"
+	seed_apps=$(jq -r '[.applications[].name] | join(",")' "$media/seed/applications.json")
+	provider=$(jq -r '.name // empty' "$media/seed/provider.json" 2>/dev/null || true)
+	[ "$provider" = debug ] || refuse "the install media's provider is '${provider:-none}', not debug"
+fi
 printf '%s' "$seed_apps" | grep -Eqx '[a-z0-9.-]+(,[a-z0-9.-]+)*' || refuse "bad or missing --seed-apps"
 case "$provider" in
 debug) ;;
@@ -98,8 +137,8 @@ images) [ -n "$server_url" ] || refuse "--provider images needs --server-url" ;;
 *) refuse "--provider must be debug or images" ;;
 esac
 case "$checks" in
-stock | none) ;;
-*) refuse "--checks must be stock or none" ;;
+stock | tracer | none) ;;
+*) refuse "--checks must be stock, tracer or none" ;;
 esac
 
 P=(--project "$project")
@@ -117,6 +156,10 @@ if [ "$provider" = debug ]; then
 else
 	provider_json=$(jq -cn --arg u "$server_url" '{name: "images", config: {server_url: $u}}')
 fi
+has_arca=0
+for a in "${apps[@]}"; do
+	[ "$a" != arca ] || has_arca=1
+done
 
 mem_avail_gib() { awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo; }
 mem_guard() {
@@ -131,6 +174,23 @@ mem_guard() {
 instance_state() { incus list "${P[@]}" -f csv -c ns | awk -F, -v n="$1" '$1 == n { print $2 }'; }
 vexec() { incus exec "${P[@]}" "$vm" -- "$@"; }
 osd() { vexec curl -sf --max-time 60 --unix-socket "$OSD_SOCK" "$@"; }
+# wait_agent <seconds>: 0 once `incus exec` answers.
+wait_agent() {
+	local t0
+	t0=$(date +%s)
+	while [ $(($(date +%s) - t0)) -lt "$1" ]; do
+		if vexec true >/dev/null 2>&1; then return 0; fi
+		sleep 5
+	done
+	return 1
+}
+osd_journal() { vexec journalctl -u incus-osd -b0 --no-pager 2>/dev/null || true; }
+# install_done: the installer said it is done, in incus-osd's journal (through
+# the agent) or on the console.
+install_done() {
+	osd_journal | grep -qF 'was successfully installed' && return 0
+	incus console "${P[@]}" "$vm" --show-log 2>/dev/null | grep -qF 'was successfully installed'
+}
 
 # Without --stop-builder nothing frees memory later, so check up front too.
 [ "$stop_builder" -eq 1 ] || mem_guard
@@ -140,11 +200,19 @@ work=$(mktemp -d "$STAGE_BASE/$vm.XXXXXX")
 started=0
 # shellcheck disable=SC2317,SC2329  # called from the EXIT trap
 cleanup() {
-	rm -rf "$work"
 	if [ "$started" -eq 1 ] && [ "$keep" -eq 0 ]; then
 		log "stopping $vm"
 		incus stop "${P[@]}" "$vm" --timeout 120 >/dev/null 2>&1 || incus stop "${P[@]}" "$vm" --force >/dev/null 2>&1 || true
 	fi
+	# A kept VM still uses the media copies in $work; otherwise its apps disk
+	# goes with them.
+	if [ "$started" -eq 1 ] && [ "$keep" -eq 1 ] && [ -n "$media" ]; then
+		return 0
+	fi
+	if [ "$started" -eq 1 ] && [ -n "$media" ]; then
+		incus config device remove -q "${P[@]}" "$vm" apps >/dev/null 2>&1 || true
+	fi
+	rm -rf "$work"
 }
 trap cleanup EXIT
 
@@ -167,6 +235,9 @@ raw="${os}_${ver}.raw"
 rm -rf "$out"
 mkdir -p "$out"
 cp metadata.tar.xz "$out/"
+for f in base.manifest kernel.BUILDINFO; do
+	if [ -f "$f" ]; then cp "$f" "$out/"; fi
+done
 printf "%s\n" "$apps" > "$out/applications.json"
 printf "%s\n" "$provider" > "$out/provider.json"
 tar -C "$out" -cf "$out/seed.tar" applications.json provider.json
@@ -189,6 +260,9 @@ if [ -n "$builder" ]; then
 	for f in os.qcow2 metadata.tar.xz RELEASE OSNAME SRC; do
 		incus file pull -q "${P[@]}" "$builder$bout/$f" "$work/"
 	done
+	for f in base.manifest kernel.BUILDINFO; do
+		incus file pull -q "${P[@]}" "$builder$bout/$f" "$work/" 2>/dev/null || true
+	done
 	bsrc=$(cat "$work/SRC")
 	if [ "$provider" = debug ]; then
 		for a in "${apps[@]}"; do
@@ -200,17 +274,42 @@ if [ -n "$builder" ]; then
 		log "stopping builder $builder"
 		incus stop "${P[@]}" "$builder" --timeout 120 || incus stop "${P[@]}" "$builder" --force
 	fi
-else
+elif [ -n "$artifacts" ]; then
 	[ -d "$artifacts" ] || die "no artifacts directory $artifacts"
 	log "seeding and converting the image from $artifacts"
 	bash -c "$PREP" vm-test-prep "$artifacts" "$work/prep" "$apps_json" "$provider_json" "$SEED_OFFSET"
 	mv "$work"/prep/{os.qcow2,metadata.tar.xz,RELEASE,OSNAME,SRC} "$work/"
+	for f in base.manifest kernel.BUILDINFO; do
+		if [ -f "$work/prep/$f" ]; then mv "$work/prep/$f" "$work/"; fi
+	done
 	if [ "$provider" = debug ]; then
 		for a in "${apps[@]}"; do
 			[ -f "$artifacts/$a.raw" ] || die "no $a.raw in $artifacts"
 			cp --sparse=always "$artifacts/$a.raw" "$work/"
 		done
 	fi
+else
+	shopt -s nullglob
+	imgs=("$media"/*-installer.img)
+	[ ${#imgs[@]} -eq 1 ] || die "want exactly one *-installer.img in $media"
+	rescue=("$media"/*-apps.img)
+	[ ${#rescue[@]} -le 1 ] || die "more than one *-apps.img in $media"
+	shopt -u nullglob
+	for f in RELEASE OSNAME; do
+		[ -f "$media/$f" ] || die "no $f in $media"
+		cp "$media/$f" "$work/"
+	done
+	for f in base.manifest kernel.BUILDINFO; do
+		if [ -f "$media/$f" ]; then cp "$media/$f" "$work/"; fi
+	done
+	# The VM writes to its media; the files in $media stay as they are.
+	log "copying the install media"
+	cp --sparse=always "${imgs[0]}" "$work/install.img"
+	if [ ${#rescue[@]} -eq 1 ]; then
+		cp --sparse=always "${rescue[0]}" "$work/apps.img"
+	fi
+	chmod 0755 "$work"
+	chmod 0644 "$work"/*.img
 fi
 release=$(cat "$work/RELEASE")
 image_id=$(cat "$work/OSNAME")
@@ -220,7 +319,7 @@ log "release $release, image $image_id, apps ${apps[*]}, provider $provider"
 # Step 1: the memory guard, after the builder has stopped.
 mem_guard
 
-# Steps 4 and 5: a fresh image and a fresh VM.
+# Steps 4 and 5: a fresh image (or empty disk) and a fresh VM.
 alias=$vm
 if incus image info "${P[@]}" "$alias" >/dev/null 2>&1; then
 	incus image delete "${P[@]}" "$alias"
@@ -229,15 +328,22 @@ if [ -n "$(instance_state "$vm")" ]; then
 	log "deleting the previous $vm"
 	incus delete "${P[@]}" --force "$vm"
 fi
-log "importing the image"
-incus image import -q "${P[@]}" "$work/metadata.tar.xz" "$work/os.qcow2" --alias "$alias"
-rm -f "$work/os.qcow2"
-log "creating $vm"
-incus create -q --vm "${P[@]}" "$alias" "$vm" \
-	-c security.secureboot=false -c limits.cpu="$VM_CPUS" -c limits.memory="$VM_MEMORY" -d root,size="$VM_ROOT"
+vm_config=(-c security.secureboot=false -c limits.cpu="$VM_CPUS" -c limits.memory="$VM_MEMORY" -d "root,size=$VM_ROOT")
+if [ -z "$media" ]; then
+	log "importing the image"
+	incus image import -q "${P[@]}" "$work/metadata.tar.xz" "$work/os.qcow2" --alias "$alias"
+	rm -f "$work/os.qcow2"
+	log "creating $vm"
+	incus create -q --vm "${P[@]}" "$alias" "$vm" "${vm_config[@]}"
+else
+	log "creating an empty $vm"
+	incus init -q --empty --vm "${P[@]}" "$vm" "${vm_config[@]}"
+fi
 incus config device add -q "${P[@]}" "$vm" vtpm tpm
 incus config set "${P[@]}" "$vm" systemd.credential.fully-enable-incus-agent=true
-incus image delete "${P[@]}" "$alias"
+if [ -z "$media" ]; then
+	incus image delete "${P[@]}" "$alias"
+fi
 
 fails=0
 result() { # <PASS|FAIL> <check> [detail]
@@ -245,28 +351,49 @@ result() { # <PASS|FAIL> <check> [detail]
 	[ "$1" = PASS ] || fails=$((fails + 1))
 }
 
+installed=""
+if [ -n "$media" ]; then
+	# The install, from USB boot media, onto the empty root disk.
+	incus config device add -q "${P[@]}" "$vm" install disk source="$work/install.img" io.bus=usb boot.priority=10 readonly=false
+	log "starting $vm from the installer"
+	incus start "${P[@]}" "$vm"
+	started=1
+	t0=$(date +%s)
+	while [ $(($(date +%s) - t0)) -lt 1800 ]; do
+		if install_done; then
+			installed="after $(($(date +%s) - t0)) s"
+			break
+		fi
+		sleep 15
+	done
+	if [ -z "$installed" ]; then
+		[ "$checks" = none ] || result FAIL installed "no 'was successfully installed' after 1800 s"
+		osd_journal | tail -40 >&2
+		exit 1
+	fi
+	log "installed $installed; removing the install media"
+	incus stop "${P[@]}" "$vm" --force
+	incus config device remove -q "${P[@]}" "$vm" install
+	if [ -f "$work/apps.img" ]; then
+		incus config device add -q "${P[@]}" "$vm" apps disk source="$work/apps.img" io.bus=usb readonly=true
+	fi
+fi
+
 # Step 6: boot.
 log "starting $vm"
 incus start "${P[@]}" "$vm"
 started=1
-booted=0
 t0=$(date +%s)
-while [ $(($(date +%s) - t0)) -lt 300 ]; do
-	if vexec true >/dev/null 2>&1; then
-		booted=1
-		break
-	fi
-	sleep 5
-done
-if [ "$booted" -eq 0 ]; then
+if ! wait_agent 300; then
 	[ "$checks" = none ] || result FAIL boot "no incus agent after 300 s"
 	exit 1
 fi
 boot_s=$(($(date +%s) - t0))
 log "agent up after ${boot_s} s"
 
-# Step 7: the debug provider reads /root/updates/.
-if [ "$provider" = debug ]; then
+# Step 7: the debug provider reads /root/updates/ (the install media brings
+# its applications on the RESCUE_DATA partition instead).
+if [ "$provider" = debug ] && [ -z "$media" ]; then
 	vexec mkdir -p /root/updates
 	incus file push -q "${P[@]}" "$work/RELEASE" "$vm/root/updates/RELEASE"
 	for a in "${apps[@]}"; do
@@ -286,7 +413,7 @@ while [ $(($(date +%s) - t0)) -lt 600 ]; do
 		posted=1
 		log "update check requested"
 	fi
-	if [ "$posted" -eq 1 ]; then
+	if [ "$posted" -eq 1 ] || [ -n "$media" ]; then
 		listed=$(osd http://localhost/1.0/applications 2>/dev/null | jq -r '.metadata[]? | sub(".*/"; "")' 2>/dev/null || true)
 		missing=""
 		for a in "${apps[@]}"; do
@@ -301,9 +428,24 @@ if [ -z "$missing" ]; then
 else
 	log "still missing after 600 s:$missing"
 fi
+arca_state=""
+arca_seen=0
+if [ "$has_arca" -eq 1 ]; then
+	t0=$(date +%s)
+	while [ $(($(date +%s) - t0)) -lt 600 ]; do
+		arca_state=$(vexec systemctl is-active arca.service 2>/dev/null || true)
+		if [ "$arca_state" = active ]; then
+			arca_seen=$(date +%s)
+			break
+		fi
+		sleep 10
+	done
+	log "arca.service: ${arca_state:-unknown} after $(($(date +%s) - t0)) s"
+fi
 
 # Step 9: the checks.
-if [ "$checks" = stock ]; then
+stock_checks() {
+	local a sb os_id mode
 	result PASS boot "agent after ${boot_s} s"
 	for a in "${apps[@]}"; do
 		if printf '%s\n' "$listed" | grep -qx "$a"; then
@@ -324,17 +466,140 @@ if [ "$checks" = stock ]; then
 	else
 		result FAIL os-id "got '${os_id}', want '${image_id}'"
 	fi
-	mode=$(vexec journalctl -u incus-osd -b0 --no-pager 2>/dev/null | grep -Eo '(^|[[:space:]])mode=[a-z]+' | tail -1 | sed 's/.*mode=//' || true)
+	mode=$(osd_journal | grep -Eo '(^|[[:space:]])mode=[a-z]+' | tail -1 | sed 's/.*mode=//' || true)
 	if [ "$mode" = dev ]; then
 		result PASS mode "$mode"
 	else
 		result FAIL mode "got '${mode:-none}', want 'dev'"
 	fi
+}
+
+# The kernel release may end in "+": apt-get reads a trailing "+" as "install
+# this", and a regular expression reads it as a repeat. Every comparison with
+# it below is therefore a fixed-string one (shell =, grep -F, jq ==).
+tracer_checks() {
+	local bi krel want_krel want_ver want_meta major ld signer wait_s nr st out names got zabbly meta
+	bi=$work/kernel.BUILDINFO
+	want_krel=$(sed -n 's/^krel: //p' "$bi" 2>/dev/null || true)
+	want_ver=$(sed -n 's/^version: //p' "$bi" 2>/dev/null || true)
+	want_meta=$(sed -n 's/^meta-version: //p' "$bi" 2>/dev/null || true)
+
+	krel=$(vexec uname -r 2>/dev/null || true)
+	if [ -z "$want_krel" ]; then
+		result FAIL kernel "running '${krel:-unknown}', and the build has no kernel.BUILDINFO"
+	elif [ "$krel" = "$want_krel" ] && printf '%s' "$krel" | grep -qF -- -zabbly-arca; then
+		result PASS kernel "$krel"
+	else
+		result FAIL kernel "running '${krel:-unknown}', built '$want_krel'"
+	fi
+
+	if vexec grep -qw binder /proc/filesystems; then
+		result PASS binder-fs "binder in /proc/filesystems"
+	else
+		result FAIL binder-fs "no binder in /proc/filesystems"
+	fi
+
+	# shellcheck disable=SC2016  # an awk program
+	major=$(vexec awk '$2 == "binder" { print $1; exit }' /proc/devices 2>/dev/null || true)
+	if printf '%s' "$major" | grep -Eqx '[0-9]+'; then
+		result PASS binder-major "binder is major $major in /proc/devices"
+	else
+		result FAIL binder-major "no binder line in /proc/devices"
+	fi
+
+	# shellcheck disable=SC2016  # expanded by the shell in the VM
+	if vexec sh -euc 'mkdir -p /tmp/b; mount -t binder binder /tmp/b; rc=0; test -c /tmp/b/binder-control || rc=1; umount /tmp/b; rmdir /tmp/b; exit $rc' 2>/dev/null; then
+		result PASS binderfs-mount "/tmp/b/binder-control, then unmounted"
+	else
+		result FAIL binderfs-mount "no /tmp/b/binder-control in a binderfs mount"
+	fi
+
+	if [ "$arca_seen" -eq 0 ]; then
+		result FAIL arca-active "arca.service is '${arca_state:-unknown}' after 600 s"
+	else
+		wait_s=$((120 - ($(date +%s) - arca_seen)))
+		if [ "$wait_s" -gt 0 ]; then sleep "$wait_s"; fi
+		st=$(vexec systemctl is-active arca.service 2>/dev/null || true)
+		nr=$(vexec systemctl show -p NRestarts --value arca.service 2>/dev/null || true)
+		if [ "$st" = active ] && [ "$nr" = 0 ]; then
+			result PASS arca-active "active, NRestarts=0 after 120 s"
+		else
+			result FAIL arca-active "is '$st', NRestarts=${nr:-unknown} after 120 s"
+		fi
+	fi
+
+	# A throwaway viewer token in the VM; only its id and scope are printed.
+	names=""
+	vexec rm -f /root/tracer.secret
+	if vexec "$ARCA" token mint --scope viewer --id tracer --config "$ARCA_CONFIG" --out /root/tracer.secret >/dev/null 2>&1 \
+		&& vexec systemctl restart arca.service; then
+		for _ in $(seq 1 30); do
+			if vexec test -S /run/arca/arca.sock 2>/dev/null; then break; fi
+			sleep 2
+		done
+		out=$(vexec "$ARCA" call watch_report --config "$ARCA_CONFIG" --token-file /root/tracer.secret --args '{}' 2>/dev/null || true)
+		names=$(printf '%s' "$out" | jq -r '.projects[]?.name' 2>/dev/null || true)
+	fi
+	vexec rm -f /root/tracer.secret
+	if printf '%s\n' "$names" | grep -qxF default; then
+		result PASS arca-call "watch_report projects: $(printf '%s\n' "$names" | paste -sd, -)"
+	else
+		result FAIL arca-call "watch_report did not name the project default"
+	fi
+
+	if vexec modprobe zfs 2>/dev/null && vexec test -d /sys/module/zfs; then
+		ld=$(vexec cat /sys/kernel/security/lockdown 2>/dev/null | sed -n 's/.*\[\([a-z]*\)\].*/\1/p' || true)
+		signer=$(vexec modinfo -F signer zfs 2>/dev/null || true)
+		result PASS zfs "loaded, lockdown=${ld:-unknown}, signer '${signer:-unknown}'"
+	else
+		result FAIL zfs "modprobe zfs failed"
+	fi
+
+	if [ ! -f "$work/base.manifest" ] || [ -z "$want_krel" ]; then
+		result FAIL kernel-pkg "no base.manifest or kernel.BUILDINFO in the build"
+	else
+		got=$(jq -r --arg n "linux-image-$want_krel" '.packages[] | select(.name == $n) | .version' "$work/base.manifest")
+		zabbly=$(jq -r '.packages[] | .name | select(startswith("linux-image-") and contains("-zabbly") and (contains("-zabbly-arca") | not) and . != "linux-image-zabbly")' "$work/base.manifest")
+		meta=$(jq -r '.packages[] | select(.name == "linux-image-zabbly") | .version' "$work/base.manifest")
+		if [ "$got" = "$want_ver" ] && [ -z "$zabbly" ] && [ "$meta" = "$want_meta" ]; then
+			result PASS kernel-pkg "linux-image-$want_krel $got, linux-image-zabbly $meta, no Zabbly kernel"
+		else
+			result FAIL kernel-pkg "linux-image-$want_krel '${got:-absent}' (want '$want_ver'), linux-image-zabbly '${meta:-absent}' (want '$want_meta'), Zabbly: '$(printf '%s' "$zabbly" | paste -sd, -)'"
+		fi
+	fi
+}
+
+install_checks() {
+	local upd prov freq reboot name
+	result PASS installed "$installed"
+	if osd_journal | grep -qF 'Recovery actions completed'; then
+		result PASS rescue-applied "incus-osd applied the RESCUE_DATA update"
+	elif [ -f "$work/apps.img" ]; then
+		result FAIL rescue-applied "no 'Recovery actions completed' in incus-osd's journal"
+	else
+		result FAIL rescue-applied "the install media has no apps image"
+	fi
+	upd=$(osd http://localhost/1.0/system/update 2>/dev/null || true)
+	prov=$(osd http://localhost/1.0/system/provider 2>/dev/null || true)
+	freq=$(printf '%s' "$upd" | jq -r '.metadata.config.check_frequency // empty' 2>/dev/null || true)
+	reboot=$(printf '%s' "$upd" | jq -r '.metadata.config.auto_reboot' 2>/dev/null || true)
+	name=$(printf '%s' "$prov" | jq -r '.metadata.config.name // empty' 2>/dev/null || true)
+	if [ "$freq" = never ] && [ "$reboot" = false ] && [ "$name" = debug ]; then
+		result PASS updates-off "check_frequency never, auto_reboot false, provider debug"
+	else
+		result FAIL updates-off "check_frequency '${freq:-unknown}', auto_reboot '${reboot:-unknown}', provider '${name:-unknown}'"
+	fi
+}
+
+if [ "$checks" != none ]; then
+	stock_checks
+	if [ "$checks" = tracer ]; then tracer_checks; fi
+	if [ -n "$media" ]; then install_checks; fi
 fi
 
 if [ "$fails" -gt 0 ]; then
 	log "$fails check(s) failed; last incus-osd lines:"
-	vexec journalctl -u incus-osd -b0 --no-pager 2>/dev/null | tail -40 >&2 || true
+	osd_journal | tail -40 >&2
 	exit 1
 fi
 exit 0

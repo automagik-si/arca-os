@@ -1,29 +1,39 @@
 #!/usr/bin/env bash
 # Build the OS image in the builder (as root, from the top of a checkout).
 #
-#   build.sh [--iso]
+#   build.sh [--local-kernel <dir>] [--iso]
 #
 # It removes mkosi.output/arca* first, because upstream's build target cleans
 # only base*, debug* and incus*, so a stale arca sysext would otherwise ship.
-# It then runs `make build` (or `make build-iso`); upstream's
-# inject-system-certs target makes test certificates when there is no
-# mkosi.crt. The outputs (the image .raw, the .efi, the usr images, every
+# It then runs scripts/arca/build-arca.sh, which puts the arca binary into the
+# arca sysext's tree. With --local-kernel, <dir> is a kernel build directory
+# (debs/ and BUILDINFO, as kernel/build-kernel.sh writes it): its debs are
+# copied into mkosi.packages/, mkosi's local repository, for the build only,
+# and removed again on exit. It then runs `make build` (or `make build-iso`);
+# upstream's inject-system-certs target makes test certificates when there is
+# no mkosi.crt. The outputs (the image .raw, the .efi, the usr images, every
 # sysext .raw, the manifests and the .iso if built) are copied to
 # /srv/artifacts/os/<version>/, with this tree's test/metadata.tar.xz for
-# vm-test.sh, and /srv/artifacts/os/latest points there.
+# vm-test.sh, the kernel's BUILDINFO as kernel.BUILDINFO with --local-kernel,
+# and /srv/artifacts/os/latest points there.
 # The last line printed is "version: <version>".
 set -euo pipefail
 
 ARTIFACTS=/srv/artifacts/os
 target=build
+kdir=''
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'build: %s\n' "$*" >&2; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--iso) target=build-iso; shift ;;
+	--local-kernel)
+		[ $# -ge 2 ] || usage
+		kdir=$(readlink -f -- "$2") || die "no kernel directory $2"
+		shift 2 ;;
 	-h | --help) usage ;;
 	*) printf 'build: unknown argument: %s\n' "$1" >&2; exit 2 ;;
 	esac
@@ -36,14 +46,40 @@ command -v mkosi >/dev/null || die "mkosi is not on PATH"
 osname=$(sed -n 's/^ImageId=//p' mkosi.conf)
 [ -n "$osname" ] || die "no ImageId in mkosi.conf"
 
+shopt -s nullglob
+kdebs=()
+if [ -n "$kdir" ]; then
+	[ -f "$kdir/BUILDINFO" ] || die "no BUILDINFO in $kdir"
+	kdebs=("$kdir"/debs/*.deb)
+	[ ${#kdebs[@]} -gt 0 ] || die "no debs in $kdir/debs"
+	for d in "${kdebs[@]}"; do
+		[ ! -e "mkosi.packages/$(basename "$d")" ] || die "mkosi.packages/$(basename "$d") already exists"
+	done
+fi
+# shellcheck disable=SC2317,SC2329  # called from the EXIT trap
+remove_kernel_debs() {
+	local d
+	for d in "${kdebs[@]}"; do
+		rm -f -- "mkosi.packages/$(basename "$d")"
+	done
+}
+trap remove_kernel_debs EXIT
+
 start=$(date +%s)
 log "removing stale arca outputs"
 rm -rf mkosi.output/arca*
 
+log "building the arca binary"
+scripts/arca/build-arca.sh
+
+if [ -n "$kdir" ]; then
+	log "local kernel: $(sed -n 's/^krel: //p' "$kdir/BUILDINFO") $(sed -n 's/^version: //p' "$kdir/BUILDINFO") (${#kdebs[@]} debs)"
+	cp -- "${kdebs[@]}" mkosi.packages/
+fi
+
 log "make $target (ImageId $osname)"
 make "$target"
 
-shopt -s nullglob
 efis=(mkosi.output/"${osname}"_*.efi)
 [ ${#efis[@]} -gt 0 ] || die "no ${osname}_*.efi in mkosi.output"
 version=$(printf '%s\n' "${efis[@]}" | sed -e 's/.*_//' -e 's/\.efi$//' | sort -n | tail -1)
@@ -72,6 +108,9 @@ log "copying ${#files[@]} files to $dest"
 rm -rf "$dest.tmp"
 install -d -m 0755 "$dest.tmp"
 cp --sparse=always -- "${files[@]}" "$dest.tmp/"
+if [ -n "$kdir" ]; then
+	cp -- "$kdir/BUILDINFO" "$dest.tmp/kernel.BUILDINFO"
+fi
 rm -rf "$dest"
 mv "$dest.tmp" "$dest"
 ln -sfn "$version" "$ARTIFACTS/latest"
