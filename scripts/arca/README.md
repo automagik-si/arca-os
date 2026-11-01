@@ -143,11 +143,18 @@ sha256sum -c SHA256SUMS
 python3 -m http.server --bind <address> --directory updates <port>
 ```
 
-Write the image to a stick (`/dev/sdX` is the stick, and is wiped), and boot the laptop from it:
+Write the image to a stick with `make-usb.sh`, on Linux or macOS, from the installer directory. It lists the USB
+sticks (never the system disk), asks which one to use and for its name to be typed back, since the whole stick is
+erased. It then checks the image against `SHA256SUMS`, writes it with a progress bar, reads the stick back and
+prints the steps for booting the installer:
 
 ```sh
-sudo dd if=<ImageId>_<version>-installer.img of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress
+scripts/arca/make-usb.sh                 # the newest *-installer.img in the current directory
+scripts/arca/make-usb.sh --list          # only list the sticks
+scripts/arca/make-usb.sh --dry-run IMG   # every step except the write
 ```
+
+Then boot the laptop from the stick.
 
 When it asks for the install media to be removed, remove the stick. The laptop reboots into the installed system,
 which downloads `incus` and `arca` from the server and installs them. Stop the server once both are listed. If the
