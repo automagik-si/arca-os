@@ -7,6 +7,9 @@ const (
 	// UpdateFileComponentOS represents an OS update.
 	UpdateFileComponentOS UpdateFileComponent = "os"
 
+	// UpdateFileComponentArca represents an Arca application update.
+	UpdateFileComponentArca UpdateFileComponent = "arca"
+
 	// UpdateFileComponentDebug represents a debug application update.
 	UpdateFileComponentDebug UpdateFileComponent = "debug"
 
@@ -35,6 +38,7 @@ const (
 // UpdateFileComponents is a map of the supported update file components.
 var UpdateFileComponents = map[UpdateFileComponent]struct{}{
 	UpdateFileComponentOS:               {},
+	UpdateFileComponentArca:             {},
 	UpdateFileComponentDebug:            {},
 	UpdateFileComponentGPUSupport:       {},
 	UpdateFileComponentIncus:            {},

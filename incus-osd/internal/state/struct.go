@@ -53,6 +53,7 @@ type State struct {
 	ServicesSeedApplied bool       `json:"services_seed_applied"`
 
 	Applications struct {
+		Arca             api.Application        `json:"arca"`
 		Debug            api.Application        `json:"debug"`
 		GPUSupport       api.Application        `json:"gpu_support"`
 		Incus            api.ApplicationIncus   `json:"incus"`
