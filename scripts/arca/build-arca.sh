@@ -3,9 +3,11 @@
 #
 #   build-arca.sh
 #
-# It takes no arguments. It reads the arca tag from scripts/arca/arca.version,
+# It takes no arguments. It reads the arca tag from scripts/arca/arca.version
+# and the commit that tag must point to from scripts/arca/arca.commit. It
 # clones https://github.com/weunfold/arca.git at that tag into app-build/arca
-# (a path upstream's .gitignore already covers), and builds it with
+# (a path upstream's .gitignore already covers), refuses to build when the
+# tag points anywhere else (a moved tag), and builds it with
 # `cargo build --release --locked --target x86_64-unknown-linux-musl -p arca`,
 # using the Rust toolchain that arca's rust-toolchain.toml names. It strips the
 # binary, refuses one that is not static, and installs it at 0755 as
@@ -22,7 +24,7 @@ SRC=app-build/arca
 DEST=mkosi.images/arca/mkosi.extra
 MANIFEST=app-build/arca.json
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'build-arca: %s\n' "$*" >&2; }
 die() { printf 'build-arca: %s\n' "$*" >&2; exit 1; }
 
@@ -43,6 +45,10 @@ done
 tag=$(tr -d '[:space:]' < scripts/arca/arca.version)
 printf '%s' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' \
 	|| die "scripts/arca/arca.version does not hold a release tag: '$tag'"
+[ -r scripts/arca/arca.commit ] || die "no scripts/arca/arca.commit (the commit $tag must point to)"
+pin=$(tr -d '[:space:]' < scripts/arca/arca.commit)
+printf '%s' "$pin" | grep -Eqx '[0-9a-f]{40}' \
+	|| die "scripts/arca/arca.commit does not hold a full 40-digit commit id: '$pin'"
 
 # --- Source ----------------------------------------------------------------
 if [ -d "$SRC/.git" ]; then
@@ -57,8 +63,9 @@ else
 fi
 commit=$(git -C "$SRC" rev-parse HEAD)
 [ "$commit" = "$(git -C "$SRC" rev-parse "refs/tags/$tag^{commit}")" ] || die "$SRC is not at $tag"
+[ "$commit" = "$pin" ] || die "refused: $tag points to $commit, not the pinned $pin (a moved tag)"
 [ -z "$(git -C "$SRC" status --porcelain)" ] || die "$SRC has local changes"
-log "arca $tag = $commit"
+log "arca $tag = $commit (pinned)"
 
 # --- Toolchain -------------------------------------------------------------
 channel=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$SRC/rust-toolchain.toml")
