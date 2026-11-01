@@ -120,13 +120,16 @@ bytes=$(du -sb "$tmp/rescue" | cut -f1)
 # The files, 5% for the FAT and its tables, and 32 MiB of slack.
 mib=$((bytes * 105 / 100 / 1048576 + 32))
 truncate -s $(((mib + 2) * 1048576)) "$apps_img"
-sgdisk -q -n "1:2048:+${mib}M" -t 1:0700 -c 1:RESCUE_DATA "$apps_img" >/dev/null
+sgdisk -n "1:2048:+${mib}M" -t 1:0700 -c 1:RESCUE_DATA "$apps_img" >/dev/null 2>&1
+sgdisk -i 1 "$apps_img" 2>/dev/null | grep -qx "Partition name: 'RESCUE_DATA'" || die "sgdisk wrote no RESCUE_DATA partition to $apps_img"
 fat=()
 [ "$mib" -lt 512 ] || fat=(-F)
 export MTOOLS_SKIP_CHECK=1
 mformat -i "$apps_img@@1048576" -T $((mib * 2048)) -h 64 -s 32 "${fat[@]}" -v RESCUE_DATA ::
 mcopy -s -i "$apps_img@@1048576" "$tmp/rescue/update" ::/
-# Read every file back from the image and check it against update.json.
+# Read the partition and every file back, and check them against update.json.
+[ "$(sgdisk -i 1 "$apps_img" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p')" = 2048 ] \
+	|| die "the RESCUE_DATA partition of $apps_img does not start at sector 2048"
 mcopy -n -i "$apps_img@@1048576" ::/update/update.sjson "$tmp/back.sjson"
 cmp -s "$tmp/back.sjson" "$ud/update.sjson" || die "update.sjson reads back changed from $apps_img"
 while IFS= read -r f; do
