@@ -24,21 +24,28 @@
 #   6. Start it and poll `incus exec <vm> -- true` for up to 300 s.
 #   7. With provider debug, push RELEASE and each seeded application's .raw
 #      into /root/updates/.
-#   8. POST /1.0/system/update/:check, then poll /1.0/applications until every
-#      seeded application is listed, for up to 10 min. When arca is one of
-#      them, then poll `systemctl is-active arca.service` for up to 10 min.
+#   8. POST /1.0/system/update/:check (not with --install-media), then poll
+#      /1.0/applications until every seeded application is listed, for up to
+#      10 min. When arca is one of them, then poll `systemctl is-active
+#      arca.service` for up to 10 min.
 #   9. Run the checks, printing "PASS <check>" or "FAIL <check>" for each.
 # The VM is stopped at the end unless --keep is given.
 #
 # --install-media <dir> takes a directory from tracer-installer.sh on this
-# host instead (an *-installer.img, an optional *-apps.img, seed/, and the
-# manifest and BUILDINFO files beside them). Its seed names the applications
-# and the provider, so --seed-apps and --provider are refused with it. Steps
-# 2-7 become: create an empty VM as in step 5, attach a copy of the installer
-# as USB boot media, start it, and wait up to 30 min for "was successfully
-# installed" in incus-osd's journal; then stop it, remove the media, attach a
-# copy of the apps image (the RESCUE_DATA partition) as a USB disk, and boot
-# the installed system. Step 8 follows.
+# host instead: one *-installer.img, seed/, updates/, and the manifest and
+# BUILDINFO files beside them. Its seed names the applications and the
+# provider (images, with a server_url of http://<address>:<port>), so
+# --seed-apps, --provider and --server-url are refused with it. The address
+# must be this host's address on the network of the project's default eth0,
+# which is the one the VM reaches, and the port (1024 or above) must be free
+# on every address. Steps 2-7 become: create an empty VM as in step 5, attach
+# a copy of the installer as USB boot media, start it, and wait up to 30 min
+# for "was successfully installed" in incus-osd's journal; then stop it,
+# detach the media, serve updates/ on that address and port with a throwaway
+# python3 http.server, and boot the installed system. Its first boot installs
+# the applications from that server by itself, so step 8 asks for no update
+# check. The server is stopped on exit, and on any exit before the media is
+# detached the VM is stopped and the media detached.
 #
 # Check sets:
 #   stock   boot, app-listed (each seeded app), secureboot, os-id (ID in
@@ -48,13 +55,16 @@
 #           krel in kernel.BUILDINFO), binder-fs, binder-major, binderfs-mount
 #           (binder-control in a binderfs mounted on /tmp/b), arca-active
 #           (active, NRestarts=0 after 120 s), arca-call (a viewer token's
-#           watch_report names the project default), zfs (modprobe zfs under
-#           lockdown), kernel-pkg (base.manifest has linux-image-<krel> at
-#           the BUILDINFO version and no Zabbly linux-image-*-zabbly+)
+#           `arca call watch_report` exits 0 and names the project default),
+#           zfs (modprobe zfs, with lockdown integrity or confidentiality),
+#           kernel-pkg (base.manifest has linux-image-<krel> at the BUILDINFO
+#           version and no Zabbly linux-image-*-zabbly+)
 #   none    no checks
 # With --install-media, every set but none also checks installed,
-# rescue-applied (incus-osd ran the RESCUE_DATA update) and updates-off
-# (check frequency never, no automatic reboot, provider debug).
+# media-removed (no install device left on the VM), apps-from-server (the
+# server answered the VM's GET of index.sjson and of each application's
+# .raw.gz with 200) and updates-off (check frequency never, no automatic
+# reboot, provider images at the seed's server_url).
 #
 # The project must start with "arcaos-" and have its own images and profiles
 # (features.images=true, features.profiles=true), and --vm must not name the
@@ -79,6 +89,9 @@ ARCA_CONFIG=/usr/lib/arca/node.json
 
 project="" vm="" builder="" artifacts="" media="" seed_apps="" provider="" server_url="" checks=""
 stop_builder=0 keep=0
+# With --install-media: where the update server listens, its pid, and whether
+# the VM still has the install media attached.
+serve_addr="" serve_port="" serve_pid="" install_attached=0
 
 usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'vm-test: %s\n' "$*" >&2; }
@@ -128,7 +141,19 @@ if [ -n "$media" ]; then
 	[ -f "$media/seed/applications.json" ] || refuse "no seed/applications.json in $media"
 	seed_apps=$(jq -r '[.applications[].name] | join(",")' "$media/seed/applications.json")
 	provider=$(jq -r '.name // empty' "$media/seed/provider.json" 2>/dev/null || true)
-	[ "$provider" = debug ] || refuse "the install media's provider is '${provider:-none}', not debug"
+	[ "$provider" = images ] || refuse "the install media's provider is '${provider:-none}', not images"
+	server_url=$(jq -r '.config.server_url // empty' "$media/seed/provider.json")
+	[ -f "$media/updates/index.sjson" ] || refuse "no updates/index.sjson in $media"
+	# The VM fetches from the seed's server_url, so that is where this host
+	# serves updates/: an IPv4 address and a port, and no path.
+	serve_addr=$(printf '%s' "$server_url" | sed -n 's|^http://\([0-9][0-9.]*\):\([0-9]\{1,5\}\)$|\1|p')
+	serve_port=$(printf '%s' "$server_url" | sed -n 's|^http://\([0-9][0-9.]*\):\([0-9]\{1,5\}\)$|\2|p')
+	if [ -z "$serve_addr" ] || [ -z "$serve_port" ]; then
+		refuse "the seed's server_url '${server_url:-none}' is not http://<IPv4 address>:<port>"
+	fi
+	if [ "$serve_port" -lt 1024 ] || [ "$serve_port" -gt 65535 ]; then
+		refuse "the seed's server_url port $serve_port is not between 1024 and 65535"
+	fi
 fi
 printf '%s' "$seed_apps" | grep -Eqx '[a-z0-9.-]+(,[a-z0-9.-]+)*' || refuse "bad or missing --seed-apps"
 case "$provider" in
@@ -149,6 +174,20 @@ for f in features.images features.profiles; do
 	v=$(incus project get "$project" "$f" 2>/dev/null || true)
 	[ "$v" = true ] || refuse "project $project has $f=${v:-unset}; it must have its own images and profiles"
 done
+if [ -n "$media" ]; then
+	# Listen only on this host's address on the VM's network, on a port that
+	# nothing on this host listens on, whatever the address.
+	vm_net=$(incus profile device get "${P[@]}" default eth0 network 2>/dev/null || true)
+	[ -n "$vm_net" ] || refuse "the default profile of $project has no eth0 network"
+	net_addr=$(incus network get "${P[@]}" "$vm_net" ipv4.address 2>/dev/null || true)
+	if [ "${net_addr%/*}" != "$serve_addr" ]; then
+		refuse "the seed's server_url address $serve_addr is not this host's address on $vm_net (${net_addr:-none})"
+	fi
+	# shellcheck disable=SC2016  # an awk program
+	if ss -ltnH | awk -v p=":$serve_port" 'substr($4, length($4) - length(p) + 1) == p { f = 1 } END { exit !f }'; then
+		refuse "port $serve_port is already in use on this host"
+	fi
+fi
 IFS=, read -r -a apps <<<"$seed_apps"
 apps_json=$(jq -cn --arg a "$seed_apps" '{applications: ($a | split(",") | map({name: .}))}')
 if [ "$provider" = debug ]; then
@@ -191,6 +230,29 @@ install_done() {
 	osd_journal | grep -qF 'was successfully installed' && return 0
 	incus console "${P[@]}" "$vm" --show-log 2>/dev/null | grep -qF 'was successfully installed'
 }
+# serve_updates: serve $media/updates at the seed's server_url with python3's
+# http.server, in isolated mode and from $work, logging each request to
+# $work/http.log. Its readiness probe is a HEAD, so every GET in the log is
+# the VM's.
+serve_updates() {
+	log "serving $media/updates at $server_url"
+	(cd "$work" && exec python3 -I -u -m http.server --bind "$serve_addr" --directory "$media/updates" "$serve_port") \
+		>"$work/http.log" 2>&1 &
+	serve_pid=$!
+	for _ in $(seq 1 20); do
+		if curl -sfI --max-time 2 "$server_url/index.sjson" >/dev/null 2>&1; then return 0; fi
+		kill -0 "$serve_pid" 2>/dev/null || break
+		sleep 0.5
+	done
+	tail -5 "$work/http.log" >&2 || true
+	die "the update server does not answer at $server_url"
+}
+# got_get <path>: 0 when the server answered a GET of <path> from another
+# address than its own with 200.
+got_get() {
+	# shellcheck disable=SC2016  # an awk program
+	awk -v p="\"GET $1 HTTP/" -v a="$serve_addr" '$1 != a && index($0, p) && index($0, "\" 200 ") { f = 1 } END { exit !f }' "$work/http.log"
+}
 
 # Without --stop-builder nothing frees memory later, so check up front too.
 [ "$stop_builder" -eq 1 ] || mem_guard
@@ -200,17 +262,24 @@ work=$(mktemp -d "$STAGE_BASE/$vm.XXXXXX")
 started=0
 # shellcheck disable=SC2317,SC2329  # called from the EXIT trap
 cleanup() {
+	if [ -n "$serve_pid" ]; then
+		kill "$serve_pid" 2>/dev/null || true
+		wait "$serve_pid" 2>/dev/null || true
+		log "stopped the update server"
+	fi
 	if [ "$started" -eq 1 ] && [ "$keep" -eq 0 ]; then
 		log "stopping $vm"
 		incus stop "${P[@]}" "$vm" --timeout 120 >/dev/null 2>&1 || incus stop "${P[@]}" "$vm" --force >/dev/null 2>&1 || true
 	fi
-	# A kept VM still uses the media copies in $work; otherwise its apps disk
-	# goes with them.
-	if [ "$started" -eq 1 ] && [ "$keep" -eq 1 ] && [ -n "$media" ]; then
-		return 0
-	fi
-	if [ "$started" -eq 1 ] && [ -n "$media" ]; then
-		incus config device remove -q "${P[@]}" "$vm" apps >/dev/null 2>&1 || true
+	# The install media is still attached when the install did not finish. A
+	# kept VM still runs from its copy in $work; otherwise the media is
+	# detached, so the VM never points at a deleted file.
+	if [ "$install_attached" -eq 1 ]; then
+		if [ "$started" -eq 1 ] && [ "$keep" -eq 1 ]; then
+			log "$vm is kept with its install media, $work/install.img"
+			return 0
+		fi
+		incus config device remove -q "${P[@]}" "$vm" install >/dev/null 2>&1 || true
 	fi
 	rm -rf "$work"
 }
@@ -291,10 +360,8 @@ elif [ -n "$artifacts" ]; then
 else
 	shopt -s nullglob
 	imgs=("$media"/*-installer.img)
-	[ ${#imgs[@]} -eq 1 ] || die "want exactly one *-installer.img in $media"
-	rescue=("$media"/*-apps.img)
-	[ ${#rescue[@]} -le 1 ] || die "more than one *-apps.img in $media"
 	shopt -u nullglob
+	[ ${#imgs[@]} -eq 1 ] || die "want exactly one *-installer.img in $media"
 	for f in RELEASE OSNAME; do
 		[ -f "$media/$f" ] || die "no $f in $media"
 		cp "$media/$f" "$work/"
@@ -302,14 +369,12 @@ else
 	for f in base.manifest kernel.BUILDINFO; do
 		if [ -f "$media/$f" ]; then cp "$media/$f" "$work/"; fi
 	done
+	[ -f "$media/updates/$(cat "$work/RELEASE")/update.sjson" ] || die "updates/ in $media has no release $(cat "$work/RELEASE")"
 	# The VM writes to its media; the files in $media stay as they are.
 	log "copying the install media"
-	cp --sparse=always "${imgs[0]}" "$work/install.img"
-	if [ ${#rescue[@]} -eq 1 ]; then
-		cp --sparse=always "${rescue[0]}" "$work/apps.img"
-	fi
+	cp --sparse=always "${imgs[0]}" "$work/install.img" || die "could not copy ${imgs[0]}"
 	chmod 0755 "$work"
-	chmod 0644 "$work"/*.img
+	chmod 0644 "$work/install.img"
 fi
 release=$(cat "$work/RELEASE")
 image_id=$(cat "$work/OSNAME")
@@ -354,10 +419,12 @@ result() { # <PASS|FAIL> <check> [detail]
 installed=""
 if [ -n "$media" ]; then
 	# The install, from USB boot media, onto the empty root disk.
-	incus config device add -q "${P[@]}" "$vm" install disk source="$work/install.img" io.bus=usb boot.priority=10 readonly=false
+	incus config device add -q "${P[@]}" "$vm" install disk source="$work/install.img" io.bus=usb boot.priority=10 readonly=false \
+		|| die "could not attach the install media to $vm"
+	install_attached=1
 	log "starting $vm from the installer"
-	incus start "${P[@]}" "$vm"
 	started=1
+	incus start "${P[@]}" "$vm" || die "could not start $vm from the installer"
 	t0=$(date +%s)
 	while [ $(($(date +%s) - t0)) -lt 1800 ]; do
 		if install_done; then
@@ -369,14 +436,15 @@ if [ -n "$media" ]; then
 	if [ -z "$installed" ]; then
 		[ "$checks" = none ] || result FAIL installed "no 'was successfully installed' after 1800 s"
 		osd_journal | tail -40 >&2
+		# The cleanup stops the VM and detaches the install media.
 		exit 1
 	fi
 	log "installed $installed; removing the install media"
-	incus stop "${P[@]}" "$vm" --force
-	incus config device remove -q "${P[@]}" "$vm" install
-	if [ -f "$work/apps.img" ]; then
-		incus config device add -q "${P[@]}" "$vm" apps disk source="$work/apps.img" io.bus=usb readonly=true
-	fi
+	incus stop "${P[@]}" "$vm" --force || die "could not stop $vm"
+	incus config device remove -q "${P[@]}" "$vm" install || die "could not detach the install media from $vm"
+	install_attached=0
+	# The installed system's first boot fetches its applications from here.
+	serve_updates
 fi
 
 # Step 6: boot.
@@ -391,9 +459,9 @@ fi
 boot_s=$(($(date +%s) - t0))
 log "agent up after ${boot_s} s"
 
-# Step 7: the debug provider reads /root/updates/ (the install media brings
-# its applications on the RESCUE_DATA partition instead).
-if [ "$provider" = debug ] && [ -z "$media" ]; then
+# Step 7: the debug provider reads /root/updates/ (the installed system of
+# --install-media fetches its applications from the update server instead).
+if [ "$provider" = debug ]; then
 	vexec mkdir -p /root/updates
 	incus file push -q "${P[@]}" "$work/RELEASE" "$vm/root/updates/RELEASE"
 	for a in "${apps[@]}"; do
@@ -403,13 +471,14 @@ if [ "$provider" = debug ] && [ -z "$media" ]; then
 fi
 
 # Step 8: ask for an update check (retrying until the API answers), then wait
-# for every seeded application.
+# for every seeded application. An installed system is not asked: its first
+# boot must install them by itself.
 t0=$(date +%s)
 posted=0
 listed=""
 missing="${apps[*]}"
 while [ $(($(date +%s) - t0)) -lt 600 ]; do
-	if [ "$posted" -eq 0 ] && osd -X POST http://localhost/1.0/system/update/:check >/dev/null 2>&1; then
+	if [ "$posted" -eq 0 ] && [ -z "$media" ] && osd -X POST http://localhost/1.0/system/update/:check >/dev/null 2>&1; then
 		posted=1
 		log "update check requested"
 	fi
@@ -478,7 +547,7 @@ stock_checks() {
 # this", and a regular expression reads it as a repeat. Every comparison with
 # it below is therefore a fixed-string one (shell =, grep -F, jq ==).
 tracer_checks() {
-	local bi krel want_krel want_ver want_meta major ld signer wait_s nr st out names got zabbly meta
+	local bi krel want_krel want_ver want_meta major ld signer wait_s nr st out names call_rc got zabbly meta
 	bi=$work/kernel.BUILDINFO
 	want_krel=$(sed -n 's/^krel: //p' "$bi" 2>/dev/null || true)
 	want_ver=$(sed -n 's/^version: //p' "$bi" 2>/dev/null || true)
@@ -529,7 +598,8 @@ tracer_checks() {
 	fi
 
 	# A throwaway viewer token in the VM; only its id and scope are printed.
-	names=""
+	# The call must exit 0 as well as name the project.
+	names="" call_rc=""
 	vexec rm -f /root/tracer.secret
 	if vexec "$ARCA" token mint --scope viewer --id tracer --config "$ARCA_CONFIG" --out /root/tracer.secret >/dev/null 2>&1 \
 		&& vexec systemctl restart arca.service; then
@@ -537,22 +607,34 @@ tracer_checks() {
 			if vexec test -S /run/arca/arca.sock 2>/dev/null; then break; fi
 			sleep 2
 		done
-		out=$(vexec "$ARCA" call watch_report --config "$ARCA_CONFIG" --token-file /root/tracer.secret --args '{}' 2>/dev/null || true)
+		if out=$(vexec "$ARCA" call watch_report --config "$ARCA_CONFIG" --token-file /root/tracer.secret --args '{}' 2>/dev/null); then
+			call_rc=0
+		else
+			call_rc=$?
+		fi
 		names=$(printf '%s' "$out" | jq -r '.projects[]?.project' 2>/dev/null || true)
 	fi
 	vexec rm -f /root/tracer.secret
-	if printf '%s\n' "$names" | grep -qxF default; then
-		result PASS arca-call "watch_report projects: $(printf '%s\n' "$names" | paste -sd, -)"
+	if [ -z "$call_rc" ]; then
+		result FAIL arca-call "could not mint a viewer token or restart arca.service"
+	elif [ "$call_rc" != 0 ]; then
+		result FAIL arca-call "arca call watch_report exited $call_rc"
+	elif printf '%s\n' "$names" | grep -qxF default; then
+		result PASS arca-call "exit 0, watch_report projects: $(printf '%s\n' "$names" | paste -sd, -)"
 	else
-		result FAIL arca-call "watch_report did not name the project default"
+		result FAIL arca-call "watch_report exited 0 but did not name the project default"
 	fi
 
+	# zfs is signed for this kernel, so it must load with lockdown on.
+	ld=$(vexec cat /sys/kernel/security/lockdown 2>/dev/null | sed -n 's/.*\[\([a-z]*\)\].*/\1/p' || true)
 	if vexec modprobe zfs 2>/dev/null && vexec test -d /sys/module/zfs; then
-		ld=$(vexec cat /sys/kernel/security/lockdown 2>/dev/null | sed -n 's/.*\[\([a-z]*\)\].*/\1/p' || true)
 		signer=$(vexec modinfo -F signer zfs 2>/dev/null || true)
-		result PASS zfs "loaded, lockdown=${ld:-unknown}, signer '${signer:-unknown}'"
+		case "$ld" in
+		integrity | confidentiality) result PASS zfs "loaded, lockdown=$ld, signer '${signer:-unknown}'" ;;
+		*) result FAIL zfs "loaded, but lockdown is '${ld:-unknown}', not integrity or confidentiality" ;;
+		esac
 	else
-		result FAIL zfs "modprobe zfs failed"
+		result FAIL zfs "modprobe zfs failed (lockdown=${ld:-unknown})"
 	fi
 
 	if [ ! -f "$work/base.manifest" ] || [ -z "$want_krel" ]; then
@@ -570,24 +652,38 @@ tracer_checks() {
 }
 
 install_checks() {
-	local upd prov freq reboot name
+	local devs a f gets client upd prov freq reboot name url
 	result PASS installed "$installed"
-	if osd_journal | grep -qF 'Recovery actions completed'; then
-		result PASS rescue-applied "incus-osd applied the RESCUE_DATA update"
-	elif [ -f "$work/apps.img" ]; then
-		result FAIL rescue-applied "no 'Recovery actions completed' in incus-osd's journal"
+	devs=$(incus config device list "${P[@]}" "$vm" 2>/dev/null || true)
+	if [ "$install_attached" -eq 0 ] && ! printf '%s\n' "$devs" | grep -qx install; then
+		result PASS media-removed "devices: $(printf '%s\n' "$devs" | paste -sd, -)"
 	else
-		result FAIL rescue-applied "the install media has no apps image"
+		result FAIL media-removed "the install device is still attached"
+	fi
+	# Every application's file, by its path in the published index.
+	gets=""
+	got_get /index.sjson || gets="$gets /index.sjson"
+	for a in "${apps[@]}"; do
+		f=$(jq -r --arg n "$a.raw.gz" '[.updates[0].files[] | select((.filename | split("/") | last) == $n) | .filename] | first // empty' "$media/updates/index.json")
+		if [ -z "$f" ] || ! got_get "/$release/$f"; then gets="$gets /$release/${f:-$a.raw.gz}"; fi
+	done
+	# shellcheck disable=SC2016  # an awk program
+	client=$(awk -v a="$serve_addr" '$1 != a && index($0, "\"GET ") { print $1; exit }' "$work/http.log" 2>/dev/null || true)
+	if [ -z "$gets" ]; then
+		result PASS apps-from-server "${client:-the VM} got /index.sjson and $(printf '%s.raw.gz ' "${apps[@]}")with 200 from $server_url"
+	else
+		result FAIL apps-from-server "no GET answered with 200 from the VM for:$gets"
 	fi
 	upd=$(osd http://localhost/1.0/system/update 2>/dev/null || true)
 	prov=$(osd http://localhost/1.0/system/provider 2>/dev/null || true)
 	freq=$(printf '%s' "$upd" | jq -r '.metadata.config.check_frequency // empty' 2>/dev/null || true)
 	reboot=$(printf '%s' "$upd" | jq -r '.metadata.config.auto_reboot' 2>/dev/null || true)
 	name=$(printf '%s' "$prov" | jq -r '.metadata.config.name // empty' 2>/dev/null || true)
-	if [ "$freq" = never ] && [ "$reboot" = false ] && [ "$name" = debug ]; then
-		result PASS updates-off "check_frequency never, auto_reboot false, provider debug"
+	url=$(printf '%s' "$prov" | jq -r '.metadata.config.config.server_url // empty' 2>/dev/null || true)
+	if [ "$freq" = never ] && [ "$reboot" = false ] && [ "$name" = images ] && [ "$url" = "$server_url" ]; then
+		result PASS updates-off "check_frequency never, auto_reboot false, provider images at the seed's server_url"
 	else
-		result FAIL updates-off "check_frequency '${freq:-unknown}', auto_reboot '${reboot:-unknown}', provider '${name:-unknown}'"
+		result FAIL updates-off "check_frequency '${freq:-unknown}', auto_reboot '${reboot:-unknown}', provider '${name:-unknown}' at '${url:-unknown}'"
 	fi
 }
 
@@ -600,6 +696,10 @@ fi
 if [ "$fails" -gt 0 ]; then
 	log "$fails check(s) failed; last incus-osd lines:"
 	osd_journal | tail -40 >&2
+	if [ -n "$serve_pid" ]; then
+		log "last update server lines:"
+		tail -20 "$work/http.log" >&2 || true
+	fi
 	exit 1
 fi
 exit 0

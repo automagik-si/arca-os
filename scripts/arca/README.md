@@ -82,7 +82,9 @@ the image, imports it, boots a VM (4 vCPU, 8 GiB, 50 GiB root, vTPM, Secure Boot
 pushes the seeded applications for the `debug` provider, and waits for incus-osd to list them. Then it prints one
 `PASS <check>` or `FAIL <check>` line per check and exits 1 on any FAIL. The `stock` checks are `boot`, `app-listed`,
 `secureboot`, `os-id` and `mode`. The `tracer` checks add `kernel`, `binder-fs`, `binder-major`, `binderfs-mount`,
-`arca-active`, `arca-call`, `zfs` and `kernel-pkg`. The kernel release can end in `+`, which `apt-get` reads as an
+`arca-active`, `arca-call`, `zfs` and `kernel-pkg`; `arca-call` needs `arca call watch_report` to exit 0 and name
+the project `default`, and `zfs` needs the module to load with lockdown `integrity` or `confidentiality`. The kernel
+release can end in `+`, which `apt-get` reads as an
 install modifier and a regular expression as a repeat, so `vm-test.sh` compares it as a fixed string only. It refuses
 to start the VM when the host has less than 12 GiB of `MemAvailable`
 (after stopping the builder, with `--stop-builder`). Large files are staged under `~/.cache/arca-os/vm-test`
@@ -90,37 +92,66 @@ to start the VM when the host has less than 12 GiB of `MemAvailable`
 
 ## A test installer
 
-`tracer-installer.sh` writes a test-signed build as a USB installer that never updates itself. It runs in the builder
-right after `build.sh`, in the same checkout, before anything cleans it, because it signs with that build's throwaway
-test update key:
+`tracer-installer.sh` writes a test-signed build as one USB installer image, plus the update tree that the installed
+system fetches `incus` and `arca` from. It runs in the builder right after `build.sh`, in the same checkout, before
+anything cleans it, because it signs with that build's throwaway test update key. `--server-url` is required: it is
+the URL the tree will be served at, and it goes into the image's seed.
 
 ```sh
 # In the builder, after build.sh, in the same /srv/work/<name> checkout (not through in-builder.sh, which cleans it):
-scripts/arca/tracer-installer.sh --client-cert - --force-install < client.crt
-# On the Incus host, an install rehearsal from those files:
+scripts/arca/tracer-installer.sh --server-url http://<address>:<port> --client-cert - --force-install < client.crt
+# On the Incus host, an install rehearsal from those files (<address> is this host's address on the VM's network):
 scripts/arca/vm-test.sh --project arcaos-dev --vm arcaos-installer --install-media <dir> --checks tracer
 ```
 
-It writes two disk images. `<ImageId>_<version>-installer.img` is the image with an install seed: applications
-`incus` and `arca`, provider `debug`, updates checked `never` with no automatic reboot, `force_install` only with
-`--force-install`, and with `--client-cert` that certificate trusted by Incus. It installs onto the one disk it finds
-and refuses when it finds several. `<ImageId>_<version>-apps.img` holds one FAT partition named `RESCUE_DATA` with
-this build's signed update for `incus` and `arca`; incus-osd's recovery mode installs them from it at boot, so the
-installed system needs no update server. The target's firmware must be in Secure Boot Setup Mode, because the first
-boot enrolls the build's test keys.
+It writes, in one directory:
 
-Writing them to sticks (`/dev/sdX` and `/dev/sdY` are the sticks, and are wiped):
+- `<ImageId>_<version>-installer.img`, the image with an install seed: applications `incus` and `arca`, provider
+  `images` at that `server_url`, channel `stable` with updates checked `never` and no automatic reboot,
+  `force_install` only with `--force-install`, and with `--client-cert` that certificate trusted by Incus. It installs
+  onto the one disk it finds and refuses when it finds several.
+- `updates/`, a static tree in the layout incus-osd's `images` provider reads, made by the build's own
+  `image-publisher`: `index.json` and `index.sjson`, and `<version>/` with `update.json`, `update.sjson`,
+  `x86_64/incus.raw.gz` and `x86_64/arca.raw.gz`, in channel `stable`. Both `.sjson` files are signed with the build's
+  test update key, which the image trusts, so plain `http` is enough. The tree holds no OS files, so the OS is never
+  updated from it. The script reads it back the way incus-osd will: both signatures, one release, and exactly the two
+  applications, each unpacking to the built sysext.
+- `seed/`, `RELEASE`, `OSNAME`, `base.manifest`, `kernel.BUILDINFO` and `SHA256SUMS`, which covers the image and every
+  file under `updates/`.
+
+On its first boot the installed system has no primary application, so incus-osd checks the server once even though
+updates are checked `never`, and installs `incus` and `arca`. After that it does not check again on its own. The
+target's firmware must be in Secure Boot Setup Mode, because the first boot enrolls the build's test keys.
+
+With `--install-media <dir>`, `vm-test.sh` rehearses this. The seed's `server_url` must be `http://<address>:<port>`,
+with `<address>` this host's address on the network of the project's default `eth0` and `<port>` (1024 or above) free
+on every address; otherwise it refuses with exit 2. It boots an empty VM from a copy of the image as a USB disk, waits
+for the install, stops the VM and detaches the disk, serves `updates/` on that address with a throwaway
+`python3 -m http.server`, and boots the installed system without asking it for an update check. Besides the `tracer`
+checks it checks `installed`, `media-removed`, `apps-from-server` (the server answered the VM's `GET` of `index.sjson`
+and of each application's `.raw.gz` with 200) and `updates-off` (check frequency `never`, no automatic reboot, provider
+`images` at the seed's URL). It always stops the server on exit. On any exit before the install disk is detached, it
+also stops the VM and detaches the disk.
+
+### Installing a laptop
+
+Serve `updates/` at the `--server-url` the image was built with, from a machine on the laptop's network, until the
+laptop has installed both applications. Any static file server works. With Python, from the installer directory:
 
 ```sh
 sha256sum -c SHA256SUMS
-sudo dd if=<ImageId>_<version>-installer.img of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress
-sudo dd if=<ImageId>_<version>-apps.img of=/dev/sdY bs=4M conv=fsync oflag=direct status=progress
+python3 -m http.server --bind <address> --directory updates <port>
 ```
 
-Boot the target from the installer stick. When it asks for the install media to be removed, plug in the apps stick,
-then remove the installer stick: the target reboots into the installed system, which installs `incus` and `arca` from
-the apps stick. With one stick, remove it when asked, write the apps image onto it, plug it in, and power-cycle the
-target once more. Remove the apps stick afterwards.
+Write the image to a stick (`/dev/sdX` is the stick, and is wiped), and boot the laptop from it:
+
+```sh
+sudo dd if=<ImageId>_<version>-installer.img of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress
+```
+
+When it asks for the install media to be removed, remove the stick. The laptop reboots into the installed system,
+which downloads `incus` and `arca` from the server and installs them. Stop the server once both are listed. If the
+server could not be reached during that boot, every later boot tries again until a primary application is installed.
 
 ## Component map
 
