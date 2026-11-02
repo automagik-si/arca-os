@@ -25,7 +25,7 @@ type picker struct {
 	s   *state.State
 	t   *tui.TUI
 
-	root   *tview.Flex
+	root   *pickerRoot
 	list   *tview.List
 	field  *tview.InputField
 	status *tview.TextView
@@ -39,6 +39,31 @@ type picker struct {
 	entries    []wifi.Entry
 	chosen     wifi.Entry
 	scanStatus bool
+}
+
+// pickerRoot is the picker's overlay page. Its focus goes to the widget in use, not
+// to its first focusable item: the console refocuses its top page every second
+// while it shows no modal, which would otherwise pull the keys off the passphrase field.
+type pickerRoot struct {
+	*tview.Flex
+
+	mu      sync.Mutex
+	current tview.Primitive
+}
+
+func (r *pickerRoot) setCurrent(widget tview.Primitive) {
+	r.mu.Lock()
+	r.current = widget
+	r.mu.Unlock()
+}
+
+// Focus gives the focus to the widget in use.
+func (r *pickerRoot) Focus(delegate func(p tview.Primitive)) {
+	r.mu.Lock()
+	widget := r.current
+	r.mu.Unlock()
+
+	delegate(widget)
 }
 
 // passphraseAccept refuses passphrase input over 128 bytes, not UTF-8, or with a control character.
@@ -63,12 +88,12 @@ func newPicker(ctx context.Context, s *state.State, t *tui.TUI) *picker {
 	p.field = tview.NewInputField().SetMaskCharacter('*').SetAcceptanceFunc(passphraseAccept).SetDoneFunc(p.passphraseDone)
 	p.status = tview.NewTextView().SetText("Scanning...")
 
-	p.root = tview.NewFlex().SetDirection(tview.FlexRow).
+	p.root = &pickerRoot{current: p.list, Flex: tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(tview.NewTextView().SetText("Connect to Wi-Fi"), 1, 0, false).
 		AddItem(p.list, 0, 1, true).
 		AddItem(p.field, 1, 0, false).
 		AddItem(p.status, 1, 0, false).
-		AddItem(tview.NewTextView().SetText("Up/Down choose - Enter connect - R rescan"), 1, 0, false)
+		AddItem(tview.NewTextView().SetText("Up/Down choose - Enter connect - R rescan"), 1, 0, false)}
 	p.root.SetBorder(true)
 
 	return p
@@ -111,6 +136,8 @@ func (p *picker) hide() {
 // wait for itself (QueueUpdate returns only after the loop ran it), so the
 // update is queued from another goroutine.
 func (p *picker) focus(widget tview.Primitive) {
+	p.root.setCurrent(widget)
+
 	go func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()

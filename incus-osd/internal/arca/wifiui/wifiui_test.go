@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rivo/tview"
+
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
@@ -97,5 +99,19 @@ func TestPassphraseFieldCap(t *testing.T) {
 		if passphraseAccept(text, rune(text[len(text)-1])) || passphraseAccept(text, 0) {
 			t.Errorf("a control character was accepted in %q", text)
 		}
+	}
+}
+
+func TestPickerRootFocus(t *testing.T) {
+	list, field := tview.NewList(), tview.NewInputField()
+	root := &pickerRoot{Flex: tview.NewFlex().AddItem(list, 0, 1, true).AddItem(field, 1, 0, false), current: list}
+
+	var got tview.Primitive
+
+	root.setCurrent(field)
+	root.Focus(func(p tview.Primitive) { got = p })
+
+	if got != field {
+		t.Errorf("the root gave the focus to %T, want the passphrase field", got)
 	}
 }
