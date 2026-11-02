@@ -274,7 +274,7 @@ secret_scan() {
 	grep -qiFf "$d/secret.pats" "$d/console.txt" && echo "leak: the console capture"
 	grep -rqiFf "$d/secret.pats" /run/systemd/network 2>/dev/null && echo "leak: /run/systemd/network"
 	for c in /proc/[0-9]*/cmdline; do
-		cat "$c" 2>/dev/null | tr '\0' ' ' > "$d/cmd.txt" || continue
+		tr '\0' ' ' < "$c" 2>/dev/null > "$d/cmd.txt" || continue
 		grep -qiFf "$d/secret.pats" "$d/cmd.txt" && echo "leak: $c"
 	done
 	rm -f "$j" "$d/cmd.txt"
