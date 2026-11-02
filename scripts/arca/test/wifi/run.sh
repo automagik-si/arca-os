@@ -169,6 +169,8 @@ diagnostics() {
 		echo "== station events"
 		journalctl -b0 -u 'arca-wifi@*' --no-pager -o short-unix 2>/dev/null \
 			| grep -E 'CTRL-EVENT-(CONNECTED|DISCONNECTED|SSID-TEMP-DISABLED|BEACON-LOSS|ASSOC-REJECT)|Trying to associate|Associated with' | tail -n 40 || true
+		echo "== kernel warnings in mac80211 and the simulated radios (count, place)"
+		journalctl -b0 -k --no-pager -o cat 2>/dev/null | grep -oE 'WARNING: [^ ]*(mac80211|hwsim)[^ ]*' | sort | uniq -c || true
 	} >"$out"
 	if [ -s "$d/velho.pass" ] && { grep -qF -f "$d/velho.pass" "$out" || grep -qiF "$(od -An -tx1 "$d/velho.pass" | tr -d ' \n')" "$out"; }; then
 		echo "wifi-test: the diagnostics hold the passphrase; withheld"
@@ -236,7 +238,13 @@ ip -n ap link set d0 up
 ip -n ap addr add 10.42.1.1/24 dev "$apif"
 ip netns exec ap sysctl -qw net.ipv4.ip_forward=1
 tr -dc a-z0-9 < /dev/urandom | head -c 24 > "$d/velho.pass"
-{ printf "interface=%s\ndriver=nl80211\nssid=Velho\nhw_mode=g\nchannel=1\nieee80211n=1\n" "$apif"
+# fragm_threshold: hwsim takes CCMP keys as hardware keys and encrypts in its
+# own transmit, but mac80211 fast-xmit reserves no room for the CCMP header and
+# MIC there, so a data frame without 8 spare bytes at either end is dropped
+# ("WARNING: net/mac80211/wpa.c" in the kernel log), on every retransmission of
+# it too, and a download stalls. Any fragmentation threshold turns fast-xmit off
+# for this radio; 2346 is above every frame here, so nothing is fragmented.
+{ printf "interface=%s\ndriver=nl80211\nssid=Velho\nhw_mode=g\nchannel=1\nieee80211n=1\nfragm_threshold=2346\n" "$apif"
   printf "wpa=2\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\nwpa_passphrase="; cat "$d/velho.pass"; echo; } > "$d/velho.conf"
 ip netns exec ap hostapd -B -t -P "$d/hostapd.pid" -f "$d/hostapd.log" "$d/velho.conf" >/dev/null
 for _ in $(seq 20); do ip -n ap addr show dev "$apif" | grep -q "state UP" && break; sleep 1; done
@@ -324,8 +332,10 @@ if [ -z "$detail" ] && ! { vexec systemctl restart arca-wifi-hwsim.service && hw
 fi
 vexec rm -f "$D/velho.events" "$D/enter.events"
 vexec systemctl stop arca-test-sampler.service 2>/dev/null || true
+# Reported, not judged: dropped encrypted frames (see fragm_threshold above).
+ccmp=$(vexec journalctl -b0 -k --no-pager -o cat 2>/dev/null | grep -c 'WARNING: net/mac80211/wpa\.c' || true)
 if [ -z "$detail" ]; then
-	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; picker closed; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'; hwsim unit restarts cleanly"
+	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; picker closed; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'; hwsim unit restarts cleanly; ${ccmp:-?} CCMP drop warnings in the kernel log"
 else
 	result FAIL join "$detail"
 	diagnose
