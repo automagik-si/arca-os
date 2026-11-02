@@ -115,9 +115,14 @@ head -n 1 "$fwlist"
 usrfs=''
 for f in "${usr[@]}"; do case "$f" in *-verity*) ;; *) usrfs=$f ;; esac; done
 [ -n "$usrfs" ] || die "no usr filesystem image for $version"
-sb() { od -An --endian=little -t "$1" -j "$2" -N "$3" "$usrfs" | tr -d ' '; }
+sb() { od -An --endian=little -t "$1" -j "$2" -N "$3" "$usrfs" 2>/dev/null | tr -d ' \n' || true; }
+# The superblock is 128 bytes; a block is 512 bytes to 64 KiB.
+[ "$(stat -c %s "$usrfs")" -ge 1152 ] || die "$usrfs is too short for an erofs superblock"
 [ "$(sb x4 1024 4)" = e0f5e1e2 ] || die "$usrfs has no erofs superblock"
-usr_bytes=$(( $(sb u4 1060 4) << $(sb u1 1036 1) ))
+usr_blocks=$(sb u4 1060 4) usr_blkszbits=$(sb u1 1036 1)
+[[ "$usr_blocks" =~ ^[0-9]+$ && "$usr_blkszbits" =~ ^[0-9]+$ ]] && [ "$usr_blkszbits" -ge 9 ] && [ "$usr_blkszbits" -le 16 ] \
+	|| die "$usrfs: short or bad erofs superblock (blocks '$usr_blocks', blkszbits '$usr_blkszbits')"
+usr_bytes=$(( usr_blocks << usr_blkszbits ))
 usr_size=$(stat -c %s "$usrfs")
 awk -v u="$usr_bytes" -v s="$usr_size" 'BEGIN { printf "usr: %.1f MiB used of %d MiB\n", u / 1048576, s / 1048576 }'
 uki="mkosi.output/${osname}_${version}.efi"
