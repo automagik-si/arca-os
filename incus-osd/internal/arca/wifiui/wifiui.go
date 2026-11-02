@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rivo/tview"
+
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
@@ -29,6 +31,16 @@ import (
 
 // defaultServerURL is the images provider's server when none is configured.
 const defaultServerURL = "https://images.linuxcontainers.org/os"
+
+// errGuardTimeout is a commit that gave up waiting for another network change.
+var errGuardTimeout = errors.New("another network change is still running")
+
+// overlay is the console's overlay page, as *tui.TUI provides it.
+type overlay interface {
+	ShowArcaOverlay(root tview.Primitive, focus tview.Primitive)
+	HideArcaOverlay()
+	QueueArcaUpdate(f func())
+}
 
 var (
 	// applyFunc applies a network configuration the way the API's PUT does, then saves state.
@@ -48,6 +60,9 @@ var (
 
 	// guardTick waits between two looks at the network guards.
 	guardTick = func(ctx context.Context) error { return sleep(ctx, time.Second) }
+
+	// guardWait bounds a commit's wait for another network change.
+	guardWait = 5 * time.Minute
 
 	sysRoot  = "/sys"
 	active   atomic.Bool
@@ -244,10 +259,14 @@ func WaitOnline(ctx context.Context, s *state.State) error {
 
 // commit makes network n the first saved network and applies the configuration.
 // It first waits while a remote change awaits confirmation or another apply runs,
-// never calling into the apply meanwhile. One commit runs at a time.
+// never calling into the apply meanwhile, and gives up after guardWait. One
+// commit runs at a time.
 func commit(ctx context.Context, s *state.State, n api.SystemNetworkWirelessNetwork, status func(string)) error {
 	commitMu.Lock()
 	defer commitMu.Unlock()
+
+	waitCtx, cancel := context.WithTimeout(ctx, guardWait)
+	defer cancel()
 
 	waiting := false
 
@@ -258,9 +277,15 @@ func commit(ctx context.Context, s *state.State, n api.SystemNetworkWirelessNetw
 			waiting = true
 		}
 
-		err := guardTick(ctx)
-		if err != nil {
-			return err
+		err := guardTick(waitCtx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if err != nil || waitCtx.Err() != nil {
+			status("Another network change is still running after " + guardWait.String() + "; press Enter to try again")
+
+			return errGuardTimeout
 		}
 	}
 
@@ -277,16 +302,18 @@ func commit(ctx context.Context, s *state.State, n api.SystemNetworkWirelessNetw
 // withFirst returns a deep copy of cfg with n first among the saved networks,
 // replacing a saved network with the same SSID and security.
 func withFirst(cfg *api.SystemNetworkConfig, n api.SystemNetworkWirelessNetwork) (*api.SystemNetworkConfig, error) {
-	body, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-
 	next := &api.SystemNetworkConfig{}
 
-	err = json.Unmarshal(body, next)
-	if err != nil {
-		return nil, err
+	if cfg != nil {
+		body, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+
+		err = json.Unmarshal(body, next)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if next.Wireless == nil {

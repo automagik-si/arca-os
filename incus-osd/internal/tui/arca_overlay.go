@@ -14,15 +14,10 @@ const arcaPage = "arca"
 var arcaOverlay struct {
 	mu      sync.Mutex
 	enabled bool
-	visible bool
 }
 
 // ShowArcaOverlay puts root on top of the console as the overlay page and gives focus to focus.
 func (t *TUI) ShowArcaOverlay(root tview.Primitive, focus tview.Primitive) {
-	arcaOverlay.mu.Lock()
-	arcaOverlay.visible = true
-	arcaOverlay.mu.Unlock()
-
 	t.app.QueueUpdateDraw(func() {
 		t.pages.AddPage(arcaPage, root, true, true)
 		t.app.SetFocus(focus)
@@ -31,21 +26,9 @@ func (t *TUI) ShowArcaOverlay(root tview.Primitive, focus tview.Primitive) {
 
 // HideArcaOverlay removes the overlay page; the screen underneath shows again.
 func (t *TUI) HideArcaOverlay() {
-	arcaOverlay.mu.Lock()
-	arcaOverlay.visible = false
-	arcaOverlay.mu.Unlock()
-
 	t.app.QueueUpdateDraw(func() {
 		t.pages.RemovePage(arcaPage)
 	})
-}
-
-// ArcaOverlayVisible reports whether the overlay page is shown.
-func (*TUI) ArcaOverlayVisible() bool {
-	arcaOverlay.mu.Lock()
-	defer arcaOverlay.mu.Unlock()
-
-	return arcaOverlay.visible
 }
 
 // EnableArcaOverlay installs an input capture that swallows Ctrl-C, which would

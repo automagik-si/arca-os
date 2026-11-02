@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -14,7 +15,6 @@ import (
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
-	"github.com/lxc/incus-os/incus-osd/internal/tui"
 )
 
 var errNoDevice = errors.New("no Wi-Fi device answered")
@@ -23,7 +23,7 @@ var errNoDevice = errors.New("no Wi-Fi device answered")
 type picker struct {
 	ctx context.Context //nolint:containedctx
 	s   *state.State
-	t   *tui.TUI
+	t   overlay
 
 	root   *pickerRoot
 	list   *tview.List
@@ -34,6 +34,9 @@ type picker struct {
 	shown  bool
 	stop   chan struct{}
 	rescan chan struct{}
+
+	// committing is set while a commit runs; Enter is ignored meanwhile.
+	committing atomic.Bool
 
 	// Used on the TUI's event loop only.
 	entries    []wifi.Entry
@@ -71,7 +74,7 @@ func passphraseAccept(text string, _ rune) bool {
 	return wifi.PassphraseValid(text)
 }
 
-func newPicker(ctx context.Context, s *state.State, t *tui.TUI) *picker {
+func newPicker(ctx context.Context, s *state.State, t overlay) *picker {
 	p := &picker{ctx: ctx, s: s, t: t, rescan: make(chan struct{}, 1)}
 
 	p.list = tview.NewList().ShowSecondaryText(false).SetSelectedFunc(func(i int, _ string, _ string, _ rune) { p.choose(i) })
@@ -264,9 +267,10 @@ func (p *picker) setStatus(text string, fromScan bool) {
 	p.scanStatus = fromScan
 }
 
-// choose handles Enter on a network: an open one is joined, a WPA-Personal one asks for its passphrase.
+// choose handles Enter on a network: an open one is joined, a WPA-Personal one
+// asks for its passphrase. It does nothing while a commit runs.
 func (p *picker) choose(i int) {
-	if i < 0 || i >= len(p.entries) {
+	if i < 0 || i >= len(p.entries) || p.committing.Load() {
 		return
 	}
 
@@ -303,13 +307,24 @@ func (p *picker) passphraseDone(key tcell.Key) {
 	}
 }
 
-// connect commits the chosen network in the background; the status line follows it.
+// connect commits the chosen network in the background; the status line follows
+// it. It does nothing while another commit runs.
 func (p *picker) connect(passphrase string) {
+	if !p.committing.CompareAndSwap(false, true) {
+		return
+	}
+
 	n := api.SystemNetworkWirelessNetwork{SSID: p.chosen.SSID, Security: p.chosen.Security, Passphrase: passphrase}
 	status := func(text string) { p.t.QueueArcaUpdate(func() { p.setStatus(text, false) }) }
 
 	go func() {
+		defer p.committing.Store(false)
+
 		err := commit(p.ctx, p.s, n, status)
+		if errors.Is(err, errGuardTimeout) {
+			return
+		}
+
 		if err != nil {
 			status("Could not connect: " + err.Error())
 
