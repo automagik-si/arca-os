@@ -3,10 +3,12 @@ package wifi
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +16,17 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 )
+
+// UseSysRoot points the validation that looks at this machine's hardware at a
+// fake sysfs for the rest of the test. The external tests use it.
+func UseSysRoot(t *testing.T, root string) {
+	t.Helper()
+
+	saved := machineSysRoot
+	machineSysRoot = root
+
+	t.Cleanup(func() { machineSysRoot = saved })
+}
 
 func wpa(ssid string, passphrase string) *api.SystemNetworkWireless {
 	return &api.SystemNetworkWireless{
@@ -61,6 +74,8 @@ func TestPassphraseBound(t *testing.T) {
 		{"empty", "", false, false},
 		{"129 bytes", strings.Repeat("a", 129), false, false},
 		{"control character", "abcd\tefgh", false, false},
+		{"NUL", "abcd\x00efgh", false, false},
+		{"DEL", "abcd\x7fefgh", false, false},
 		{"invalid UTF-8", "abcdefgh\xff", false, false},
 	}
 
@@ -127,6 +142,76 @@ func TestWriteFilesModes(t *testing.T) {
 	}
 }
 
+// supplicantLine is one well-formed line of the supplicant configuration: a
+// global setting, the start or end of a network block, or one of its settings,
+// whose value holds no quote, brace, equals sign or line break.
+var supplicantLine = regexp.MustCompile(`^(ctrl_interface=DIR=/[a-z/-]+|[a-z_0-9]+=[A-Za-z0-9:,._ -]*|network=\{|\t[a-z_0-9]+=[A-Za-z0-9:._ -]*|\}|)$`)
+
+func TestWriteFilesHostileInput(t *testing.T) {
+	const passphrase = "abcdefgh"
+
+	for _, bad := range []string{"\n", "\"", "}", "="} {
+		for _, field := range []string{"ssid", "passphrase", "bssid", "country"} {
+			n := api.SystemNetworkWirelessNetwork{SSID: "Velho", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: passphrase, BSSID: "02:00:00:00:00:01"}
+			w := &api.SystemNetworkWireless{Addresses: []string{"dhcp4"}, Country: "US"}
+
+			switch field {
+			case "ssid":
+				n.SSID = "Vel" + bad + "ho"
+			case "passphrase":
+				n.Passphrase = "abcd" + bad + "efgh"
+			case "bssid":
+				n.BSSID += bad
+			case "country":
+				w.Country = "U" + bad
+			}
+
+			w.Networks = []api.SystemNetworkWirelessNetwork{n}
+			name := fmt.Sprintf("%q in the %s", bad, field)
+			root := t.TempDir()
+
+			err := WriteFiles(root, &api.SystemNetworkConfig{Wireless: w})
+			if err != nil {
+				if strings.Contains(err.Error(), n.Passphrase) || strings.Contains(err.Error(), hex.EncodeToString([]byte(n.Passphrase))) {
+					t.Errorf("%s: the error carries the passphrase", name)
+				}
+
+				_, statErr := os.Stat(filepath.Join(root, SupplicantConf))
+				if !os.IsNotExist(statErr) {
+					t.Errorf("%s: refused, but a supplicant config was written", name)
+				}
+
+				continue
+			}
+
+			// Only an SSID or a passphrase may hold these; both are rendered in hex.
+			if field != "ssid" && (field != "passphrase" || bad == "\n") {
+				t.Errorf("%s: accepted", name)
+			}
+
+			body, err := os.ReadFile(filepath.Join(root, SupplicantConf))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			conf := string(body)
+			for line := range strings.SplitSeq(strings.TrimSuffix(conf, "\n"), "\n") {
+				if !supplicantLine.MatchString(line) {
+					t.Errorf("%s: the supplicant config has the line %q", name, line)
+				}
+			}
+
+			if strings.Count(conf, "network={\n") != 1 || strings.Count(conf, "\n}\n") != 1 {
+				t.Errorf("%s: the supplicant config does not hold exactly one network block", name)
+			}
+
+			if !strings.Contains(conf, "\tssid="+hex.EncodeToString([]byte(n.SSID))+"\n") || strings.Contains(conf, n.Passphrase) {
+				t.Errorf("%s: the SSID is not in hex or the passphrase is in clear", name)
+			}
+		}
+	}
+}
+
 func fakeSys(t *testing.T, devices map[string]bool) string {
 	t.Helper()
 
@@ -176,6 +261,7 @@ func TestCountAddresses(t *testing.T) {
 		{"no wired device", &api.SystemNetworkConfig{Wireless: Defaults()}, noWifi, 2},
 		{"a saved network", &api.SystemNetworkConfig{Interfaces: wired, Wireless: wpa("Velho", "abcdefgh")}, noWifi, 2},
 		{"a Wi-Fi device", &api.SystemNetworkConfig{Interfaces: wired, Wireless: Defaults()}, withWifi, 2},
+		{"devices unknown", &api.SystemNetworkConfig{Interfaces: wired, Wireless: Defaults()}, "", 2},
 		{"no wireless object", &api.SystemNetworkConfig{}, withWifi, 0},
 	}
 
@@ -318,5 +404,68 @@ func TestScanWalk(t *testing.T) {
 	entries := Rank(got)
 	if len(entries) != 3 || entries[0].SSID != "Velho" || !entries[0].NotRecommended || !entries[1].SAE || entries[2].Security != api.SystemNetworkWirelessSecurityOpen {
 		t.Errorf("Rank = %+v", entries)
+	}
+}
+
+func TestUnescapeSSIDMalformed(t *testing.T) {
+	for in, want := range map[string]string{
+		`Velho`:       "Velho",
+		`Caf\xc3\xa9`: "Café",
+		`a\"b\\c`:     `a"b\c`,
+		`tab\tnl\n`:   "tab\tnl\n",
+		`trailing\`:   `trailing\`,
+		`short\x4`:    `short\x4`,
+		`end\x`:       `end\x`,
+		`nothex\xzz`:  `nothex\xzz`,
+		`unknown\q`:   "unknownq",
+		`nul\x00byte`: "nul\x00byte",
+		`\x`:          `\x`,
+		`\`:           `\`,
+		``:            "",
+	} {
+		got := unescapeSSID(in)
+		if got != want {
+			t.Errorf("unescapeSSID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseBSSMalformed(t *testing.T) {
+	for _, reply := range []string{"", "FAIL\n", "UNKNOWN COMMAND\n", "bssid=02:00:00:00:00:01\nssid=Velho\n", "id=x\nssid=Velho\n", "id=\n", "garbage"} {
+		_, err := parseBSS(reply)
+		if err == nil {
+			t.Errorf("parseBSS(%q) gave no error", reply)
+		}
+	}
+
+	bss, err := parseBSS("id=4\nfreq=abc\nlevel=\nie=00zz\nno line\n=empty key\nflags=[ESS]\nssid=Velho\nssid2=x\n")
+	if err != nil || bss.ID != 4 || bss.Freq != 0 || bss.Level != 0 || bss.IEs != nil || bss.Flags != "[ESS]" || bss.SSID != "Velho" {
+		t.Errorf("parseBSS of a malformed reply = %+v, %v", bss, err)
+	}
+}
+
+func TestScanMalformedReply(t *testing.T) {
+	for _, bss := range [][]string{
+		{"FAIL\n"},
+		{"id=0\nbssid=02:00:00:00:00:01\nfreq=2412\nlevel=-40\nflags=[ESS]\nssid=Velho\n", "no id here\n"},
+	} {
+		dir := t.TempDir()
+		fakeSupplicant(t, dir, bss, make(chan string, 32))
+
+		conn, err := Dial(dir, "wlan0")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		got, err := conn.Scan(ctx)
+		if err == nil {
+			t.Errorf("Scan of %q read %+v and no error", bss, got)
+		}
+
+		cancel()
+
+		_ = conn.Close()
 	}
 }

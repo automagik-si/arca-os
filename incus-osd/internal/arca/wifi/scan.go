@@ -190,7 +190,6 @@ type BSS struct {
 	Flags string
 	SSID  string
 	IEs   []byte
-	NoIEs bool
 }
 
 // Scan asks for a scan, waits up to 15 s for its results, and walks them one BSS
@@ -272,7 +271,10 @@ func parseBSS(reply string) (BSS, error) {
 		case "level":
 			bss.Level, _ = strconv.Atoi(value)
 		case "ie":
-			bss.IEs, _ = hex.DecodeString(value)
+			ies, err := hex.DecodeString(value)
+			if err == nil {
+				bss.IEs = ies
+			}
 		case "flags":
 			bss.Flags = value
 		case "ssid":

@@ -86,27 +86,32 @@ func IsDevice(sysRoot string, name string) bool {
 	return err == nil
 }
 
-// SysRoot returns the sysfs root that validation looks at: "/sys" when the
-// configuration must match this machine's hardware, and none otherwise.
+// machineSysRoot is this machine's sysfs. Tests point it at a fake one.
+var machineSysRoot = "/sys"
+
+// SysRoot returns the sysfs root that validation looks at: this machine's when
+// the configuration must match its hardware, and none otherwise (a first pass,
+// or a configuration checked on another machine, such as a build host).
 func SysRoot(requireValidMAC bool) string {
 	if requireValidMAC {
-		return "/sys"
+		return machineSysRoot
 	}
 
 	return ""
 }
 
 // CountAddresses returns how many Wi-Fi addresses count towards the configuration
-// having at least one. The defaults count only when no wired device is configured,
-// when a network is saved, or when a Wi-Fi device exists, so a wired machine keeps
-// its "zero IP addresses" error.
+// having at least one. The defaults count when no wired device is configured, when
+// a network is saved, or when a Wi-Fi device exists, so a wired machine without
+// Wi-Fi keeps its "zero IP addresses" error. With an empty sysRoot the devices are
+// unknown and the defaults count: the pass that looks at the hardware decides.
 func CountAddresses(cfg *api.SystemNetworkConfig, sysRoot string) int {
 	if cfg == nil || cfg.Wireless == nil {
 		return 0
 	}
 
 	wired := len(cfg.Interfaces) > 0 || len(cfg.Bonds) > 0 || len(cfg.VLANs) > 0
-	if !wired || cfg.Wireless.HasNetworks() {
+	if !wired || cfg.Wireless.HasNetworks() || sysRoot == "" {
 		return len(cfg.Wireless.Addresses)
 	}
 
@@ -211,7 +216,7 @@ func Validate(cfg *api.SystemNetworkConfig, requireValidMAC bool, sysRoot string
 				return fmt.Errorf("wireless network %d: an open network takes no passphrase", i)
 			}
 		default:
-			return fmt.Errorf("wireless network %d: security %q is not wpa-personal or open", i, n.Security)
+			return fmt.Errorf("wireless network %d: the security is not wpa-personal or open", i)
 		}
 	}
 
@@ -343,8 +348,14 @@ func RenderSupplicant(w *api.SystemNetworkWireless) string {
 
 // WriteFiles writes the supplicant configuration (0600, in the 0700 RunDir) and
 // the .network (0644) under root, "" meaning /. Both are written on every apply,
-// with the defaults when the configuration has no wireless object.
+// with the defaults when the configuration has no wireless object. A configuration
+// that Validate refuses writes nothing.
 func WriteFiles(root string, cfg *api.SystemNetworkConfig) error {
+	err := Validate(cfg, false, "", nil)
+	if err != nil {
+		return err
+	}
+
 	if root == "" {
 		root = "/"
 	}
@@ -356,7 +367,7 @@ func WriteFiles(root string, cfg *api.SystemNetworkConfig) error {
 
 	dir := filepath.Join(root, RunDir)
 
-	err := os.MkdirAll(dir, 0o700)
+	err = os.MkdirAll(dir, 0o700)
 	if err != nil {
 		return err
 	}
