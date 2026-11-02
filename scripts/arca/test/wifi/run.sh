@@ -28,7 +28,7 @@
 #                    arca-wifi-hwsim.service, active with its monitor device
 #                    in namespace hwsim, starts again cleanly
 # On a FAIL it prints, to stderr, what tells a stalled download apart: a byte
-# timeline of the server's connections (every 5 s), the server's requests, the
+# timeline of the download connection (every 5 s), the server's requests, the
 # incus-osd journal around the longest stall, and the access point's and the
 # station's connect and disconnect events. They are put together in the VM and
 # withheld there when they hold the passphrase or its hex form.
@@ -94,28 +94,33 @@ type_keys() { vsh 'n=$(grep -l "^arca-test-keyboard$" /sys/class/input/event*/de
 vm_fn() { local f=$1; shift; vexec bash -c "$(declare -f "$f"); $f \"\$@\"" "$f" "$@"; }
 
 # sampler <port> <file> (in the VM): every 5 s, one line of numbers and test
-# addresses: the server's connections (count, acked bytes, send queue,
-# retransmits), the station side's unread bytes, incus-osd's written bytes, io
-# pressure, and the connected station's signal.
+# addresses: the server's open connections, then the download's alone (the
+# connection that has acked the most bytes, named by the station's port: its
+# acked bytes, send queue and retransmits, and the station side's unread bytes
+# on it; the small HEAD checks run on other connections and never count),
+# incus-osd's written bytes, io pressure, and the connected station's signal.
 sampler() {
-	local port=$1 out=$2 srv cli pid wb io sta n x
+	local port=$1 out=$2 srv dl cli pid wb io sta n x
 	while :; do
 		# shellcheck disable=SC2016  # awk programs
 		srv=$(ip netns exec ap ss -Htin "( sport = :$port )" 2>/dev/null | awk '
-			/^[^ \t]/ { est = $1 == "ESTAB"; if (est) { n++; q += $3 } next }
+			function keep() { if (est && a >= ba) { ba = a; bp = p; bq = q; br = r } }
+			/^[^ \t]/ { keep(); est = $1 == "ESTAB"; a = 0; r = 0; if (est) { n++; q = $3; p = $5; sub(".*:", "", p) } next }
 			est { for (i = 1; i <= NF; i++) {
-				if ($i ~ /^bytes_acked:/) { split($i, v, ":"); b += v[2] }
-				if ($i ~ /^retrans:/) { split($i, v, "[:/]"); r += v[3] } } }
-			END { printf "conns=%d acked=%d sendq=%d retrans=%d", n, b, q, r }')
+				if ($i ~ /^bytes_acked:/) { split($i, v, ":"); a = v[2] }
+				if ($i ~ /^retrans:/) { split($i, v, "[:/]"); r = v[3] } } }
+			END { keep(); printf "conns=%d dl=%s acked=%d sendq=%d retrans=%d", n, (n ? bp : "-"), ba, bq, br }')
+		dl=$(printf '%s' "$srv" | sed -n 's/.* dl=\([0-9]*\) .*/\1/p')
+		cli="recvq=0"
 		# shellcheck disable=SC2016
-		cli=$(ss -Htn "( dport = :$port )" 2>/dev/null | awk '/^ESTAB/ { q += $2 } END { printf "recvq=%d", q }')
+		[ -z "$dl" ] || cli=$(ss -Htn "( sport = :$dl and dport = :$port )" 2>/dev/null | awk '/^ESTAB/ { q += $2 } END { printf "recvq=%d", q }')
 		pid=$(systemctl show -p MainPID --value incus-osd.service)
 		wb=$(awk '/^write_bytes/ { print $2 }' "/proc/$pid/io" 2>/dev/null)
 		io=$(awk '/^some/ { sub("avg10=", "", $2); print $2 }' /proc/pressure/io 2>/dev/null)
 		sta=""
 		for n in /sys/class/net/*; do
 			[ -e "$n/phy80211" ] || continue
-			x=$(iw dev "${n##*/}" link 2>/dev/null | awk '/^Connected/ { c = 1 } /signal:/ { s = $2 } END { if (c) print s }')
+			x=$(iw dev "${n##*/}" station dump 2>/dev/null | awk '$1 == "signal:" { print $2; exit }')
 			[ -z "$x" ] || sta="${n##*/}:$x"
 		done
 		echo "$(date +%s) $srv $cli osd_write=${wb:-?} io_some10=${io:-?} sta=${sta:-none}"
@@ -132,15 +137,17 @@ diagnostics() {
 		echo "== last incus-osd and supplicant lines"
 		journalctl -b0 -u incus-osd -u 'arca-wifi@*' -n 40 --no-pager -o cat 2>/dev/null || true
 		if [ -s "$d/timeline.log" ]; then
-			echo "== server connections every 5 s, when they change (VM time, seconds)"
+			echo "== the download connection every 5 s, when it changes (VM time, seconds)"
 			# shellcheck disable=SC2016  # awk programs
-			awk '{ k = $2 " " $3 " " $6 } NR == 1 || k != prev { print; p = NR } { prev = k; last = $0 } END { if (p != NR) print last }' "$d/timeline.log" | tail -n 150
-			# The longest run of samples with open connections and no new acked byte.
+			awk '{ k = $2 " " $3 " " $4 " " $7 } NR == 1 || k != prev { print; p = NR } { prev = k; last = $0 } END { if (p != NR) print last }' "$d/timeline.log" | tail -n 150
+			# The longest run of samples in which the same download connection has
+			# unacked bytes and no new acked byte.
 			# shellcheck disable=SC2016
-			stall=$(awk '{ split($2, c, "="); split($3, a, "="); stalled = NR > 1 && c[2] > 0 && pc > 0 && a[2] == pa }
+			stall=$(awk '{ split($3, d, "="); split($4, a, "="); split($5, q, "=")
+					stalled = NR > 1 && d[2] != "-" && d[2] == pd && a[2] == pa && q[2] > 0 }
 				stalled { if (s == "") s = pt; if ($1 - s > best) { best = $1 - s; bs = s } }
 				!stalled { s = "" }
-				{ pa = a[2]; pc = c[2]; pt = $1 }
+				{ pa = a[2]; pd = d[2]; pt = $1 }
 				END { if (best > 0) print bs, best }' "$d/timeline.log")
 			if [ -n "$stall" ]; then
 				# shellcheck disable=SC2086  # two numbers
