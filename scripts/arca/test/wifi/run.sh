@@ -42,9 +42,19 @@
 #                    the console capture holds "already in progress", and
 #                    arca-wifi-hwsim.service, active with its monitor device in
 #                    namespace hwsim, starts again cleanly
+#   api-edit         through the local API: a PUT adds Velho second with its
+#                    passphrase; GET lists it with an empty passphrase; a PUT of
+#                    that GET body keeps the psk= lines of the 0600 config (compared
+#                    by hash); a new WPA-Personal network without a passphrase gets
+#                    a 400; a wireless firewall rule shows in nft list ruleset on wl*
+#   in-process       a PUT of the current configuration runs in the background; while
+#                    its apply holds the guard, GET shows configuration_in_process
+#                    true and a second PUT is refused with "already in progress";
+#                    after the first PUT returns, GET shows false
 #   secret           no passphrase, hex form or PSK of Velho, Casa or Casa-6E is
-#                    in the journal, the console capture, /run/systemd/network/ or
-#                    any /proc/*/cmdline (the checks run in the VM); each place
+#                    in the journal, the console capture, /run/systemd/network/,
+#                    any /proc/*/cmdline or the GET bodies of api-edit and
+#                    in-process (the checks run in the VM); each place
 #                    must be read (the journal holds the picker's line, the
 #                    console capture is not empty, /run/systemd/network holds a
 #                    file, at least one cmdline is read), and the search must
@@ -213,7 +223,10 @@ ap_setup() {
 	# it is checked. dnsmasq adds the loopback to --interface by itself, and every
 	# instance would bind 127.0.0.1:53 in namespace ap, where the second fails
 	# ("Address already in use"), so each excepts lo; its DHCP socket is bound to
-	# its own radio. On a failure, ap_report says which step failed.
+	# its own radio. dnsmasq with no upstream server answers REFUSED for any name it
+	# does not hold, which the apply's DNS wait does not take for a live server, so
+	# linuxcontainers.org is answered NXDOMAIN (--local), which it does (a PUT waits
+	# for DNS; the startup apply does not). On a failure, ap_report says which step failed.
 	ap_start() {
 		local k=$1 name=$2 w=${ifs[$1]} phy=${phys[$1]} why=""
 		if ! ip netns exec ap hostapd -B -t -P "$d/$name.pid" -f "$d/$name.log" "$d/$name.conf" >"$d/$name.start" 2>&1; then
@@ -230,7 +243,7 @@ ap_setup() {
 			why="the fragmentation threshold 2346 did not hold on $phy"
 		fi
 		if [ -z "$why" ] && ! ip netns exec ap dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --bind-interfaces \
-			--interface="$w" --except-interface=lo \
+			--interface="$w" --except-interface=lo --local=/linuxcontainers.org/ \
 			--dhcp-range="10.42.$k.10,10.42.$k.200,255.255.255.0,1h" --dhcp-option=option:router,"10.42.$k.1" \
 			--dhcp-option=option:dns-server,"10.42.$k.1" --dhcp-leasefile="$d/$name.leases" \
 			--pid-file="$d/$name-dnsmasq.pid" --user=root --group=root --log-facility="$d/$name-dnsmasq.log" \
@@ -360,6 +373,14 @@ secret_scan() {
 	else
 		echo "missing: /run/systemd/network"
 	fi
+	# The GET bodies of api-edit and in-process: their passphrases are blanked, so the
+	# search finds none, and Velho must be in them (the search reads something).
+	cat "$d"/get-api*.json "$d"/get-inproc*.json > "$d/get.all" 2>/dev/null || true
+	gets=$(cat "$d/get.all" 2>/dev/null | wc -c)
+	[ "$gets" -gt 0 ] || echo "missing: the GET output of api-edit and in-process"
+	grep -Eq '"ssid": ?"Velho"' "$d/get.all" 2>/dev/null || echo "missing: Velho in the GET output"
+	look "the GET output" "$d/get.all"
+	rm -f "$d/get.all"
 	for c in /proc/[0-9]*/cmdline; do
 		tr '\0' ' ' < "$c" 2>/dev/null > "$d/cmd.txt" || continue
 		cmds=$((cmds + 1))
@@ -369,9 +390,109 @@ secret_scan() {
 	done
 	[ "$cmds" -gt 0 ] || echo "missing: any /proc/*/cmdline"
 	rm -f "$j" "$d/cmd.txt"
-	echo "read: $(grep -c '' "$d/console.txt" 2>/dev/null || echo 0) console lines, $files files in /run/systemd/network, $cmds cmdlines"
+	echo "read: $(grep -c '' "$d/console.txt" 2>/dev/null || echo 0) console lines, $files files in /run/systemd/network, $cmds cmdlines, $gets GET bytes"
 	echo "secret-scan: done"
 	return 0
+}
+
+# api_edit <dir> (in the VM, bash): the api-edit steps, through the local API. It
+# prints "api-edit: ok", or "api-edit: <step>: <what failed>" for the first step that
+# does not hold. A request body is in <dir> only while it is sent (the one that adds
+# Velho holds its passphrase); the GET bodies stay there, with the passphrases blanked,
+# for the secret search. Only words are printed, never a body.
+api_edit() {
+	local d=$1 sock=/run/incus-os/unix.socket conf=/run/incus-os/wifi/wpa_supplicant.conf
+	local code err h1 h2
+	fail() { echo "api-edit: $1: $2"; }
+	get() { curl -sf --max-time 30 --unix-socket "$sock" -o "$1" http://localhost/1.0/system/network; }
+	# put <body file>: PUT it, removing it; code is the HTTP status, err a refusal's message.
+	put() {
+		code=$(curl -s -o "$d/put.out" -w '%{http_code}' --max-time 300 --unix-socket "$sock" -X PUT \
+			-H 'Content-Type: application/json' --data-binary "@$1" http://localhost/1.0/system/network) || code=000
+		rm -f "$1"
+		err=$(jq -r '.error // empty' "$d/put.out" 2>/dev/null | head -c 120)
+		rm -f "$d/put.out"
+	}
+	psks() { grep -E '^[[:space:]]*psk=' "$conf" | sha256sum; }
+
+	get "$d/get-api1.json" || { fail get1 "the GET failed"; return 0; }
+	jq -e '.metadata.config.wireless.networks | any(.ssid == "Casa")' "$d/get-api1.json" >/dev/null \
+		|| { fail get1 "no saved Casa network"; return 0; }
+	jq -e '[.metadata.config.wireless.networks[] | .passphrase // ""] | all(. == "")' "$d/get-api1.json" >/dev/null \
+		|| { fail get1 "a passphrase is in the GET body"; return 0; }
+
+	jq --rawfile pass "$d/velho.pass" \
+		'{config: (.metadata.config | .wireless.networks += [{ssid: "Velho", security: "wpa-personal", passphrase: $pass}])}' \
+		"$d/get-api1.json" > "$d/put.json" || { fail add-velho "the body could not be built"; return 0; }
+	put "$d/put.json"
+	[ "$code" = 200 ] || { fail add-velho "PUT status $code${err:+: $err}"; return 0; }
+
+	get "$d/get-api2.json" || { fail get2 "the GET failed"; return 0; }
+	jq -e '.metadata.config.wireless.networks | any(.ssid == "Velho" and .security == "wpa-personal" and ((.passphrase // "") == ""))' \
+		"$d/get-api2.json" >/dev/null || { fail get2 "Velho is not listed with an empty passphrase"; return 0; }
+	jq -e '[.metadata.config.wireless.networks[] | .passphrase // ""] | all(. == "")' "$d/get-api2.json" >/dev/null \
+		|| { fail get2 "a passphrase is in the GET body"; return 0; }
+
+	[ "$(grep -cE '^[[:space:]]*psk=' "$conf")" = 2 ] || { fail psk "the supplicant configuration does not hold two psk= lines"; return 0; }
+	[ "$(stat -c %a "$conf")" = 600 ] || { fail psk "the supplicant configuration is not mode 600"; return 0; }
+	h1=$(psks)
+	jq '{config: .metadata.config}' "$d/get-api2.json" > "$d/put.json"
+	put "$d/put.json"
+	[ "$code" = 200 ] || { fail keep-psk "a PUT of the GET body gave status $code${err:+: $err}"; return 0; }
+	h2=$(psks)
+	[ "$h1" = "$h2" ] || { fail keep-psk "the psk= lines changed"; return 0; }
+
+	jq '{config: (.metadata.config | .wireless.networks += [{ssid: "Nova", security: "wpa-personal"}])}' \
+		"$d/get-api2.json" > "$d/put.json"
+	put "$d/put.json"
+	[ "$code" = 400 ] || { fail nova "a new WPA-Personal network without a passphrase gave status $code, not 400"; return 0; }
+
+	jq '{config: (.metadata.config | .wireless.firewall_rules = [{action: "drop", protocol: "tcp", port: 2222}])}' \
+		"$d/get-api2.json" > "$d/put.json"
+	put "$d/put.json"
+	[ "$code" = 200 ] || { fail firewall "PUT status $code${err:+: $err}"; return 0; }
+	nft list ruleset | grep -qF 'iifname "wl*" tcp dport 2222 drop' \
+		|| { fail firewall "no wl* rule in nft list ruleset"; return 0; }
+	echo "api-edit: ok"
+}
+
+# inproc <dir> (in the VM, bash): the in-process steps, prints "in-process: ok" or
+# "in-process: <what failed>". The first PUT carries the current configuration (its
+# passphrases are kept by the API) and runs in the background. While its apply holds
+# the guard, GET shows configuration_in_process true and a second PUT is refused with
+# "already in progress"; once the first PUT has returned, GET shows false again.
+inproc() {
+	local d=$1 sock=/run/incus-os/unix.socket i code
+	get() { curl -sf --max-time 30 --unix-socket "$sock" -o "$1" http://localhost/1.0/system/network; }
+	get "$d/get-inproc.json" || { echo "in-process: the GET failed"; return 0; }
+	jq '{config: .metadata.config}' "$d/get-inproc.json" > "$d/put-inproc.json"
+	rm -f "$d/inproc.done"
+	# shellcheck disable=SC2016  # the inner shell expands its own $1 and $2
+	nohup sh -c 'curl -s -o "$1/inproc.out" -w "%{http_code}" --max-time 300 --unix-socket "$2" -X PUT -H "Content-Type: application/json" --data-binary "@$1/put-inproc.json" http://localhost/1.0/system/network >"$1/inproc.code" 2>/dev/null; echo done >"$1/inproc.done"' sh "$d" "$sock" >/dev/null 2>&1 </dev/null &
+	i=0
+	while [ "$i" -lt 60 ]; do
+		get "$d/get-inproc.json" && jq -e '.metadata.state.configuration_in_process == true' "$d/get-inproc.json" >/dev/null && break
+		i=$((i + 1))
+		sleep 1
+	done
+	[ "$i" -lt 60 ] || { echo "in-process: no GET showed configuration_in_process true within 60 s"; return 0; }
+	code=$(curl -s -o "$d/inproc2.out" -w '%{http_code}' --max-time 60 --unix-socket "$sock" -X PUT \
+		-H 'Content-Type: application/json' --data-binary "@$d/put-inproc.json" http://localhost/1.0/system/network) || code=000
+	grep -q 'already in progress' "$d/inproc2.out" \
+		|| { echo "in-process: a second PUT was not refused with 'already in progress' (status $code)"; return 0; }
+	rm -f "$d/inproc2.out"
+	i=0
+	while [ ! -e "$d/inproc.done" ] && [ "$i" -lt 300 ]; do
+		i=$((i + 1))
+		sleep 1
+	done
+	[ -e "$d/inproc.done" ] || { echo "in-process: the first PUT did not return within 300 s"; return 0; }
+	[ "$(cat "$d/inproc.code")" = 200 ] || { echo "in-process: the first PUT gave status $(cat "$d/inproc.code")"; return 0; }
+	get "$d/get-inproc2.json" || { echo "in-process: the GET after the first PUT failed"; return 0; }
+	jq -e '.metadata.state.configuration_in_process == false' "$d/get-inproc2.json" >/dev/null \
+		|| { echo "in-process: the GET after the first PUT does not show false"; return 0; }
+	rm -f "$d/put-inproc.json" "$d/inproc.out" "$d/inproc.code" "$d/inproc.done"
+	echo "in-process: ok"
 }
 
 # sampler <port> <file> (in the VM): every 5 s, one line of numbers and test
@@ -657,6 +778,28 @@ else
 	diagnose
 fi
 
+# --- api-edit ----------------------------------------------------------------------
+# The saved networks edited through the local API (api_edit in the VM). The case
+# reports the first step that fails, in words; no body leaves the VM.
+api=$(vm_fn api_edit "$D" 2>/dev/null) || true
+line=$(grep '^api-edit: ' <<<"$api" | head -n 1 || true)
+if [ "$line" = "api-edit: ok" ]; then
+	result PASS api-edit "Velho added second with its passphrase; GET lists it with an empty passphrase; a PUT of that GET body keeps the two psk= lines (compared by hash); a new WPA-Personal network without a passphrase gets 400; the wl* firewall rule is in nft list ruleset"
+else
+	result FAIL api-edit "${line#api-edit: }"
+fi
+
+# --- in-process --------------------------------------------------------------------
+# The guard during a PUT's apply (inproc in the VM): set on a GET while the apply runs,
+# a second PUT refused, cleared after the first returns.
+ip_out=$(vm_fn inproc "$D" 2>/dev/null) || true
+line=$(grep '^in-process: ' <<<"$ip_out" | head -n 1 || true)
+if [ "$line" = "in-process: ok" ]; then
+	result PASS in-process "a PUT of the current configuration held the guard while it applied: GET showed configuration_in_process true, a second PUT was refused with 'already in progress', and after the first PUT returned GET showed false"
+else
+	result FAIL in-process "${line#in-process: }"
+fi
+
 # --- secret ------------------------------------------------------------------------
 # The search runs in the VM against the patterns there; the console capture is
 # pushed in, and only the names of the places that hold a pattern come back.
@@ -673,7 +816,7 @@ elif [ "$(tail -n 1 <<<"$scan")" != "secret-scan: done" ]; then
 elif [ -n "$found" ]; then
 	result FAIL secret "$found"
 else
-	result PASS secret "no passphrase, hex form or PSK of Velho, Casa or Casa-6E in the journal (picker line present), the console capture, /run/systemd/network or any /proc/*/cmdline; read: $read_line"
+	result PASS secret "no passphrase, hex form or PSK of Velho, Casa or Casa-6E in the journal (picker line present), the console capture, /run/systemd/network, any /proc/*/cmdline or the GET output of api-edit and in-process; read: $read_line"
 fi
 
 # --- regdb -------------------------------------------------------------------------
