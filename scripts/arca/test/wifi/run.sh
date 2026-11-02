@@ -376,7 +376,8 @@ secret_scan() {
 	# The GET bodies of api-edit and in-process: their passphrases are blanked, so the
 	# search finds none, and Velho must be in them (the search reads something).
 	cat "$d"/get-api*.json "$d"/get-inproc*.json > "$d/get.all" 2>/dev/null || true
-	gets=$(cat "$d/get.all" 2>/dev/null | wc -c)
+	gets=0
+	[ -s "$d/get.all" ] && gets=$(wc -c < "$d/get.all")
 	[ "$gets" -gt 0 ] || echo "missing: the GET output of api-edit and in-process"
 	grep -Eq '"ssid": ?"Velho"' "$d/get.all" 2>/dev/null || echo "missing: Velho in the GET output"
 	look "the GET output" "$d/get.all"
