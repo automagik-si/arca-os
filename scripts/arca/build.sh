@@ -16,14 +16,22 @@
 # /srv/artifacts/os/<version>/, with this tree's test/metadata.tar.xz for
 # vm-test.sh, the kernel's BUILDINFO as kernel.BUILDINFO with --local-kernel,
 # and /srv/artifacts/os/latest points there.
+# It also copies the base image's Wi-Fi firmware list (usr/share/arca-wifi/
+# firmware.txt in the base tree) there as wifi-firmware.txt and prints its
+# first line, "wifi-firmware: <files> files, <bytes> bytes raw". It reads the
+# usr erofs filesystem's block count and block size from its superblock (the
+# usr image file is always the partition's full size), prints
+# "usr: <MiB> MiB used of <MiB> MiB" and the usr image and UKI file sizes, and
+# exits 1 before copying anything when usr uses more than 900 MiB.
 # The last line printed is "version: <version>".
 set -euo pipefail
 
 ARTIFACTS=/srv/artifacts/os
+USR_MAX_MIB=900
 target=build
 kdir=''
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'build: %s\n' "$*" >&2; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
@@ -97,6 +105,25 @@ for f in mkosi.output/*.raw; do
 done
 files+=(mkosi.output/*.manifest*)
 files+=(test/metadata.tar.xz)
+
+fwlist=mkosi.output/base/usr/share/arca-wifi/firmware.txt
+[ -s "$fwlist" ] || die "no $fwlist (the base image's Wi-Fi firmware list)"
+head -n 1 "$fwlist"
+# The usr partition is a fixed size, so its image file says nothing about use.
+# erofs keeps its superblock at byte 1024: blkszbits (u8) at +12, blocks
+# (le32) at +36.
+usrfs=''
+for f in "${usr[@]}"; do case "$f" in *-verity*) ;; *) usrfs=$f ;; esac; done
+[ -n "$usrfs" ] || die "no usr filesystem image for $version"
+sb() { od -An --endian=little -t "$1" -j "$2" -N "$3" "$usrfs" | tr -d ' '; }
+[ "$(sb x4 1024 4)" = e0f5e1e2 ] || die "$usrfs has no erofs superblock"
+usr_bytes=$(( $(sb u4 1060 4) << $(sb u1 1036 1) ))
+usr_size=$(stat -c %s "$usrfs")
+awk -v u="$usr_bytes" -v s="$usr_size" 'BEGIN { printf "usr: %.1f MiB used of %d MiB\n", u / 1048576, s / 1048576 }'
+uki="mkosi.output/${osname}_${version}.efi"
+echo "usr-image: $(basename "$usrfs") $usr_size bytes, $usr_bytes bytes used"
+echo "uki: $(basename "$uki") $(stat -c %s "$uki") bytes"
+[ "$usr_bytes" -le $((USR_MAX_MIB * 1048576)) ] || die "usr uses more than $USR_MAX_MIB MiB"
 if [ "$target" = build-iso ]; then
 	iso="mkosi.output/${osname}_${version}.iso"
 	[ -f "$iso" ] || die "no $iso"
@@ -108,6 +135,7 @@ log "copying ${#files[@]} files to $dest"
 rm -rf "$dest.tmp"
 install -d -m 0755 "$dest.tmp"
 cp --sparse=always -- "${files[@]}" "$dest.tmp/"
+cp -- "$fwlist" "$dest.tmp/wifi-firmware.txt"
 if [ -n "$kdir" ]; then
 	cp -- "$kdir/BUILDINFO" "$dest.tmp/kernel.BUILDINFO"
 fi

@@ -1,0 +1,162 @@
+# The Wi-Fi firmware arca-wifi.sh installs from the linux-firmware checkout.
+#
+# driver <text>: the WHENCE section whose "Driver:" line reads <text>. Every
+#   File:, RawFile: and Link: of it is installed. The sections are those of
+#   the Wi-Fi drivers this kernel builds (drivers/net/wireless, and r8723bs in
+#   staging); the Bluetooth sections of combo chips are left out.
+# iwlwifi <prefix glob> <api-min> <api-max>: an iwlwifi .ucode file,
+#   <prefix>-<api>.ucode, is installed only when its API is inside the window
+#   of the row whose glob matches its prefix; the kernel never asks for the
+#   others. Every .pnvm is installed. These rows are the output of
+#   scripts/arca/wifi-fw-windows.sh for the kernel's source tarball.
+driver ath9k_htc - Atheros HTC devices (USB)
+driver libertas - Marvell Libertas fullmac-type 802.11b/g cards
+driver libertas - Marvell Libertas 802.11b/g cards, OLPC firmware
+driver mwl8k - Marvell Libertas softmac-type 802.11b/g/n cards
+driver mwifiex - Marvell Wi-Fi fullmac-type 802.11n/ac cards
+driver iwlwifi - Intel Wireless Wifi
+driver rt61pci - Ralink RT2561, RT2561S, RT2661 wireless MACs
+driver rt73usb - Ralink RT2571W, RT2671 wireless MACs
+driver mt7601u - MediaTek MT7601U Wireless MACs
+driver rt2800pci - Ralink RT2860, RT2890, RT3090, RT3290, RT5390 wireless MACs
+driver rt2800usb - Ralink RT2870, RT3070, RT3071, RT3072, RT5370 wireless MACs
+driver brcmsmac - Broadcom 802.11n softmac wireless LAN driver.
+driver brcmfmac - Broadcom 802.11n fullmac wireless LAN driver.
+driver wl1251 - Texas Instruments 802.11 WLAN driver for WiLink4 chips
+driver wl12xx - Texas Instruments 802.11 WLAN driver for WiLink6/7 chips
+driver wl18xx - Texas Instruments 802.11 WLAN driver for WiLink8 chips
+driver rtl8192ce - Realtek 802.11n WLAN driver for RTL8192CE
+driver rtl8192cu - Realtek 802.11n WLAN driver for RTL8192CU
+driver rtl8192se - Realtek 802.11n WLAN driver for RTL8192SE
+driver rtl8192de - Realtek 802.11n WLAN driver for RTL8192DE
+driver rtl8192du - Realtek 802.11an WLAN driver for RTL8192DU
+driver rtl8723e - Realtek 802.11n WLAN driver for RTL8723E
+driver rtl8723be - Realtek 802.11n WLAN driver for RTL8723BE
+driver rtl8188ee - Realtek 802.11n WLAN driver for RTL8188EE
+driver rtl8821ae - Realtek 802.11n WLAN driver for RTL8812AE
+driver rtl8821ae - Realtek 802.11n WLAN driver for RTL8821AE
+driver rtw88 - Realtek 802.11ac WLAN driver for RTL8822BE and RTL8822CE
+driver rtw89 - Realtek 802.11ax and 802.11be WLAN driver
+driver rtl8192ee - Realtek 802.11n WLAN driver for RTL8192EE
+driver rtl8723bs - Realtek 802.11n WLAN driver for RTL8723BS
+driver rtl8xxxu - Realtek 802.11n WLAN driver for RTL8XXX USB devices
+driver ath6kl - Atheros support for AR6003
+driver ath10k - Qualcomm Atheros support for QCA988x family of chips
+driver ath11k - Qualcomm Technologies 802.11ax chipset support
+driver ath12k - Qualcomm Technologies Wi-Fi 7 chipset support
+driver ath6kl - Atheros support for AR6003 WiFi-Bluetooth combo module
+driver ath6kl - Atheros support for AR3001 WiFi-Bluetooth combo module
+driver ar5523 - Atheros AR5523 based USB Wifi dongles
+driver carl9170 - Atheros AR9170 802.11 draft-n USB driver
+driver cw1200 - ST-E CW1100/CW1200 WLAN driver
+driver rsi - Redpine Signals Inc 91x driver
+driver wilc1000 - Atmel 802.11n WLAN driver for WILC1000 & WILC3000
+driver mt76x0 - MediaTek MT76x0 Wireless MACs
+driver mt76x2e - MediaTek MT76x2 Wireless MACs
+driver mt76x2u - MediaTek MT76x2u Wireless MACs
+driver mt7615e - MediaTek MT7615e Wireless MACs
+driver mt7663 - MediaTek MT7663 Wireless MACs
+driver mt7915e - MediaTek Wireless MACs for MT7915/MT7916/MT7986/MT7981
+driver mt7902 - MediaTek MT7902 Wireless MACs
+driver mt7920 - MediaTek MT7920 Wireless MACs
+driver mt7921 - MediaTek MT7921 Wireless MACs
+driver mt7922 - MediaTek MT7922 Wireless MACs
+driver mt7925 - MediaTek MT7925 Wireless MACs
+driver mt7927 - MediaTek MT7927 Wireless MACs
+driver mt7996e - MediaTek Wireless MACs for MT7996/MT7992/MT7990
+driver wil6210 - Qualcomm Atheros support for 11ad family of chips
+driver wfx - Silicon Labs Wi-Fi Transceiver
+iwlwifi iwlwifi-100 5 5
+iwlwifi iwlwifi-1000 1 5
+iwlwifi iwlwifi-105 5 6
+iwlwifi iwlwifi-135 5 6
+iwlwifi iwlwifi-2000 5 6
+iwlwifi iwlwifi-2030 5 6
+iwlwifi iwlwifi-3160 17 17
+iwlwifi iwlwifi-3168 22 29
+iwlwifi iwlwifi-3945 1 2
+iwlwifi iwlwifi-4965 2 2
+iwlwifi iwlwifi-5000 1 5
+iwlwifi iwlwifi-5150 1 2
+iwlwifi iwlwifi-6000 4 6
+iwlwifi iwlwifi-6000g2a 5 6
+iwlwifi iwlwifi-6000g2b 5 6
+iwlwifi iwlwifi-6050 4 5
+iwlwifi iwlwifi-7260 17 17
+iwlwifi iwlwifi-7265 17 17
+iwlwifi iwlwifi-7265D 22 29
+iwlwifi iwlwifi-8000C 22 36
+iwlwifi iwlwifi-8265 22 36
+iwlwifi iwlwifi-9000-pu-?0-fm*-?0 30 46
+iwlwifi iwlwifi-9000-pu-?0-gf*-?0 30 46
+iwlwifi iwlwifi-9000-pu-?0-hr*-?0 30 46
+iwlwifi iwlwifi-9000-pu-?0-jf*-?0 30 46
+iwlwifi iwlwifi-9000-pu-?0-pe*-?0 30 46
+iwlwifi iwlwifi-9000-pu-?0-wh*-?0 30 46
+iwlwifi iwlwifi-9260-th-?0-fm*-?0 30 46
+iwlwifi iwlwifi-9260-th-?0-gf*-?0 30 46
+iwlwifi iwlwifi-9260-th-?0-hr*-?0 30 46
+iwlwifi iwlwifi-9260-th-?0-jf*-?0 30 46
+iwlwifi iwlwifi-9260-th-?0-pe*-?0 30 46
+iwlwifi iwlwifi-9260-th-?0-wh*-?0 30 46
+iwlwifi iwlwifi-Qu-?0-fm*-?0 77 77
+iwlwifi iwlwifi-Qu-?0-gf*-?0 77 77
+iwlwifi iwlwifi-Qu-?0-hr*-?0 77 77
+iwlwifi iwlwifi-Qu-?0-jf*-?0 77 77
+iwlwifi iwlwifi-Qu-?0-pe*-?0 77 77
+iwlwifi iwlwifi-Qu-?0-wh*-?0 77 77
+iwlwifi iwlwifi-QuZ-?0-fm*-?0 77 77
+iwlwifi iwlwifi-QuZ-?0-gf*-?0 77 77
+iwlwifi iwlwifi-QuZ-?0-hr*-?0 77 77
+iwlwifi iwlwifi-QuZ-?0-jf*-?0 77 77
+iwlwifi iwlwifi-QuZ-?0-pe*-?0 77 77
+iwlwifi iwlwifi-QuZ-?0-wh*-?0 77 77
+iwlwifi iwlwifi-bz-?0-fm*-?0 c102 c106
+iwlwifi iwlwifi-bz-?0-gf*-?0 100 100
+iwlwifi iwlwifi-bz-?0-hr*-?0 100 100
+iwlwifi iwlwifi-bz-?0-jf*-?0 77 77
+iwlwifi iwlwifi-bz-?0-pe*-?0 c102 c106
+iwlwifi iwlwifi-bz-?0-wh*-?0 c102 c106
+iwlwifi iwlwifi-cc-a0 77 77
+iwlwifi iwlwifi-dr-?0-fm*-?0 c102 c106
+iwlwifi iwlwifi-dr-?0-gf*-?0 100 100
+iwlwifi iwlwifi-dr-?0-hr*-?0 100 100
+iwlwifi iwlwifi-dr-?0-jf*-?0 77 77
+iwlwifi iwlwifi-dr-?0-pe*-?0 c102 c106
+iwlwifi iwlwifi-dr-?0-wh*-?0 c102 c106
+iwlwifi iwlwifi-gl-?0-fm*-?0 c102 c106
+iwlwifi iwlwifi-gl-?0-gf*-?0 100 100
+iwlwifi iwlwifi-gl-?0-hr*-?0 100 100
+iwlwifi iwlwifi-gl-?0-jf*-?0 77 77
+iwlwifi iwlwifi-gl-?0-pe*-?0 c102 c106
+iwlwifi iwlwifi-gl-?0-wh*-?0 c102 c106
+iwlwifi iwlwifi-ma-?0-fm*-?0 89 89
+iwlwifi iwlwifi-ma-?0-gf*-?0 89 89
+iwlwifi iwlwifi-ma-?0-hr*-?0 89 89
+iwlwifi iwlwifi-ma-?0-jf*-?0 77 77
+iwlwifi iwlwifi-ma-?0-pe*-?0 89 89
+iwlwifi iwlwifi-ma-?0-wh*-?0 89 89
+iwlwifi iwlwifi-sc-?0-fm*-?0 c102 c106
+iwlwifi iwlwifi-sc-?0-gf*-?0 100 100
+iwlwifi iwlwifi-sc-?0-hr*-?0 100 100
+iwlwifi iwlwifi-sc-?0-jf*-?0 77 77
+iwlwifi iwlwifi-sc-?0-pe*-?0 c102 c106
+iwlwifi iwlwifi-sc-?0-wh*-?0 c102 c106
+iwlwifi iwlwifi-sc2-?0-fm*-?0 c102 c106
+iwlwifi iwlwifi-sc2-?0-gf*-?0 100 100
+iwlwifi iwlwifi-sc2-?0-hr*-?0 100 100
+iwlwifi iwlwifi-sc2-?0-jf*-?0 77 77
+iwlwifi iwlwifi-sc2-?0-pe*-?0 c102 c106
+iwlwifi iwlwifi-sc2-?0-wh*-?0 c102 c106
+iwlwifi iwlwifi-so-?0-fm*-?0 89 89
+iwlwifi iwlwifi-so-?0-gf*-?0 89 89
+iwlwifi iwlwifi-so-?0-hr*-?0 89 89
+iwlwifi iwlwifi-so-?0-jf*-?0 77 77
+iwlwifi iwlwifi-so-?0-pe*-?0 89 89
+iwlwifi iwlwifi-so-?0-wh*-?0 89 89
+iwlwifi iwlwifi-ty-?0-fm*-?0 89 89
+iwlwifi iwlwifi-ty-?0-gf*-?0 89 89
+iwlwifi iwlwifi-ty-?0-hr*-?0 89 89
+iwlwifi iwlwifi-ty-?0-jf*-?0 77 77
+iwlwifi iwlwifi-ty-?0-pe*-?0 89 89
+iwlwifi iwlwifi-ty-?0-wh*-?0 89 89
