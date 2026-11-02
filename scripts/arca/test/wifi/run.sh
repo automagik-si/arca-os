@@ -38,8 +38,10 @@
 #                    wpa_supplicant-nl80211@.service and
 #                    wpa_supplicant-wired@.service, no link under
 #                    /etc/systemd/system or /usr/lib/systemd/system points at a
-#                    wpa_supplicant unit, wpa_supplicant.service is not active,
-#                    and arca-wifi@<dev> is active for the device that holds
+#                    wpa_supplicant unit, D-Bus cannot activate
+#                    fi.w1.wpa_supplicant1 (no activation file, not listed,
+#                    StartServiceByName fails), wpa_supplicant.service is not
+#                    active, and arca-wifi@<dev> is active for the device that holds
 #                    join's station address
 # On a FAIL it prints, to stderr, what tells a stalled download apart: a byte
 # timeline of the download connection (every 5 s), the server's requests, the
@@ -54,7 +56,7 @@ D=/run/arca-wifi-test
 TREE=/root/wifi-tree
 
 project="" vm="" server_url="" updates="" sysext="" firmware=""
-usage() { sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'wifi-test: %s\n' "$*" >&2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -408,6 +410,18 @@ if [ -z "$detail" ]; then
 	[ -z "$links" ] || detail="links to a Debian supplicant unit: $links"
 fi
 if [ -z "$detail" ]; then
+	# D-Bus cannot start it by name: no activation file names it, the bus
+	# does not list it as activatable, and asking the bus to start it fails.
+	act=$(vsh 'grep -rl wpa_supplicant /usr/share/dbus-1/system-services /etc/dbus-1/system-services 2>/dev/null || true' | tr '\n' ' ' || true)
+	names=$(vexec busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListActivatableNames 2>/dev/null || true)
+	if [ -n "$act" ]; then detail="D-Bus activation files name the supplicant: $act"
+	elif [ "${names#as }" = "$names" ]; then detail="the bus did not list its activatable names"
+	elif [ "${names#*\"fi.w1.wpa_supplicant1\"}" != "$names" ]; then detail="the bus can activate fi.w1.wpa_supplicant1"
+	elif vexec busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus StartServiceByName su fi.w1.wpa_supplicant1 0 >/dev/null 2>&1; then
+		detail="the bus started fi.w1.wpa_supplicant1"
+	fi
+fi
+if [ -z "$detail" ]; then
 	s=$(vexec systemctl is-active wpa_supplicant.service 2>/dev/null || true)
 	[ "$s" != active ] || detail="wpa_supplicant.service is active"
 fi
@@ -420,7 +434,7 @@ if [ -z "$detail" ]; then
 	elif ! vexec systemctl is-active -q "arca-wifi@$dev.service"; then detail="arca-wifi@$dev.service is not active"; fi
 fi
 if [ -z "$detail" ]; then
-	result PASS debian-units "the four wpa_supplicant units disabled, no link to one, wpa_supplicant.service not active; arca-wifi@$dev.service active"
+	result PASS debian-units "the four wpa_supplicant units disabled, no link to one, no D-Bus activation, wpa_supplicant.service not active; arca-wifi@$dev.service active"
 else
 	result FAIL debian-units "$detail"
 fi
