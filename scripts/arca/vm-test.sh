@@ -20,7 +20,8 @@
 #      qcow2 (in the builder with --from-builder, locally with --artifacts).
 #   3. Pull the qcow2, the seeded applications' sysexts, the build's
 #      test/metadata.tar.xz (build.sh copies it beside the image), and the
-#      base.manifest and kernel.BUILDINFO when the build has them.
+#      base.manifest, kernel.BUILDINFO and wifi-firmware.txt when the build has
+#      them.
 #   4. incus image import.
 #   5. Create the VM: security.secureboot=false, 4 vCPU, 8 GiB, 50 GiB root, a
 #      vtpm device and systemd.credential.fully-enable-incus-agent=true.
@@ -63,7 +64,8 @@
 #           kernel-pkg (base.manifest has linux-image-<krel> at the BUILDINFO
 #           version and no Zabbly linux-image-*-zabbly+)
 #   wifi    boot, then scripts/arca/test/wifi/run.sh (its cases: first-boot-gate,
-#           join). The VM has no NIC (eth0 is masked with a device of type none)
+#           join, firmware against the build's wifi-firmware.txt, debian-units).
+#           The VM has no NIC (eth0 is masked with a device of type none)
 #           and gets systemd.credential.arca-wifi-hwsim=1, so it has simulated
 #           radios at boot and reaches the update server only over Wi-Fi. Steps 7
 #           and 8 are skipped: its first boot installs the applications once it
@@ -325,7 +327,7 @@ raw="${os}_${ver}.raw"
 rm -rf "$out"
 mkdir -p "$out"
 cp metadata.tar.xz "$out/"
-for f in base.manifest kernel.BUILDINFO; do
+for f in base.manifest kernel.BUILDINFO wifi-firmware.txt; do
 	if [ -f "$f" ]; then cp "$f" "$out/"; fi
 done
 printf "%s\n" "$apps" > "$out/applications.json"
@@ -353,7 +355,7 @@ if [ -n "$builder" ]; then
 	for f in os.qcow2 metadata.tar.xz RELEASE OSNAME SRC; do
 		incus file pull -q "${P[@]}" "$builder$bout/$f" "$work/"
 	done
-	for f in base.manifest kernel.BUILDINFO; do
+	for f in base.manifest kernel.BUILDINFO wifi-firmware.txt; do
 		incus file pull -q "${P[@]}" "$builder$bout/$f" "$work/" 2>/dev/null || true
 	done
 	bsrc=$(cat "$work/SRC")
@@ -377,7 +379,7 @@ elif [ -n "$artifacts" ]; then
 	log "seeding and converting the image from $artifacts"
 	bash -c "$PREP" vm-test-prep "$artifacts" "$work/prep" "$apps_json" "$provider_json" "$SEED_OFFSET"
 	mv "$work"/prep/{os.qcow2,metadata.tar.xz,RELEASE,OSNAME,SRC} "$work/"
-	for f in base.manifest kernel.BUILDINFO; do
+	for f in base.manifest kernel.BUILDINFO wifi-firmware.txt; do
 		if [ -f "$work/prep/$f" ]; then mv "$work/prep/$f" "$work/"; fi
 	done
 	if [ "$provider" = debug ]; then
@@ -395,7 +397,7 @@ else
 		[ -f "$media/$f" ] || die "no $f in $media"
 		cp "$media/$f" "$work/"
 	done
-	for f in base.manifest kernel.BUILDINFO; do
+	for f in base.manifest kernel.BUILDINFO wifi-firmware.txt; do
 		if [ -f "$media/$f" ]; then cp "$media/$f" "$work/"; fi
 	done
 	[ -f "$media/updates/$(cat "$work/RELEASE")/update.sjson" ] || die "updates/ in $media has no release $(cat "$work/RELEASE")"
@@ -745,7 +747,8 @@ wifi_checks() {
 	rm -f "$leak"
 	# Both streams, progress and diagnostics included, go through one check and on to stdout.
 	"$(dirname "$0")/test/wifi/run.sh" --project "$project" --vm "$vm" --server-url "$server_url" \
-		--updates "$work/updates" --debug-sysext "$work/debug.raw" 2>&1 | withhold_secrets "$leak" || rc=$?
+		--updates "$work/updates" --debug-sysext "$work/debug.raw" \
+		--firmware "$work/wifi-firmware.txt" 2>&1 | withhold_secrets "$leak" || rc=$?
 	[ "$rc" -eq 0 ] || result FAIL wifi "run.sh exited $rc"
 	[ ! -e "$leak" ] || result FAIL wifi-output "run.sh printed a secret-shaped line (withheld)"
 }

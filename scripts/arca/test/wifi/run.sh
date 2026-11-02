@@ -3,7 +3,7 @@
 # running test VM that has no NIC and has simulated radios (mac80211_hwsim).
 #
 #   run.sh --project arcaos-* --vm <name> --server-url http://10.42.0.1:<port>
-#          --updates <dir> --debug-sysext <file>
+#          --updates <dir> --debug-sysext <file> [--firmware <file>]
 #
 # Once incus-osd's first-boot gate holds, it merges the debug sysext (the test
 # tools) from /run/extensions, pushes the update tree <dir>, moves the last radio
@@ -27,6 +27,20 @@
 #                    console capture holds "already in progress", and
 #                    arca-wifi-hwsim.service, active with its monitor device
 #                    in namespace hwsim, starts again cleanly
+#   firmware         every "f <path>" of the build's Wi-Fi firmware list
+#                    (--firmware: build.sh's wifi-firmware.txt) is a regular
+#                    file under /usr/lib/firmware and every "l <path>" a link
+#                    there that resolves, and the files' count and bytes equal
+#                    its first line, "wifi-firmware: <files> files, <bytes>
+#                    bytes raw"; the detail names the AX211 files present
+#   debian-units     `systemctl is-enabled` prints "disabled" for
+#                    wpa_supplicant.service, wpa_supplicant@.service,
+#                    wpa_supplicant-nl80211@.service and
+#                    wpa_supplicant-wired@.service, no link under
+#                    /etc/systemd/system or /usr/lib/systemd/system points at a
+#                    wpa_supplicant unit, wpa_supplicant.service is not active,
+#                    and arca-wifi@<dev> is active for the device that holds
+#                    join's station address
 # On a FAIL it prints, to stderr, what tells a stalled download apart: a byte
 # timeline of the download connection (every 5 s), the server's requests, the
 # incus-osd journal around the longest stall, and the access point's and the
@@ -39,8 +53,8 @@ OSD_SOCK=/run/incus-os/unix.socket
 D=/run/arca-wifi-test
 TREE=/root/wifi-tree
 
-project="" vm="" server_url="" updates="" sysext=""
-usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+project="" vm="" server_url="" updates="" sysext="" firmware=""
+usage() { sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'wifi-test: %s\n' "$*" >&2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -49,6 +63,7 @@ while [ $# -gt 0 ]; do
 	--server-url) [ $# -ge 2 ] || usage; server_url=$2; shift 2 ;;
 	--updates) [ $# -ge 2 ] || usage; updates=$2; shift 2 ;;
 	--debug-sysext) [ $# -ge 2 ] || usage; sysext=$2; shift 2 ;;
+	--firmware) [ $# -ge 2 ] || usage; firmware=$2; shift 2 ;;
 	*) usage ;;
 	esac
 done
@@ -345,6 +360,69 @@ if [ -z "$detail" ]; then
 else
 	result FAIL join "$detail"
 	diagnose
+fi
+
+# --- firmware ------------------------------------------------------------------
+want=$(head -n 1 "$firmware" 2>/dev/null | sed -n 's/^wifi-firmware: \([0-9]*\) files, \([0-9]*\) bytes raw$/\1 \2/p' || true)
+if [ -z "$want" ]; then
+	result FAIL firmware "no Wi-Fi firmware list from the build (--firmware '$firmware')"
+else
+	read -r want_n want_b <<<"$want"
+	want_l=$(grep -c '^l ' "$firmware" || true)
+	vexec mkdir -p "$D"
+	incus file push -q "${P[@]}" "$firmware" "$vm$D/firmware.txt"
+	# Prints "<files> <bytes> <links> <bad> <first bad path>", then the AX211 files.
+	# shellcheck disable=SC2016  # expanded by the shell in the VM
+	got=$(vsh 'fw=/usr/lib/firmware n=0 b=0 l=0 bad=0 first=""
+		while IFS= read -r line; do
+			case $line in
+			"f "*) p=${line#f }
+				if [ -f "$fw/$p" ] && [ ! -L "$fw/$p" ]; then n=$((n + 1)); b=$((b + $(stat -c %s "$fw/$p")))
+				else bad=$((bad + 1)); first=${first:-$p}; fi ;;
+			"l "*) p=${line#l }
+				if [ -L "$fw/$p" ] && [ -e "$fw/$p" ]; then l=$((l + 1)); else bad=$((bad + 1)); first=${first:-$p}; fi ;;
+			esac
+		done < "$1"
+		echo "$n $b $l $bad ${first:--}"
+		{ cd "$fw" && ls intel/iwlwifi/iwlwifi-so-a0-gf-a0-*.ucode intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm 2>/dev/null || true; } \
+			| sed "s#.*/##" | tr "\n" " "' sh "$D/firmware.txt" || true)
+	read -r got_n got_b got_l bad first <<<"$(head -n 1 <<<"$got")"
+	ax=$(sed -n 2p <<<"$got")
+	if [ "${bad:-1}" != 0 ]; then
+		result FAIL firmware "${bad:-?} listed entries missing or not resolving in the image, first: ${first:-?}"
+	elif [ "$got_n $got_b $got_l" != "$want_n $want_b $want_l" ]; then
+		result FAIL firmware "the image has $got_n files, $got_b bytes, $got_l links; the build listed $want_n, $want_b, $want_l"
+	else
+		result PASS firmware "$got_n files, $got_b bytes raw and $got_l links in /usr/lib/firmware, as the build listed; AX211: ${ax:-none}"
+	fi
+fi
+
+# --- debian-units --------------------------------------------------------------
+detail=""
+for u in wpa_supplicant.service wpa_supplicant@.service wpa_supplicant-nl80211@.service wpa_supplicant-wired@.service; do
+	s=$(vexec systemctl is-enabled "$u" 2>/dev/null || true)
+	[ "$s" = disabled ] || { detail="systemctl is-enabled $u prints '${s:-nothing}'"; break; }
+done
+if [ -z "$detail" ]; then
+	links=$(vexec find /etc/systemd/system /usr/lib/systemd/system -type l -lname '*wpa_supplicant*' 2>/dev/null | tr '\n' ' ' || true)
+	[ -z "$links" ] || detail="links to a Debian supplicant unit: $links"
+fi
+if [ -z "$detail" ]; then
+	s=$(vexec systemctl is-active wpa_supplicant.service 2>/dev/null || true)
+	[ "$s" != active ] || detail="wpa_supplicant.service is active"
+fi
+dev=""
+if [ -z "$detail" ]; then
+	# shellcheck disable=SC2016  # an awk program
+	[ -z "${station:-}" ] || dev=$(vexec ip -o -4 addr show 2>/dev/null \
+		| awk -v a="$station" '{ split($4, x, "/"); if (x[1] == a) { print $2; exit } }' || true)
+	if [ -z "$dev" ]; then detail="no device holds join's station address '${station:-none}'"
+	elif ! vexec systemctl is-active -q "arca-wifi@$dev.service"; then detail="arca-wifi@$dev.service is not active"; fi
+fi
+if [ -z "$detail" ]; then
+	result PASS debian-units "the four wpa_supplicant units disabled, no link to one, wpa_supplicant.service not active; arca-wifi@$dev.service active"
+else
+	result FAIL debian-units "$detail"
 fi
 
 [ "$fails" -eq 0 ]

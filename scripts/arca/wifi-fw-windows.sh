@@ -27,7 +27,7 @@
 # Exit codes: 0, 1 when a declaration cannot be resolved, 2 on usage.
 set -euo pipefail
 
-[ $# -eq 1 ] && [ -f "$1" ] || { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -eq 1 ] && [ -f "$1" ] || { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
