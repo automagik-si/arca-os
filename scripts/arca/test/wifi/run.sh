@@ -63,6 +63,10 @@
 #                    StartServiceByName fails), wpa_supplicant.service is not
 #                    active, and arca-wifi@<dev> is active for the device that holds
 #                    the station's address
+# When an access point does not start, it prints, to stderr, the step that
+# failed and the relevant lines of that access point's hostapd log, of a
+# hostapd -dd start of its config and of its dnsmasq output (lines that hold a
+# secret pattern left out); the logs stay in the VM's /run/arca-wifi-test.
 # On a FAIL it prints, to stderr, what tells a stalled download apart: a byte
 # timeline of the download connection (every 5 s), the server's requests, the
 # incus-osd journal around the longest stall, and the access points' and the
@@ -139,7 +143,7 @@ vm_fn() { local f=$1; shift; vexec bash -c "$(declare -f "$f"); $f \"\$@\"" "$f"
 ap_setup() {
 	local d=$1 tree=$2 port=$3 n k name w phy psk us=0
 	local -a wifis=() ifs=() phys=()
-	local -A ssids=([velho]=Velho [casa]=Casa [casa6e]=Casa-6E)
+	local -A ssids=([velho]=Velho [casa]=Casa [oculta]=Oculta [casa6e]=Casa-6E)
 	install -d -m 0700 "$d"
 	umask 077
 	for n in /sys/class/net/*; do
@@ -180,34 +184,98 @@ ap_setup() {
 		sae_require_mfp=1 sae_pwe=1
 	  printf 'wpa_passphrase=%s\n' "$(cat "$d/casa6e.pass")"; } > "$d/casa6e.conf"
 
-	# ap_start <k> <name>: hostapd on radio k, the radio's fragmentation threshold,
-	# its subnet and dnsmasq. hwsim takes CCMP keys as hardware keys and encrypts
-	# in its own transmit, but mac80211's fast-xmit reserves no room for the CCMP
-	# header and MIC, so a data frame without 8 spare bytes at either end is
-	# dropped ("WARNING: net/mac80211/wpa.c" in the kernel log), on every
-	# retransmission of it too, and a download stalls. hwsim has no fragmentation
-	# of its own, so any threshold turns fast-xmit off; 2346 is above every frame
-	# here, so nothing is fragmented. hostapd's fragm_threshold does not reach the
-	# radio, so iw sets it, after hostapd, and it is checked.
+	# The secret patterns: each WPA network's passphrase, its hex form and its PSK
+	# (the pbkdf2 of the passphrase and the SSID, from wpa_passphrase on stdin).
+	: > "$d/secret.pats"
+	for name in velho casa casa6e; do
+		psk=$(wpa_passphrase "${ssids[$name]}" < "$d/$name.pass" | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+		[ "${#psk}" -eq 64 ] || { echo "no PSK for ${ssids[$name]}" >&2; return 1; }
+		{ cat "$d/$name.pass"; echo; od -An -tx1 "$d/$name.pass" | tr -d ' \n'; echo; echo "$psk"; } >> "$d/secret.pats"
+	done
+	[ "$(grep -c . "$d/secret.pats")" -eq 9 ] || return 1
+
+	# ap_start <k> <name>: hostapd on radio k, once it reports AP-ENABLED the
+	# radio's fragmentation threshold, its subnet and dnsmasq. hwsim takes CCMP
+	# keys as hardware keys and encrypts in its own transmit, but mac80211's
+	# fast-xmit reserves no room for the CCMP header and MIC, so a data frame
+	# without 8 spare bytes at either end is dropped ("WARNING: net/mac80211/wpa.c"
+	# in the kernel log), on every retransmission of it too, and a download stalls.
+	# hwsim has no fragmentation of its own, so any threshold turns fast-xmit off;
+	# 2346 is above every frame here, so nothing is fragmented. hostapd's
+	# fragm_threshold does not reach the radio, so iw sets it, after hostapd, and
+	# it is checked. dnsmasq adds the loopback to --interface by itself, and every
+	# instance would bind 127.0.0.1:53 in namespace ap, where the second fails
+	# ("Address already in use"), so each excepts lo; its DHCP socket is bound to
+	# its own radio. On a failure, ap_report says which step failed.
 	ap_start() {
-		local k=$1 name=$2 w=${ifs[$1]} phy=${phys[$1]}
-		ip netns exec ap hostapd -B -t -P "$d/$name.pid" -f "$d/$name.log" "$d/$name.conf" >/dev/null 2>&1 || return 1
-		ip -n ap addr add "10.42.$k.1/24" dev "$w" || return 1
-		ip netns exec ap iw phy "$phy" set frag 2346 || return 1
-		ip netns exec ap iw phy "$phy" info | grep -q 'Fragmentation threshold: 2346' || return 1
-		for _ in $(seq 20); do ip -n ap addr show dev "$w" | grep -q 'state UP' && break; sleep 1; done
-		ip netns exec ap dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --bind-interfaces --interface="$w" \
+		local k=$1 name=$2 w=${ifs[$1]} phy=${phys[$1]} why=""
+		if ! ip netns exec ap hostapd -B -t -P "$d/$name.pid" -f "$d/$name.log" "$d/$name.conf" >"$d/$name.start" 2>&1; then
+			why="hostapd exited at its start"
+		else
+			for _ in $(seq 30); do grep -qE 'AP-ENABLED|AP-DISABLED|->DISABLED' "$d/$name.log" 2>/dev/null && break; sleep 1; done
+			grep -q 'AP-ENABLED' "$d/$name.log" 2>/dev/null || why="hostapd did not report AP-ENABLED within 30 s"
+		fi
+		if [ -z "$why" ] && ! ip -n ap addr add "10.42.$k.1/24" dev "$w" >"$d/$name.addr" 2>&1; then
+			why="the address 10.42.$k.1/24 was not added"
+		fi
+		if [ -z "$why" ] && ! { ip netns exec ap iw phy "$phy" set frag 2346 \
+			&& ip netns exec ap iw phy "$phy" info | grep -q 'Fragmentation threshold: 2346'; }; then
+			why="the fragmentation threshold 2346 did not hold on $phy"
+		fi
+		if [ -z "$why" ] && ! ip netns exec ap dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --bind-interfaces \
+			--interface="$w" --except-interface=lo \
 			--dhcp-range="10.42.$k.10,10.42.$k.200,255.255.255.0,1h" --dhcp-option=option:router,"10.42.$k.1" \
 			--dhcp-option=option:dns-server,"10.42.$k.1" --dhcp-leasefile="$d/$name.leases" \
-			--pid-file="$d/$name-dnsmasq.pid" --user=root --group=root --log-facility="$d/$name-dnsmasq.log" || return 1
+			--pid-file="$d/$name-dnsmasq.pid" --user=root --group=root --log-facility="$d/$name-dnsmasq.log" \
+			>"$d/$name-dnsmasq.start" 2>&1; then
+			why="dnsmasq did not start"
+		fi
+		[ -n "$why" ] || return 0
+		ap_report "$name" "$why"
+		return 1
 	}
-	ap_start 1 velho || { echo "the Velho access point did not start" >&2; return 1; }
-	ap_start 2 casa || { echo "the Casa access point did not start" >&2; return 1; }
-	ap_start 3 oculta || { echo "the Oculta access point did not start" >&2; return 1; }
+	# ap_report <name> <why>: to stderr, why access point <name> did not start and
+	# the relevant lines of its logs, which stay in <dir>: hostapd's own log, the
+	# output of a second start of the same config with hostapd -dd (in the
+	# foreground for at most 20 s; only when hostapd itself failed), and dnsmasq's
+	# output. A line that holds a secret pattern or a key word is left out. The
+	# first line, with hostapd's first error line (else its last line), also goes
+	# to <dir>/<name>.status.
+	ap_report() {
+		local name=$1 why=$2 f line
+		local re='fail|error|invalid|unknown|unsupport|not (allowed|supported|permitted|found)|could not|cannot|unable'
+		re="$re|disabl|reject|refus|no[ -]?ir|dfs|regulatory|country|channel|freq|line [0-9]+:|in use|denied|AP-"
+		ap_clean() { grep -viE 'passphrase|psk|sae_password|password|private key' | grep -viFf "$d/secret.pats"; }
+		sed -E 's/^([0-9]+\.[0-9]+: )+//' "$d/$name.log" 2>/dev/null | ap_clean > "$d/$name.clean" || true
+		line=$(grep -iE 'not allowed|not found|not support|fail|invalid|unknown|could not|unable|error' "$d/$name.clean" \
+			| head -n 1 || true)
+		[ -n "$line" ] || line=$(tail -n 1 "$d/$name.clean")
+		rm -f "$d/$name.clean"
+		printf 'the %s access point did not start: %s%s\n' "${ssids[$name]}" "$why" "${line:+; hostapd: $line}" \
+			| ap_clean > "$d/$name.status"
+		if [ "${why#hostapd}" != "$why" ]; then
+			[ ! -s "$d/$name.pid" ] || kill "$(cat "$d/$name.pid")" 2>/dev/null || true
+			sleep 2
+			timeout 20 ip netns exec ap hostapd -dd -t "$d/$name.conf" >"$d/$name-dd.log" 2>&1 || true
+		fi
+		{
+			cat "$d/$name.status"
+			for f in "$name.start" "$name.log" "$name.addr" "$name-dnsmasq.start" "$name-dnsmasq.log"; do
+				if [ -s "$d/$f" ]; then echo "== $f (last 30 lines)"; tail -n 30 "$d/$f"; fi
+			done
+			if [ -s "$d/$name-dd.log" ]; then
+				echo "== $name-dd.log, hostapd -dd (the relevant lines, then the last 15)"
+				grep -iE "$re" "$d/$name-dd.log" | tail -n 40
+				echo "-- last lines"
+				tail -n 15 "$d/$name-dd.log"
+			fi
+		} | ap_clean | sed 's/^/ap: /' >&2 || true
+	}
+	ap_start 1 velho || return 1
+	ap_start 2 casa || return 1
+	ap_start 3 oculta || return 1
 	if ap_start 4 casa6e; then
 		echo started > "$d/casa6e.status"
-	else
-		printf 'the 6 GHz access point did not start: %s\n' "$(tail -n 1 "$d/casa6e.log" 2>/dev/null)" > "$d/casa6e.status"
 	fi
 
 	cat > "$d/lighttpd.conf" <<EOF
@@ -249,16 +317,6 @@ EOF
 	us=0; vevents r > "$d/rescan.events"
 	mapfile -t pw < <(fold -w1 "$d/casa.pass")
 	us=0; vevents "${pw[@]}" enter > "$d/casa.events"
-
-	# The secret patterns: each WPA network's passphrase, its hex form and its PSK
-	# (the pbkdf2 of the passphrase and the SSID, from wpa_passphrase on stdin).
-	: > "$d/secret.pats"
-	for name in velho casa casa6e; do
-		psk=$(wpa_passphrase "${ssids[$name]}" < "$d/$name.pass" | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
-		[ "${#psk}" -eq 64 ] || { echo "no PSK for ${ssids[$name]}" >&2; return 1; }
-		{ cat "$d/$name.pass"; echo; od -An -tx1 "$d/$name.pass" | tr -d ' \n'; echo; echo "$psk"; } >> "$d/secret.pats"
-	done
-	[ "$(grep -c . "$d/secret.pats")" -eq 9 ] || return 1
 	return 0
 }
 
@@ -492,7 +550,7 @@ else
 		result FAIL rank-6ghz "the station hears Casa-6E, but the picker's first row is $rank_top"
 	else
 		why=$(vexec cat "$D/casa6e.status" 2>/dev/null | head -c 300 || true)
-		result SKIP rank-6ghz "the station hears no Casa-6E beacon on 6 GHz (${why:-no status}); the simulated radios do not beacon there"
+		result SKIP rank-6ghz "the station hears no Casa-6E beacon on 6 GHz (${why:-no status})"
 	fi
 fi
 
