@@ -30,7 +30,7 @@ modinfo=${ARCA_WIFI_MODINFO:-modinfo}
 moddir=${ARCA_WIFI_MODULES:-}
 if [ -z "$moddir" ]; then
 	set -- /buildroot/usr/lib/modules/*
-	[ $# -eq 1 ] && [ -d "$1" ] || { echo "arca-wifi: want one kernel in /buildroot/usr/lib/modules" >&2; exit 1; }
+	if [ $# -ne 1 ] || [ ! -d "$1" ]; then echo "arca-wifi: want one kernel in /buildroot/usr/lib/modules" >&2; exit 1; fi
 	moddir=$1
 fi
 dest=${DESTDIR:?}/usr/lib/firmware
