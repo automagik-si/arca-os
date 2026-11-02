@@ -23,10 +23,16 @@
 # line "wifi-firmware: <files> files, <bytes> bytes raw" that it also prints,
 # to /usr/share/arca-wifi/firmware.txt.
 #
+# The regulatory database comes from wireless-regdb: it refuses a build without
+# the upstream (signed) regulatory.db-upstream and regulatory.db.p7s-upstream,
+# installs copies of both into /usr/lib/firmware, and links regulatory.db and
+# regulatory.db.p7s to them.
+#
 # The environment can point it elsewhere (the fixture test does):
 # ARCA_WIFI_FW_SRC (the checkout), DESTDIR (the tree it installs into),
 # ARCA_WIFI_MODULES (the kernel's module directory), ARCA_WIFI_DRIVERS
-# (the list) and ARCA_WIFI_MODINFO (the modinfo command).
+# (the list), ARCA_WIFI_MODINFO (the modinfo command) and ARCA_WIFI_REGDB (the
+# wireless-regdb directory, /buildroot/usr/lib/firmware by default).
 set -eu
 
 die() { echo "arca-wifi: $*" >&2; exit 1; }
@@ -44,6 +50,10 @@ dest=${DESTDIR:?}/usr/lib/firmware
 out=$DESTDIR/usr/share/arca-wifi/firmware.txt
 [ -f "$src/WHENCE" ] || die "no WHENCE in $src"
 [ -f "$list" ] || die "no list $list"
+regdb=${ARCA_WIFI_REGDB:-/buildroot/usr/lib/firmware}
+for f in regulatory.db-upstream regulatory.db.p7s-upstream; do
+	[ -f "$regdb/$f" ] || die "no wireless-regdb file $f in $regdb"
+done
 [ -d "$moddir/kernel" ] || die "no kernel/ in $moddir"
 grep -Eq '^driver[[:space:]]+[^[:space:]]' "$list" || die "no driver line in $list"
 
@@ -146,6 +156,16 @@ while IFS="$tab" read -r kind a b; do
 		ln -sfn "$b" "$dest/$a" ;;
 	esac
 done < "$tmp/plan"
+
+# The regulatory database: the upstream copies, and the names the kernel reads
+# linked to them.
+mkdir -p "$dest"
+for f in regulatory.db-upstream regulatory.db.p7s-upstream; do
+	cp -L "$regdb/$f" "$dest/$f"
+	chmod 0644 "$dest/$f"
+done
+ln -sfn regulatory.db-upstream "$dest/regulatory.db"
+ln -sfn regulatory.db.p7s-upstream "$dest/regulatory.db.p7s"
 
 # Rule 1, and the list.
 grep "^E$tab" "$tmp/plan" | cut -f2- > "$tmp/errors" || true
