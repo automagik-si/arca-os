@@ -24,6 +24,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/certs"
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/wifiui"
 	"github.com/lxc/incus-os/incus-osd/internal/install"
 	"github.com/lxc/incus-os/incus-osd/internal/kernel"
 	"github.com/lxc/incus-os/incus-osd/internal/keyring"
@@ -192,6 +193,7 @@ func main() {
 	// Prepare a logger.
 	logger := slog.New(tui.NewCustomTextHandler(tuiApp))
 	slog.SetDefault(logger)
+	wifiui.Start(ctx, s, tuiApp)
 
 	// Run the daemon.
 	err = run(ctx, s)
@@ -778,6 +780,10 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 
 		skipInitialUpdateCheck = false
+	}
+
+	if err := wifiui.WaitOnline(ctx, s); err != nil {
+		return err
 	}
 
 	if !delayInitialUpdateCheck && !skipInitialUpdateCheck {

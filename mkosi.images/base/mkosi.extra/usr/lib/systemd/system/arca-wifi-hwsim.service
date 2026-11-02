@@ -1,0 +1,18 @@
+# Simulated Wi-Fi radios for tests. Inert without the arca-wifi-hwsim system
+# credential, which only a test VM is given.
+[Unit]
+Description=Simulated Wi-Fi radios for tests
+ConditionCredential=arca-wifi-hwsim
+Before=incus-osd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=modprobe mac80211_hwsim radios=5
+# hwsim0 is the radios' monitor device, not a network to configure: keep it out
+# of the network configuration by moving it into a namespace of its own.
+ExecStart=ip netns add hwsim
+ExecStart=ip link set hwsim0 netns hwsim
+
+[Install]
+WantedBy=multi-user.target
