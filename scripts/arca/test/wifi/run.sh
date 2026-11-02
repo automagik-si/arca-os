@@ -14,7 +14,7 @@
 #   Casa     k=2  WPA3-SAE, 5 GHz channel 36, 80 MHz with HE, PMF required
 #   Oculta   k=3  hidden and open, 5 GHz channel 149, 80 MHz
 #   Casa-6E  k=4  WPA3-SAE with H2E, 6 GHz channel 5, HE (best effort: when its
-#                 hostapd cannot run, rank-6ghz is a SKIP with the reason)
+#                 access point does not start, rank-6ghz is a SKIP with the reason)
 # The 5 and 6 GHz access points and the station set country US (iw reg set US).
 # The first radio stays in the root namespace as the station. The update tree is
 # served from namespace ap at 10.42.0.1:<port>, with lighttpd on a dummy
@@ -31,9 +31,10 @@
 #                    <network>" label that Enter opens on each (Esc backs out,
 #                    nothing joins): Casa or Casa-6E first, Casa in the first two,
 #                    and "not recommended" on the screen (Velho, 2.4 GHz)
-#   rank-6ghz        PASS when Casa-6E is first; SKIP with its access point's
-#                    reason when the station hears nothing from it; FAIL when the
-#                    station hears it but the picker does not list it first
+#   rank-6ghz        PASS when Casa-6E is first; SKIP, with the reason, only
+#                    when its access point did not start; FAIL when it started
+#                    but the picker does not list it first (whether the station
+#                    hears it or not)
 #   sae              Casa joins with its passphrase: "Wi-Fi: gate released", then
 #                    "Wi-Fi: picker closed", incus and arca listed within 10 min,
 #                    the station (on 10.42.2.x) fetches both, arca.service is
@@ -43,10 +44,16 @@
 #                    namespace hwsim, starts again cleanly
 #   secret           no passphrase, hex form or PSK of Velho, Casa or Casa-6E is
 #                    in the journal, the console capture, /run/systemd/network/ or
-#                    any /proc/*/cmdline (the checks run in the VM)
-#   regdb            /usr/lib/firmware/regulatory.db links to regulatory.db-upstream,
-#                    both copies equal their upstream files, the kernel log has no
-#                    "failed to load regulatory.db", and iw reg get shows US
+#                    any /proc/*/cmdline (the checks run in the VM); each place
+#                    must be read (the journal holds the picker's line, the
+#                    console capture is not empty, /run/systemd/network holds a
+#                    file, at least one cmdline is read), and the search must
+#                    report that it finished
+#   regdb            /usr/lib/firmware/regulatory.db and regulatory.db.p7s are
+#                    links to the wireless-regdb package's -upstream files, the
+#                    kernel log has no "failed to load regulatory.db", and the
+#                    kernel holds rules from the database: iw reg get shows
+#                    country US with DFS-FCC and its 6 GHz rule (5925 - 7125)
 #   firmware         every "f <path>" of the build's Wi-Fi firmware list
 #                    (--firmware: build.sh's wifi-firmware.txt) is a regular
 #                    file under /usr/lib/firmware and every "l <path>" a link
@@ -321,21 +328,49 @@ EOF
 }
 
 # secret_scan <dir> (in the VM): prints the name of each place that holds a
-# pattern of <dir>/secret.pats, never the pattern. The journal capture must hold
-# the picker's line, or the search means nothing.
+# pattern of <dir>/secret.pats, never the pattern, or that could not be read,
+# then "read: <counts>" and "secret-scan: done". A place that is missing, empty
+# or unreadable is reported as "missing: <place>", so no search passes unread:
+# the journal capture must hold the picker's line, the console capture must not
+# be empty, /run/systemd/network must hold a file, and at least one
+# /proc/*/cmdline must be read. A grep error (status 2) is reported too.
 secret_scan() {
-	local d=$1 c j="$1/journal.txt"
+	local d=$1 c j="$1/journal.txt" st files=0 cmds=0
+	# look <place> <grep args...>: one search; 0 is a leak, 1 is clean, else an error.
+	look() {
+		local place=$1 st=0
+		shift
+		grep -qiFf "$d/secret.pats" "$@" || st=$?
+		case $st in
+		0) echo "leak: $place" ;;
+		1) ;;
+		*) echo "missing: $place (grep exit $st)" ;;
+		esac
+	}
+	[ "$(grep -c . "$d/secret.pats" 2>/dev/null)" = 9 ] || echo "missing: the secret patterns"
 	journalctl -b0 -o cat --no-pager > "$j" 2>/dev/null || true
 	grep -qF 'Wi-Fi: picker shown' "$j" || echo "missing: the journal capture"
 	[ -s "$d/console.txt" ] || echo "missing: the console capture"
-	grep -qiFf "$d/secret.pats" "$j" && echo "leak: the journal"
-	grep -qiFf "$d/secret.pats" "$d/console.txt" && echo "leak: the console capture"
-	grep -rqiFf "$d/secret.pats" /run/systemd/network 2>/dev/null && echo "leak: /run/systemd/network"
+	look "the journal" "$j"
+	look "the console capture" "$d/console.txt"
+	if [ -d /run/systemd/network ] && [ -r /run/systemd/network ]; then
+		files=$(find /run/systemd/network -type f | wc -l)
+		[ "$files" -gt 0 ] || echo "missing: a file in /run/systemd/network"
+		look /run/systemd/network -r /run/systemd/network
+	else
+		echo "missing: /run/systemd/network"
+	fi
 	for c in /proc/[0-9]*/cmdline; do
 		tr '\0' ' ' < "$c" 2>/dev/null > "$d/cmd.txt" || continue
-		grep -qiFf "$d/secret.pats" "$d/cmd.txt" && echo "leak: $c"
+		cmds=$((cmds + 1))
+		st=0
+		grep -qiFf "$d/secret.pats" "$d/cmd.txt" || st=$?
+		case $st in 0) echo "leak: $c" ;; 1) ;; *) echo "missing: $c (grep exit $st)" ;; esac
 	done
+	[ "$cmds" -gt 0 ] || echo "missing: any /proc/*/cmdline"
 	rm -f "$j" "$d/cmd.txt"
+	echo "read: $(grep -c '' "$d/console.txt" 2>/dev/null || echo 0) console lines, $files files in /run/systemd/network, $cmds cmdlines"
+	echo "secret-scan: done"
 	return 0
 }
 
@@ -485,8 +520,10 @@ vexec systemd-run -q --unit=arca-test-sampler --collect \
 # --- rank --------------------------------------------------------------------------
 # The picker's first two rows, read from the "Passphrase for" label that Enter
 # opens on each row. Esc backs out of that prompt, so nothing joins.
+# The names are this test's own, so a name that holds a colon is read whole.
+networks='Casa-6E|Casa|Velho|Oculta'
 labels() {
-	screen_text | grep -o 'Passphrase for [^:]*:' | sed -e 's/^Passphrase for //' -e 's/:$//' || true
+	screen_text | grep -oE "Passphrase for ($networks):" | sed -E 's/^Passphrase for (.*):$/\1/' || true
 }
 # wait_label <previous>: the newest label, once it differs from <previous>.
 wait_label() {
@@ -527,31 +564,45 @@ if [ -z "$detail" ]; then
 	*) detail="the first two rows are '$rank_top' and '$rank_second'; Casa must lead, or follow Casa-6E" ;;
 	esac
 fi
-screen=$(screen_text)
-if [ -z "$detail" ] && ! grep -qF 'not recommended' <<<"$screen"; then
-	detail="the picker shows no 'not recommended' label (Velho, 2.4 GHz)"
+# velho_row: "yes" when, after some "Velho" on the screen, "not recommended"
+# follows before the next network's name (or within 160 bytes): Velho's row ends
+# with its note.
+velho_row() {
+	# shellcheck disable=SC2016  # an awk program
+	screen_text | tr -d '\r\n' | LC_ALL=C awk '{ n = split($0, a, "Velho")
+		for (i = 2; i <= n; i++) { s = substr(a[i], 1, 160); sub(/(Casa|Oculta|Other network).*/, "", s)
+			if (index(s, "not recommended")) { print "yes"; exit } } }' || true
+}
+if [ -z "$detail" ] && [ "$(velho_row)" != yes ]; then
+	detail="Velho's row carries no 'not recommended' label (2.4 GHz)"
 fi
 if [ -z "$detail" ]; then
-	result PASS rank "the first two rows are $rank_top and $rank_second, Casa in the first two; the 2.4 GHz row carries 'not recommended'"
+	result PASS rank "the first two rows are $rank_top and $rank_second, Casa in the first two; Velho's 2.4 GHz row carries 'not recommended'"
 else
 	result FAIL rank "$detail"
 fi
 
 # --- rank-6ghz ---------------------------------------------------------------------
+# SKIP only when Casa-6E's access point did not start (its status says why); once
+# it started, anything but Casa-6E first is a FAIL.
+why=$(vexec cat "$D/casa6e.status" 2>/dev/null | head -c 300 || true)
 if [ -z "$rank_top" ]; then
 	result FAIL rank-6ghz "rank did not read the picker's first row"
 elif [ "$rank_top" = Casa-6E ]; then
 	result PASS rank-6ghz "Casa-6E (6 GHz, HE) is the first row, above Casa"
-else
+elif [ "${why#the Casa-6E access point did not start: }" != "$why" ]; then
+	result SKIP rank-6ghz "$why"
+elif [ "$why" = started ]; then
 	# shellcheck disable=SC2016  # expanded by the shell in the VM
 	sta=$(vsh 'for n in /sys/class/net/*; do if [ -e "$n/phy80211" ]; then basename "$n"; break; fi; done' || true)
 	heard=$(vexec iw dev "$sta" scan dump 2>/dev/null | grep -c 'SSID: Casa-6E' || true)
 	if [ "${heard:-0}" -gt 0 ]; then
-		result FAIL rank-6ghz "the station hears Casa-6E, but the picker's first row is $rank_top"
+		result FAIL rank-6ghz "Casa-6E started and the station hears it, but the picker's first row is $rank_top"
 	else
-		why=$(vexec cat "$D/casa6e.status" 2>/dev/null | head -c 300 || true)
-		result SKIP rank-6ghz "the station hears no Casa-6E beacon on 6 GHz (${why:-no status})"
+		result FAIL rank-6ghz "Casa-6E started, but the station hears no Casa-6E beacon; the picker's first row is $rank_top"
 	fi
+else
+	result FAIL rank-6ghz "Casa-6E's access point has no start status ('${why:-none}'); the picker's first row is $rank_top"
 fi
 
 # --- sae ---------------------------------------------------------------------------
@@ -611,29 +662,43 @@ fi
 # pushed in, and only the names of the places that hold a pattern come back.
 console
 incus file push -q "${P[@]}" "$tmp/console.txt" "$vm$D/console.txt" || true
-leaks=$(vm_fn secret_scan "$D" 2>/dev/null || true)
-if [ -z "$leaks" ]; then
-	result PASS secret "no passphrase, hex form or PSK of Velho, Casa or Casa-6E in the journal, the console capture, /run/systemd/network or any /proc/*/cmdline"
+st=0
+scan=$(vm_fn secret_scan "$D" 2>/dev/null) || st=$?
+found=$(grep -E '^(leak|missing): ' <<<"$scan" | tr '\n' ' ' || true)
+read_line=$(sed -n 's/^read: //p' <<<"$scan")
+if [ "$st" -ne 0 ]; then
+	result FAIL secret "the search in the VM exited $st"
+elif [ "$(tail -n 1 <<<"$scan")" != "secret-scan: done" ]; then
+	result FAIL secret "the search in the VM did not report that it finished"
+elif [ -n "$found" ]; then
+	result FAIL secret "$found"
 else
-	result FAIL secret "$(printf '%s' "$leaks" | tr '\n' ' ')"
+	result PASS secret "no passphrase, hex form or PSK of Velho, Casa or Casa-6E in the journal (picker line present), the console capture, /run/systemd/network or any /proc/*/cmdline; read: $read_line"
 fi
 
 # --- regdb -------------------------------------------------------------------------
+# The links, then proof that the kernel loaded the database: no load failure, and
+# the US rules it holds come from it (the kernel's built-in world domain has none).
 detail=""
 # shellcheck disable=SC2016  # expanded by the shell in the VM
-if ! vsh 'f=/usr/lib/firmware; cmp -s "$f/regulatory.db" "$f/regulatory.db-upstream" && cmp -s "$f/regulatory.db.p7s" "$f/regulatory.db.p7s-upstream" && [ "$(readlink "$f/regulatory.db")" = regulatory.db-upstream ]'; then
-	detail="/usr/lib/firmware/regulatory.db is not a link to the upstream copy"
+if ! vsh 'f=/usr/lib/firmware; [ "$(readlink "$f/regulatory.db")" = regulatory.db-upstream ] && [ "$(readlink "$f/regulatory.db.p7s")" = regulatory.db.p7s-upstream ] && [ -s "$f/regulatory.db-upstream" ] && [ -s "$f/regulatory.db.p7s-upstream" ]'; then
+	detail="regulatory.db and regulatory.db.p7s in /usr/lib/firmware are not links to their non-empty -upstream files"
 fi
 if [ -z "$detail" ]; then
 	kl=$(vexec journalctl -b0 -k --no-pager -o cat 2>/dev/null || true)
 	if grep -qF 'failed to load regulatory.db' <<<"$kl"; then detail="the kernel log has 'failed to load regulatory.db'"; fi
+	cert=$(grep -m1 -oE "cfg80211: Loaded X\.509 cert '[^']*'" <<<"$kl" || true)
 fi
 if [ -z "$detail" ]; then
 	reg=$(vexec iw reg get 2>/dev/null || true)
-	grep -q '^country US:' <<<"$reg" || detail="iw reg get does not show US"
+	us=$(sed -n '/^country US:/,/^$/p' <<<"$reg")
+	rules=$(grep -c '^[[:space:]]*(' <<<"$us" || true)
+	if ! grep -q '^country US: DFS-FCC' <<<"$us"; then detail="iw reg get does not show country US with DFS-FCC"
+	elif ! grep -q '(5925 - 7125 @' <<<"$us"; then detail="iw reg get shows US without the database's 6 GHz rule (5925 - 7125)"
+	fi
 fi
 if [ -z "$detail" ]; then
-	result PASS regdb "regulatory.db and regulatory.db.p7s link to their upstream copies, which equal the signed files; no 'failed to load regulatory.db'; iw reg get shows US"
+	result PASS regdb "regulatory.db and regulatory.db.p7s link to the package's -upstream files; no 'failed to load regulatory.db'; iw reg get shows country US: DFS-FCC with $rules rules from the database, 5925 - 7125 among them${cert:+; kernel: $cert}"
 else
 	result FAIL regdb "$detail"
 fi
