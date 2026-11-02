@@ -5,13 +5,19 @@
 # arca-wifi.drivers lists, from the linux-firmware checkout the base image
 # already uses for its NIC firmware, into /usr/lib/firmware; an iwlwifi .ucode
 # only inside its API window (see arca-wifi.drivers), and a link only when its
-# target is installed. Then it fails the build when
-#   1. a file of a listed section (after the windows) is not in the image;
+# target is installed. Before it installs anything, it refuses a list with no
+# driver line, a File:, RawFile: or Link: name that is absolute or has a ".."
+# component, and a link whose target leaves the firmware tree. Then it fails
+# the build when
+#   1. a file of a listed section (after the windows) is not in the image, or
+#      no file is installed at all;
 #   2. an iwlwifi .ucode of a listed section has a prefix with no window row;
 #   3. a window's maximum is not the API a wireless module declares for that
-#      prefix (modinfo -F firmware), or a declared prefix has no row;
+#      prefix (modinfo -F firmware), a declared prefix has no row, or iwlwifi
+#      is listed but no module declares an iwlwifi .ucode;
 #   4. a name a wireless module declares is in the checkout (as a file or a
 #      WHENCE link) but was not installed.
+# A modinfo that fails stops it too.
 # Wireless modules are those under drivers/net/wireless and those in staging
 # that depend on cfg80211 or mac80211. It writes the installed list, headed by the
 # line "wifi-firmware: <files> files, <bytes> bytes raw" that it also prints,
@@ -23,6 +29,7 @@
 # (the list) and ARCA_WIFI_MODINFO (the modinfo command).
 set -eu
 
+die() { echo "arca-wifi: $*" >&2; exit 1; }
 PATH=$PATH:/usr/sbin:/sbin
 src=${ARCA_WIFI_FW_SRC:-/work/src/app-build/linux-firmware}
 list=${ARCA_WIFI_DRIVERS:-${SRCDIR:-/work/src}/mkosi.images/base/mkosi.conf.d/arca-wifi.drivers}
@@ -35,9 +42,10 @@ if [ -z "$moddir" ]; then
 fi
 dest=${DESTDIR:?}/usr/lib/firmware
 out=$DESTDIR/usr/share/arca-wifi/firmware.txt
-[ -f "$src/WHENCE" ] || { echo "arca-wifi: no WHENCE in $src" >&2; exit 1; }
-[ -f "$list" ] || { echo "arca-wifi: no list $list" >&2; exit 1; }
-[ -d "$moddir/kernel" ] || { echo "arca-wifi: no kernel/ in $moddir" >&2; exit 1; }
+[ -f "$src/WHENCE" ] || die "no WHENCE in $src"
+[ -f "$list" ] || die "no list $list"
+[ -d "$moddir/kernel" ] || die "no kernel/ in $moddir"
+grep -Eq '^driver[[:space:]]+[^[:space:]]' "$list" || die "no driver line in $list"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -55,33 +63,46 @@ function apinum(a) { return a ~ /^c/ ? 1000 + substr(a, 2) : a + 0 }
 '
 
 # The plan: F <file>, D <file dropped by its window>, L <link> <target>,
-# S <link to a dropped file>, E <error>; and every WHENCE link name, for rule 4.
+# S <link to a dropped file>, E <error>, U <unsafe path>; and every WHENCE link
+# name, for rule 4.
 # shellcheck disable=SC2016
-awk -v windows="$tmp/windows" -v links="$tmp/whence-links" "$WINDOWS"'
+awk -v windows="$tmp/windows" -v list="$list" -v links="$tmp/whence-links" "$WINDOWS"'
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 function unq(s) { s = trim(s); gsub(/"/, "", s); return s }
+# unsafe(p): p is absolute or has a ".." component.
+function unsafe(p) { return p ~ /^\// || p ~ /(^|\/)\.\.(\/|$)/ }
+# norm(p): p without "." and ".." components; esc is set when a ".." would
+# leave the tree.
 function norm(p,   n, a, i, o, k) {
-	n = split(p, a, "/"); k = 0
+	n = split(p, a, "/"); k = 0; esc = 0
 	for (i = 1; i <= n; i++) {
 		if (a[i] == "" || a[i] == ".") continue
-		if (a[i] == "..") { if (k > 0) k--; continue }
+		if (a[i] == "..") { if (k > 0) k--; else esc = 1; continue }
 		o[++k] = a[i]
 	}
 	p = ""; for (i = 1; i <= k; i++) p = p (i > 1 ? "/" : "") o[i]
 	return p
 }
-BEGIN { loadwin(windows) }
-FNR == NR { if ($1 == "driver") { d = $0; sub(/^driver[ \t]+/, "", d); want[trim(d)] = 1 } next }
+BEGIN {
+	loadwin(windows)
+	while ((getline l < list) > 0) if (l ~ /^driver[ \t]/) { sub(/^driver[ \t]+/, "", l); want[trim(l)] = 1 }
+}
 /^Driver:/ { d = $0; sub(/^Driver:/, "", d); cur = trim(d); on = cur in want; if (on) seen[cur] = 1; next }
 /^Link:/ {
 	l = $0; sub(/^Link:/, "", l); i = index(l, "->"); if (!i) next
 	name = unq(substr(l, 1, i - 1)); tgt = unq(substr(l, i + 2))
 	print name > links
-	if (on) { nl++; ln[nl] = name; lt[nl] = tgt; lr[nl] = norm((name ~ /\// ? name : "") "/../" tgt) }
+	if (on) {
+		if (unsafe(name)) { print "U\tLink: name " name; next }
+		r = norm((name ~ /\// ? name "/../" : "") tgt)
+		if (tgt ~ /^\// || esc) { print "U\tLink: " name " -> " tgt " leaves the firmware tree"; next }
+		nl++; ln[nl] = name; lt[nl] = tgt; lr[nl] = r
+	}
 	next
 }
 on && /^(File|RawFile):/ {
 	f = $0; sub(/^(RawFile|File):/, "", f); f = unq(f); b = f; sub(/.*\//, "", b)
+	if (unsafe(f)) { print "U\tFile: " f; next }
 	if (b ~ /^iwlwifi-.*-c?[0-9]+\.ucode$/) {
 		pre = b; sub(/-c?[0-9]+\.ucode$/, "", pre); api = b; sub(/\.ucode$/, "", api); sub(/.*-/, "", api)
 		w = window(pre)
@@ -105,7 +126,11 @@ END {
 	} while (more)
 	for (i = 1; i <= nl; i++) if (!done[i]) print "E\t1. link " ln[i] " -> " lt[i] " has no target in its sections"
 }
-' "$list" "$src/WHENCE" > "$tmp/plan"
+' "$src/WHENCE" > "$tmp/plan"
+if grep -q "^U$tab" "$tmp/plan"; then
+	grep "^U$tab" "$tmp/plan" | cut -f2- | sed 's/^/arca-wifi: unsafe path: /' >&2
+	exit 1
+fi
 
 # Install.
 while IFS="$tab" read -r kind a b; do
@@ -140,18 +165,24 @@ while IFS="$tab" read -r kind a b; do
 		else echo "1. link $a does not resolve" >> "$tmp/errors"; fi ;;
 	esac
 done < "$tmp/plan"
+[ "$files" -gt 0 ] || echo "1. no file installed" >> "$tmp/errors"
 
 # Rules 3 and 4: what the wireless modules declare.
 find "$moddir/kernel/drivers/net/wireless" -name '*.ko*' > "$tmp/modules" 2>/dev/null || true
-find "$moddir/kernel/drivers/staging" -name '*.ko*' 2>/dev/null | while IFS= read -r m; do
-	if "$modinfo" -F depends "$m" | tr ',' '\n' | grep -Eqx 'cfg80211|mac80211'; then echo "$m"; fi
-done >> "$tmp/modules"
+find "$moddir/kernel/drivers/staging" -name '*.ko*' > "$tmp/staging" 2>/dev/null || true
+while IFS= read -r m; do
+	deps=$("$modinfo" -F depends "$m") || die "modinfo -F depends $m failed"
+	if printf '%s\n' "$deps" | tr ',' '\n' | grep -Eqx 'cfg80211|mac80211'; then echo "$m" >> "$tmp/modules"; fi
+done < "$tmp/staging"
 : > "$tmp/declared"
 while IFS= read -r m; do
-	"$modinfo" -F firmware "$m" >> "$tmp/declared"
+	"$modinfo" -F firmware "$m" >> "$tmp/declared" || die "modinfo -F firmware $m failed"
 done < "$tmp/modules"
 [ -s "$tmp/modules" ] || echo "4. no wireless module in $moddir" >> "$tmp/errors"
 sort -u -o "$tmp/declared" "$tmp/declared"
+if grep -Eq '^driver[[:space:]]+iwlwifi[[:space:]]' "$list" && ! grep -Eq '^iwlwifi-.*-c?[0-9]+\.ucode$' "$tmp/declared"; then
+	echo "3. iwlwifi is listed, but no wireless module declares an iwlwifi .ucode" >> "$tmp/errors"
+fi
 # shellcheck disable=SC2016
 awk -v windows="$tmp/windows" "$WINDOWS"'
 BEGIN { loadwin(windows) }

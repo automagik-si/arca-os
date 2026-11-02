@@ -6,9 +6,10 @@
 # It builds a tiny linux-firmware tree from wifi-fw/WHENCE and wifi-fw/files.txt,
 # a module directory of text "modules" read by a stand-in modinfo, and a driver
 # list, then runs the script against them: the complete fixture must install
-# exactly the expected files and links, and each completeness rule must fail its
-# own broken fixture with exit 1 and that rule's message. Prints PASS/FAIL lines;
-# exits 1 when any case fails.
+# exactly the expected files and links, each completeness rule must fail its
+# own broken fixture with exit 1 and that rule's message, and an empty driver
+# list, a failing modinfo and an unsafe WHENCE path must be refused before
+# anything is installed. Prints PASS/FAIL lines; exits 1 when any case fails.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -36,6 +37,11 @@ cat > "$tmp/modinfo" <<'EOF'
 sed -n "s/^$2: //p" "$3"
 EOF
 chmod 0755 "$tmp/modinfo"
+# One that prints nothing, and one that fails.
+mkdir -p "$tmp/bin"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/modinfo-empty"
+printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/modinfo-fail"
+chmod 0755 "$tmp/bin/modinfo-empty" "$tmp/bin/modinfo-fail"
 
 # module <dir> <path under kernel/> <line>...: writes one text module.
 module() {
@@ -65,11 +71,12 @@ drivers() {
 		'iwlwifi iwlwifi-so-?0-gf*-?0 89 89' | sed -e "${2:-}" > "$1"
 }
 
-# run <case> <src> <drivers> <modules>: runs the script into $tmp/<case>/dest.
+# run <case> <src> <drivers> <modules> [modinfo]: runs the script into
+# $tmp/<case>/dest.
 run() {
 	local c=$1
 	mkdir -p "$tmp/$c/dest"
-	ARCA_WIFI_FW_SRC=$2 ARCA_WIFI_DRIVERS=$3 ARCA_WIFI_MODULES=$4 ARCA_WIFI_MODINFO=$tmp/modinfo \
+	ARCA_WIFI_FW_SRC=$2 ARCA_WIFI_DRIVERS=$3 ARCA_WIFI_MODULES=$4 ARCA_WIFI_MODINFO=${5:-$tmp/modinfo} \
 		DESTDIR=$tmp/$c/dest sh "$script" > "$tmp/$c/out" 2>&1
 }
 
@@ -90,6 +97,7 @@ intel/iwlwifi/iwlwifi-so-a0-gf-a0-89.ucode
 intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm'
 	want_links='fakewifi/board.txt
 fakewifi/fw.bin
+fakewifi/up.bin
 iwlwifi-bz-b0-fm-c0-c102.ucode
 iwlwifi-so-a0-gf-a0-89.ucode
 iwlwifi-so-a0-gf-a0.pnvm'
@@ -110,15 +118,24 @@ iwlwifi-so-a0-gf-a0.pnvm'
 	else pass "complete ($line; so-a0-gf-a0-88 and bz c107 outside their windows, other/blob.bin unlisted)"; fi
 fi
 
-# broken <case> <rule> <src> <drivers> <modules>: the run must exit 1 with that
-# rule's message and install no list.
-broken() {
-	local c=$1 rule=$2 rc=0
-	run "$c" "$3" "$4" "$5" || rc=$?
+# fails <case> <message regex> <src> <drivers> <modules> [modinfo]: the run
+# must exit 1 with a message matching "^arca-wifi: <regex>" and install no list.
+fails() {
+	local c=$1 re="^arca-wifi: $2" rc=0
+	run "$c" "$3" "$4" "$5" ${6:+"$6"} || rc=$?
 	if [ "$rc" -ne 1 ]; then fail "$c" "exit $rc, want 1"
-	elif ! grep -q "^arca-wifi: incomplete: $rule\. " "$tmp/$c/out"; then fail "$c" "no rule $rule message: $(cat "$tmp/$c/out")"
+	elif ! grep -q "$re" "$tmp/$c/out"; then fail "$c" "no '$re' message: $(cat "$tmp/$c/out")"
 	elif [ -e "$tmp/$c/dest/usr/share/arca-wifi/firmware.txt" ]; then fail "$c" "the list was written"
-	else pass "$c ($(grep -m 1 "^arca-wifi: incomplete: $rule\. " "$tmp/$c/out"))"; fi
+	else pass "$c ($(grep -m 1 "$re" "$tmp/$c/out"))"; return 0; fi
+	return 1
+}
+# broken <case> <rule> <src> <drivers> <modules> [modinfo]: that rule's message.
+broken() { fails "$1" "incomplete: $2\\. " "${@:3}" || true; }
+# refused <case> <message regex> <src> <drivers> <modules> [modinfo]: also
+# nothing installed.
+refused() {
+	fails "$@" || return 0
+	[ -z "$(find "$tmp/$1/dest" ! -type d)" ] || fail "$1" "something was installed"
 }
 
 # Rule 1: a listed file is missing from the tree; a listed driver has no section.
@@ -137,5 +154,35 @@ broken rule3-window-max 3 "$tmp/src" "$tmp/drivers-max" "$tmp/mod"
 # Rule 4: a wireless module declares a file of the tree that was not installed.
 modules "$tmp/mod-undeclared" 'firmware: other/blob.bin'
 broken rule4-not-installed 4 "$tmp/src" "$tmp/drivers" "$tmp/mod-undeclared"
+
+# A listed section with no files, and modules that declare nothing: nothing is
+# installed, which is no pass.
+cp -a "$tmp/src" "$tmp/src-nofiles"
+printf '%s\n' '' '-----' '' 'Driver: emptywifi - A fixture section with no files' '' 'Licence: fixture' >> "$tmp/src-nofiles/WHENCE"
+printf '%s\n' 'driver emptywifi - A fixture section with no files' > "$tmp/drivers-nofiles"
+module "$tmp/mod-none" drivers/net/wireless/none/none.ko 'depends: cfg80211'
+broken no-files 1 "$tmp/src-nofiles" "$tmp/drivers-nofiles" "$tmp/mod-none"
+# iwlwifi is listed, but modinfo declares no iwlwifi .ucode.
+broken modinfo-empty 3 "$tmp/src" "$tmp/drivers" "$tmp/mod" "$tmp/bin/modinfo-empty"
+# An empty driver list, and one with only comments and windows.
+: > "$tmp/drivers-empty"
+refused list-empty 'no driver line' "$tmp/src" "$tmp/drivers-empty" "$tmp/mod"
+drivers "$tmp/drivers-nodriver" '/^driver /d'
+refused list-no-driver 'no driver line' "$tmp/src" "$tmp/drivers-nodriver" "$tmp/mod"
+# A modinfo that fails.
+fails modinfo-fails 'modinfo -F [a-z]* .* failed' "$tmp/src" "$tmp/drivers" "$tmp/mod" "$tmp/bin/modinfo-fail" || true
+# Unsafe WHENCE paths in a listed section: refused before anything is
+# installed, and nothing lands outside the destination.
+n=0
+for l in 'File: ../escape.bin' 'RawFile: "/escape.bin"' 'File: fakewifi/../../escape.bin' \
+	'Link: ../escape.bin -> fakewifi/fw-1.bin' 'Link: /escape.bin -> fakewifi/fw-1.bin' \
+	'Link: fakewifi/escape.bin -> ../../escape.bin' 'Link: fakewifi/escape.bin -> /escape.bin'; do
+	n=$((n + 1))
+	cp -a "$tmp/src" "$tmp/src-unsafe$n"
+	sed -i "s#^Link: fakewifi/fw.bin -> fw-2.bin\$#&\\n$l#" "$tmp/src-unsafe$n/WHENCE"
+	grep -qxF "$l" "$tmp/src-unsafe$n/WHENCE" || { fail "unsafe$n" "fixture not edited"; continue; }
+	refused "unsafe$n" "unsafe path: " "$tmp/src-unsafe$n" "$tmp/drivers" "$tmp/mod"
+	[ ! -e "$tmp/escape.bin" ] && [ ! -e "$tmp/unsafe$n/escape.bin" ] || fail "unsafe$n" "a file escaped"
+done
 
 exit "$failed"

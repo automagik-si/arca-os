@@ -3,7 +3,8 @@
 # driver <text>: the WHENCE section whose "Driver:" line reads <text>. Every
 #   File:, RawFile: and Link: of it is installed. The sections are those of
 #   the Wi-Fi drivers this kernel builds (drivers/net/wireless, and r8723bs in
-#   staging); the Bluetooth sections of combo chips are left out.
+#   staging). Sections whose files only a Bluetooth driver loads are left
+#   out: the Bluetooth sections of combo chips, and AR3001's ar3k/ files.
 # iwlwifi <prefix glob> <api-min> <api-max>: an iwlwifi .ucode file,
 #   <prefix>-<api>.ucode, is installed only when its API is inside the window
 #   of the row whose glob matches its prefix; the kernel never asks for the
@@ -45,7 +46,6 @@ driver ath10k - Qualcomm Atheros support for QCA988x family of chips
 driver ath11k - Qualcomm Technologies 802.11ax chipset support
 driver ath12k - Qualcomm Technologies Wi-Fi 7 chipset support
 driver ath6kl - Atheros support for AR6003 WiFi-Bluetooth combo module
-driver ath6kl - Atheros support for AR3001 WiFi-Bluetooth combo module
 driver ar5523 - Atheros AR5523 based USB Wifi dongles
 driver carl9170 - Atheros AR9170 802.11 draft-n USB driver
 driver cw1200 - ST-E CW1100/CW1200 WLAN driver
