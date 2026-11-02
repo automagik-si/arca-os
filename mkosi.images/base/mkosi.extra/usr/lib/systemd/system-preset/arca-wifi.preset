@@ -1,0 +1,6 @@
+# Debian's own supplicant units stay off: arca-wifi@.service runs one
+# supplicant per Wi-Fi device, on the configuration incus-osd renders.
+disable wpa_supplicant.service
+disable wpa_supplicant@.service
+disable wpa_supplicant-nl80211@.service
+disable wpa_supplicant-wired@.service
