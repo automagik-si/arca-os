@@ -81,9 +81,17 @@ func TestParseIEs(t *testing.T) {
 			t.Errorf("%s: ParseIEs = %+v, want %+v", name, got, w)
 		}
 
-		// Cut at every length, a fixture parses without a panic.
+		// Cut at every length, a fixture parses without a panic; so does each of its
+		// elements when its own length and body are cut short, which hands every
+		// element reader (heWidth among them) each short body.
 		for i := range ies {
 			_ = ParseIEs(ies[:i])
+		}
+
+		for rest := ies; len(rest) >= 2 && len(rest) >= 2+int(rest[1]); rest = rest[2+int(rest[1]):] {
+			for k := range int(rest[1]) {
+				_ = ParseIEs(append([]byte{rest[0], byte(k)}, rest[2:2+k]...))
+			}
 		}
 
 		read++
@@ -100,8 +108,26 @@ func TestParseIEs(t *testing.T) {
 	}
 
 	// Malformed elements: a length past the end, a lone id, an empty extension and a short HE operation.
-	for _, raw := range [][]byte{nil, {255}, {255, 200, 35}, {61, 1}, {255, 0}, {192, 0}, {36, 3, 0xff, 0xff, 0xff}, {255, 1, 106}} {
+	for _, raw := range [][]byte{nil, {255}, {255, 200, 35}, {61, 1}, {255, 0}, {192, 0}, {255, 4, 36, 0xff, 0xff, 0xff}, {255, 1, 106}} {
 		_ = ParseIEs(raw)
+	}
+
+	// The HE Operation of he160_6ghz, cut short: the width is read only from a whole
+	// 6 GHz information field, through ParseIEs and heWidth alike.
+	heOp := []byte{0x24, 0x00, 0x00, 0x02, 0x01, 0xff, 0xff, 0x25, 0x03, 0x32, 0x00, 0x0c}
+	for k := 1; k <= len(heOp); k++ {
+		want := 0
+		if k == len(heOp) {
+			want = 160
+		}
+
+		if got := heWidth(heOp[:k]); got != want {
+			t.Errorf("heWidth of %d bytes = %d, want %d", k, got, want)
+		}
+
+		if got := ParseIEs(append([]byte{255, byte(k)}, heOp[:k]...)); got.Width != max(want, 20) {
+			t.Errorf("ParseIEs of an HE Operation of %d bytes = %+v, want width %d", k, got, max(want, 20))
+		}
 	}
 
 	if got := ParseIEs(nil); got != (Caps{Generation: 0, Width: 20}) {
@@ -163,6 +189,91 @@ func TestRank(t *testing.T) {
 	if len(Rank(nil)) != 0 {
 		t.Error("Rank of no BSS is not empty")
 	}
+
+	// Within one SSID the strongest security class wins before speed: an open BSS
+	// never stands for a network that has a secured one, nearer and faster though it is.
+	t.Run("security-first", func(t *testing.T) {
+		he80, ht20 := fixtureIEs(t, "he80_5ghz"), fixtureIEs(t, "ht20")
+		cases := []struct {
+			name  string
+			bss   []BSS
+			sec   string
+			sae   bool
+			bssid string
+		}{
+			{"open twin of SAE", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:01:01", Freq: 5180, Level: -30, Flags: "[ESS]", IEs: he80},
+				{SSID: "Casa", BSSID: "02:00:00:00:01:02", Freq: 2412, Level: -70, Flags: "[WPA2-SAE-CCMP][ESS]", IEs: ht20},
+			}, "wpa-personal", true, "02:00:00:00:01:02"},
+			{"SAE before WPA2", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:02:01", Freq: 5180, Level: -30, Flags: "[WPA2-PSK-CCMP][ESS]", IEs: he80},
+				{SSID: "Casa", BSSID: "02:00:00:00:02:02", Freq: 2412, Level: -70, Flags: "[WPA2-SAE-CCMP][ESS]", IEs: ht20},
+			}, "wpa-personal", true, "02:00:00:00:02:02"},
+			{"WPA2 before WPA", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:03:01", Freq: 5180, Level: -30, Flags: "[WPA-PSK-TKIP][ESS]", IEs: he80},
+				{SSID: "Casa", BSSID: "02:00:00:00:03:02", Freq: 2412, Level: -70, Flags: "[WPA-PSK-CCMP][WPA2-PSK-CCMP][ESS]", IEs: ht20},
+			}, "wpa-personal", false, "02:00:00:00:03:02"},
+			{"WPA before open", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:04:01", Freq: 5180, Level: -30, Flags: "[ESS]", IEs: he80},
+				{SSID: "Casa", BSSID: "02:00:00:00:04:02", Freq: 2412, Level: -70, Flags: "[WPA-PSK-TKIP][ESS]", IEs: ht20},
+			}, "wpa-personal", false, "02:00:00:00:04:02"},
+			{"enterprise before open", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:05:01", Freq: 5180, Level: -30, Flags: "[ESS]", IEs: he80},
+				{SSID: "Casa", BSSID: "02:00:00:00:05:02", Freq: 2412, Level: -70, Flags: "[WPA2-EAP-CCMP][ESS]", IEs: ht20},
+			}, "enterprise", false, "02:00:00:00:05:02"},
+			{"OWE before open", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:06:01", Freq: 5180, Level: -30, Flags: "[ESS]", IEs: he80},
+				{SSID: "Casa", BSSID: "02:00:00:00:06:02", Freq: 2412, Level: -70, Flags: "[WPA2-OWE-CCMP][ESS]", IEs: ht20},
+			}, "owe", false, "02:00:00:00:06:02"},
+			{"speed within a class", []BSS{
+				{SSID: "Casa", BSSID: "02:00:00:00:07:01", Freq: 2412, Level: -30, Flags: "[WPA2-SAE-CCMP][ESS]", IEs: ht20},
+				{SSID: "Casa", BSSID: "02:00:00:00:07:02", Freq: 5180, Level: -70, Flags: "[WPA2-PSK+SAE-CCMP][SAE-H2E][ESS]", IEs: he80},
+			}, "wpa-personal", true, "02:00:00:00:07:02"},
+		}
+
+		for _, c := range cases {
+			for _, order := range [][]BSS{c.bss, {c.bss[1], c.bss[0]}} {
+				got := Rank(order)
+				if len(got) != 1 || got[0].Security != c.sec || got[0].SAE != c.sae || got[0].BSSID != c.bssid {
+					t.Errorf("%s: Rank = %+v, want %s (SAE %v) from %s", c.name, got, c.sec, c.sae, c.bssid)
+				}
+			}
+		}
+	})
+
+	// A key management that the supplicant configuration cannot express is listed,
+	// marked, and not selectable; it is never taken for an open network.
+	t.Run("key-management", func(t *testing.T) {
+		for flags, want := range map[string]struct {
+			sec      string
+			sae, psk bool
+		}{
+			"[WPA2-OWE-CCMP][ESS]":             {"owe", false, false},
+			"[WPA2-DPP-CCMP][ESS]":             {"unsupported", false, false},
+			"[WPA2-FT/PSK-CCMP][ESS]":          {"unsupported", false, false},
+			"[WPA2-SAE-EXT-KEY-GCMP-256][ESS]": {"unsupported", false, false},
+			"[WPA2-FILS-SHA256-CCMP][ESS]":     {"unsupported", false, false},
+			"[WPA2-?-CCMP][ESS]":               {"unsupported", false, false},
+			"[WPA2-FT/EAP+EAP-SHA256-CCMP]":    {"enterprise", false, false},
+			"[WPA2-PSK-SHA256-CCMP][ESS]":      {"wpa-personal", false, true},
+			"[WPA2-PSK+FT/PSK+SAE-CCMP][ESS]":  {"wpa-personal", true, true},
+			"[WPA2-FT/SAE+SAE-CCMP-preauth]":   {"wpa-personal", true, false},
+			"[ESS][OWE-TRANS]":                 {"open", false, false},
+			"[WPA2-PSK-CCMP][SAE-H2E][SAE-PK]": {"wpa-personal", false, true},
+			"[WEP][ESS]":                       {"wep", false, false},
+		} {
+			got := Rank([]BSS{{SSID: "Rede", BSSID: "02:00:00:00:08:01", Freq: 5180, Level: -50, Flags: flags}})
+			if len(got) != 1 || got[0].Security != want.sec || got[0].SAE != want.sae || got[0].PSK != want.psk {
+				t.Errorf("%s: Rank = %+v, want %s (SAE %v, PSK %v)", flags, got, want.sec, want.sae, want.psk)
+
+				continue
+			}
+
+			if joinable := want.sec == "wpa-personal" || want.sec == "open"; got[0].Selectable != joinable {
+				t.Errorf("%s: Selectable = %v, want %v", flags, got[0].Selectable, joinable)
+			}
+		}
+	})
 }
 
 // fakeWalk answers each request from replies, a SCAN with OK and a results event,
