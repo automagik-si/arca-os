@@ -20,10 +20,16 @@
 #                    line, and no application listed while "Wi-Fi: gate waiting
 #                    for a network" holds
 #   join             typing Velho's passphrase joins it, "Wi-Fi: gate released"
-#                    follows, incus and arca are listed within 10 min, the server
-#                    log shows a 10.42.1.x station fetching both, arca.service is
-#                    active, no application was pushed, and neither the journal
-#                    nor the console capture holds "already in progress"
+#                    follows, then "Wi-Fi: picker closed", incus and arca are
+#                    listed within 10 min, the server log shows a 10.42.1.x
+#                    station fetching both, arca.service is active, no
+#                    application was pushed, and neither the journal nor the
+#                    console capture holds "already in progress"
+# On a FAIL it prints, to stderr, what tells a stalled download apart: a byte
+# timeline of the server's connections (every 5 s), the server's requests, the
+# incus-osd journal around the longest stall, and the access point's and the
+# station's connect and disconnect events. They are put together in the VM and
+# withheld there when they hold the passphrase or its hex form.
 # Progress goes to stderr. Exit codes: 0 all PASS, 1 a FAIL, 2 usage.
 set -euo pipefail
 
@@ -32,7 +38,7 @@ D=/run/arca-wifi-test
 TREE=/root/wifi-tree
 
 project="" vm="" server_url="" updates="" sysext=""
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'wifi-test: %s\n' "$*" >&2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -82,10 +88,87 @@ apps_listed() {
 # type_keys <file in the VM>: plays a key sequence on a virtual keyboard there.
 # shellcheck disable=SC2016  # expanded by the shell in the VM
 type_keys() { vsh 'n=$(grep -l "^arca-test-keyboard$" /sys/class/input/event*/device/name | head -1); n=/dev/input/$(basename "$(dirname "$(dirname "$n")")"); evemu-play "$n" < "$1"' sh "$1"; }
-diagnose() {
-	log "last incus-osd and supplicant lines:"
-	vexec journalctl -b0 -u incus-osd -u 'arca-wifi@*' -n 40 --no-pager -o cat >&2 2>/dev/null || true
+# vm_fn <function> <args...>: runs a function of this script in the VM, with bash.
+vm_fn() { local f=$1; shift; vexec bash -c "$(declare -f "$f"); $f \"\$@\"" "$f" "$@"; }
+
+# sampler <port> <file> (in the VM): every 5 s, one line of numbers and test
+# addresses: the server's connections (count, acked bytes, send queue,
+# retransmits), the station side's unread bytes, incus-osd's written bytes, io
+# pressure, and the connected station's signal.
+sampler() {
+	local port=$1 out=$2 srv cli pid wb io sta n x
+	while :; do
+		# shellcheck disable=SC2016  # awk programs
+		srv=$(ip netns exec ap ss -Htin "( sport = :$port )" 2>/dev/null | awk '
+			/^[^ \t]/ { est = $1 == "ESTAB"; if (est) { n++; q += $3 } next }
+			est { for (i = 1; i <= NF; i++) {
+				if ($i ~ /^bytes_acked:/) { split($i, v, ":"); b += v[2] }
+				if ($i ~ /^retrans:/) { split($i, v, "[:/]"); r += v[3] } } }
+			END { printf "conns=%d acked=%d sendq=%d retrans=%d", n, b, q, r }')
+		# shellcheck disable=SC2016
+		cli=$(ss -Htn "( dport = :$port )" 2>/dev/null | awk '/^ESTAB/ { q += $2 } END { printf "recvq=%d", q }')
+		pid=$(systemctl show -p MainPID --value incus-osd.service)
+		wb=$(awk '/^write_bytes/ { print $2 }' "/proc/$pid/io" 2>/dev/null)
+		io=$(awk '/^some/ { sub("avg10=", "", $2); print $2 }' /proc/pressure/io 2>/dev/null)
+		sta=""
+		for n in /sys/class/net/*; do
+			[ -e "$n/phy80211" ] || continue
+			x=$(iw dev "${n##*/}" link 2>/dev/null | awk '/^Connected/ { c = 1 } /signal:/ { s = $2 } END { if (c) print s }')
+			[ -z "$x" ] || sta="${n##*/}:$x"
+		done
+		echo "$(date +%s) $srv $cli osd_write=${wb:-?} io_some10=${io:-?} sta=${sta:-none}"
+		sleep 5
+	done >>"$out"
 }
+
+# diagnostics <dir> (in the VM): the last incus-osd and supplicant lines and what
+# classifies a stall (see the header), printed only when they hold neither the
+# passphrase nor its hex form.
+diagnostics() {
+	local d=$1 out=$1/diag.txt stall
+	{
+		echo "== last incus-osd and supplicant lines"
+		journalctl -b0 -u incus-osd -u 'arca-wifi@*' -n 40 --no-pager -o cat 2>/dev/null || true
+		if [ -s "$d/timeline.log" ]; then
+			echo "== server connections every 5 s, when they change (VM time, seconds)"
+			# shellcheck disable=SC2016  # awk programs
+			awk '{ k = $2 " " $3 " " $6 } NR == 1 || k != prev { print; p = NR } { prev = k; last = $0 } END { if (p != NR) print last }' "$d/timeline.log" | tail -n 150
+			# The longest run of samples with open connections and no new acked byte.
+			# shellcheck disable=SC2016
+			stall=$(awk '{ split($2, c, "="); split($3, a, "="); stalled = NR > 1 && c[2] > 0 && pc > 0 && a[2] == pa }
+				stalled { if (s == "") s = pt; if ($1 - s > best) { best = $1 - s; bs = s } }
+				!stalled { s = "" }
+				{ pa = a[2]; pc = c[2]; pt = $1 }
+				END { if (best > 0) print bs, best }' "$d/timeline.log")
+			if [ -n "$stall" ]; then
+				# shellcheck disable=SC2086  # two numbers
+				set -- $stall
+				echo "== longest stall: $2 s without a new acked byte from $1; incus-osd from 60 s before to 420 s after"
+				journalctl -b0 -u incus-osd --no-pager -o short-unix --since "@$(($1 - 60))" --until "@$(($1 + $2 + 420))" 2>/dev/null | tail -n 80 || true
+			else
+				echo "== no stall in the timeline"
+			fi
+		fi
+		if [ -s "$d/access.log" ]; then
+			echo "== server requests but the HEAD checks"
+			grep -v '"HEAD ' "$d/access.log" | tail -n 40 || true
+		fi
+		if [ -s "$d/hostapd.log" ]; then
+			echo "== access point events"
+			grep -E 'AP-STA-|IEEE 802\.11: (associated|disassociated|deauthenticated)|pairwise key handshake completed|inactivity|excessive' "$d/hostapd.log" | tail -n 40 || true
+		fi
+		echo "== station events"
+		journalctl -b0 -u 'arca-wifi@*' --no-pager -o short-unix 2>/dev/null \
+			| grep -E 'CTRL-EVENT-(CONNECTED|DISCONNECTED|SSID-TEMP-DISABLED|BEACON-LOSS|ASSOC-REJECT)|Trying to associate|Associated with' | tail -n 40 || true
+	} >"$out"
+	if [ -s "$d/velho.pass" ] && { grep -qF -f "$d/velho.pass" "$out" || grep -qiF "$(od -An -tx1 "$d/velho.pass" | tr -d ' \n')" "$out"; }; then
+		echo "wifi-test: the diagnostics hold the passphrase; withheld"
+	else
+		sed 's/^/wifi-test: | /' "$out"
+	fi
+	rm -f "$out"
+}
+diagnose() { vm_fn diagnostics "$D" >&2 2>/dev/null || true; }
 
 # --- first-boot-gate ---------------------------------------------------------
 log "waiting for the first-boot gate"
@@ -139,7 +222,7 @@ ip netns exec ap sysctl -qw net.ipv4.ip_forward=1
 tr -dc a-z0-9 < /dev/urandom | head -c 24 > "$d/velho.pass"
 { printf "interface=%s\ndriver=nl80211\nssid=Velho\nhw_mode=g\nchannel=1\nieee80211n=1\n" "$apif"
   printf "wpa=2\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\nwpa_passphrase="; cat "$d/velho.pass"; echo; } > "$d/velho.conf"
-ip netns exec ap hostapd -B -P "$d/hostapd.pid" -f "$d/hostapd.log" "$d/velho.conf" >/dev/null
+ip netns exec ap hostapd -B -t -P "$d/hostapd.pid" -f "$d/hostapd.log" "$d/velho.conf" >/dev/null
 for _ in $(seq 20); do ip -n ap addr show dev "$apif" | grep -q "state UP" && break; sleep 1; done
 ip netns exec ap dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --bind-interfaces --interface="$apif" \
 	--dhcp-range=10.42.1.10,10.42.1.200,255.255.255.0,1h --dhcp-option=option:router,10.42.1.1 \
@@ -153,8 +236,6 @@ server.modules = ("mod_accesslog")
 accesslog.filename = "$d/access.log"
 server.errorlog = "$d/lighttpd.log"
 server.pid-file = "$d/lighttpd.pid"
-# A client that stops reading for a while (a slow disk under load) keeps its download.
-server.max-write-idle = 3600
 mimetype.assign = ("" => "application/octet-stream")
 EOF
 ip netns exec ap lighttpd -f "$d/lighttpd.conf"
@@ -184,6 +265,9 @@ if ! vsh 'for _ in $(seq 30); do grep -qx arca-test-keyboard /sys/class/input/ev
 	result FAIL join "the virtual keyboard did not appear"
 	exit 1
 fi
+# shellcheck disable=SC2016  # expanded by bash in the VM
+vexec systemd-run -q --unit=arca-test-sampler --collect \
+	bash -c "$(declare -f sampler); sampler \"\$@\"" sampler "$port" "$D/timeline.log"
 
 detail=""
 if ! wait_for 180 sh -c 'incus console "$@" --show-log 2>/dev/null | grep -qF Velho' sh "${P[@]}" "$vm"; then
@@ -200,6 +284,9 @@ if [ -z "$detail" ]; then
 fi
 if [ -z "$detail" ]; then
 	gate_s=$((SECONDS - t0))
+	wait_for 60 journal_has 'Wi-Fi: picker closed' || detail="no 'Wi-Fi: picker closed' 60 s after 'Wi-Fi: gate released'"
+fi
+if [ -z "$detail" ]; then
 	wait_for 600 apps_listed 'index("incus") != null and index("arca") != null' || detail="incus and arca not both listed after 600 s"
 fi
 if [ -z "$detail" ]; then
@@ -217,8 +304,9 @@ if [ -z "$detail" ] && { journal_has 'already in progress' || grep -qF 'already 
 	detail="'already in progress' in the journal or on the console"
 fi
 vexec rm -f "$D/velho.events" "$D/enter.events"
+vexec systemctl stop arca-test-sampler.service 2>/dev/null || true
 if [ -z "$detail" ]; then
-	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'"
+	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; picker closed; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'"
 else
 	result FAIL join "$detail"
 	diagnose

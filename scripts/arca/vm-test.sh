@@ -71,7 +71,9 @@
 #           /srv/artifacts/installer/wifi-test/updates (from tracer-installer.sh;
 #           refused with exit 2 when missing), served in the VM at --server-url.
 #           It needs --from-builder and --provider images, and refuses
-#           --install-media.
+#           --install-media. run.sh's progress and diagnostics come to stdout
+#           with its results; a secret-shaped line among them is withheld and
+#           fails wifi-output.
 #   none    no checks
 # With --install-media, every set but none also checks installed,
 # media-removed (no install device left on the VM), apps-from-server (the
@@ -722,12 +724,30 @@ install_checks() {
 	fi
 }
 
+# withhold_secrets <flag file>: copies lines from stdin, but replaces a
+# secret-shaped one (a passphrase field, a psk= or sae_password= line, a private
+# key) with a note and creates the flag file.
+withhold_secrets() {
+	local line
+	while IFS= read -r line || [ -n "$line" ]; do
+		if printf '%s\n' "$line" | grep -Eiq '"passphrase" *: *"[^"]|psk=|sae_password=|PRIVATE KEY'; then
+			: >"$1"
+			printf 'vm-test: a secret-shaped line was withheld\n'
+		else
+			printf '%s\n' "$line"
+		fi
+	done
+}
+
 wifi_checks() {
-	local rc=0
+	local rc=0 leak="$work/wifi-secret-shaped"
 	result PASS boot "agent after ${boot_s} s"
+	rm -f "$leak"
+	# Both streams, progress and diagnostics included, go through one check and on to stdout.
 	"$(dirname "$0")/test/wifi/run.sh" --project "$project" --vm "$vm" --server-url "$server_url" \
-		--updates "$work/updates" --debug-sysext "$work/debug.raw" || rc=$?
+		--updates "$work/updates" --debug-sysext "$work/debug.raw" 2>&1 | withhold_secrets "$leak" || rc=$?
 	[ "$rc" -eq 0 ] || result FAIL wifi "run.sh exited $rc"
+	[ ! -e "$leak" ] || result FAIL wifi-output "run.sh printed a secret-shaped line (withheld)"
 }
 
 if [ "$checks" = wifi ]; then
