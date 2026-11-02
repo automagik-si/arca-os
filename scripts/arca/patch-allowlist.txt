@@ -1,0 +1,18 @@
+# Upstream files the Arca OS patch stack may change. The stack guard,
+# scripts/arca/check-patch-stack.sh, refuses an upstream change to any file
+# not listed here. One path per line; lines starting with # are comments.
+incus-osd/api/images/update_file_component.go
+incus-osd/cmd/image-publisher/main_sync.go
+incus-osd/internal/applications/helpers.go
+incus-osd/internal/applications/load.go
+incus-osd/internal/state/struct.go
+scripts/prepare-upload.sh
+# Wi-Fi hooks in upstream code.
+incus-osd/api/system_network.go
+incus-osd/internal/rest/api_system_network.go
+incus-osd/internal/network/networkd.go
+incus-osd/internal/network/templates/network-common.txt
+incus-osd/internal/seed/network.go
+incus-osd/internal/nftables/nft.go
+incus-osd/internal/tui/tui.go
+incus-osd/cmd/incus-osd/main.go
