@@ -8,7 +8,8 @@
 #   allowed  upstream, and listed in scripts/arca/patch-allowlist.txt
 #   REFUSED  upstream, and not listed
 # The allowlist is read as committed at HEAD, so a working-tree edit cannot
-# admit a path. It prints one row per non-owned path, "<added> <deleted>
+# admit a path. A commit in the range can still admit one, so every path the
+# range adds to the allowlist is printed as "admitted <path>" for review. It prints one row per non-owned path, "<added> <deleted>
 # <path> <class>", then "total <n>/100", where n sums added and deleted lines
 # over the non-owned paths. Binary paths count as zero lines.
 #
@@ -64,6 +65,9 @@ while IFS=$'\t' read -r added deleted path; do
 	printf '%s %s %s %s\n' "$added" "$deleted" "$path" "$cls"
 done <<<"$numstat"
 
+git diff -U0 "$base..HEAD" -- "$ALLOWLIST" | sed -n 's/^+\([^+]\)/\1/p' |
+	sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' |
+	while IFS= read -r path; do printf 'admitted %s\n' "$path"; done || true
 printf 'total %s/%s\n' "$total" "$CAP"
 if [ "$refused" -eq 0 ] && [ "$total" -le "$CAP" ]; then
 	exit 0
