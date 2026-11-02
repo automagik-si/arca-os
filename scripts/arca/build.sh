@@ -120,8 +120,9 @@ sb() { od -An --endian=little -t "$1" -j "$2" -N "$3" "$usrfs" 2>/dev/null | tr 
 [ "$(stat -c %s "$usrfs")" -ge 1152 ] || die "$usrfs is too short for an erofs superblock"
 [ "$(sb x4 1024 4)" = e0f5e1e2 ] || die "$usrfs has no erofs superblock"
 usr_blocks=$(sb u4 1060 4) usr_blkszbits=$(sb u1 1036 1)
-[[ "$usr_blocks" =~ ^[0-9]+$ && "$usr_blkszbits" =~ ^[0-9]+$ ]] && [ "$usr_blkszbits" -ge 9 ] && [ "$usr_blkszbits" -le 16 ] \
-	|| die "$usrfs: short or bad erofs superblock (blocks '$usr_blocks', blkszbits '$usr_blkszbits')"
+if ! [[ "$usr_blocks" =~ ^[0-9]+$ && "$usr_blkszbits" =~ ^[0-9]+$ ]] || [ "$usr_blkszbits" -lt 9 ] || [ "$usr_blkszbits" -gt 16 ]; then
+	die "$usrfs: short or bad erofs superblock (blocks '$usr_blocks', blkszbits '$usr_blkszbits')"
+fi
 usr_bytes=$(( usr_blocks << usr_blkszbits ))
 usr_size=$(stat -c %s "$usrfs")
 awk -v u="$usr_bytes" -v s="$usr_size" 'BEGIN { printf "usr: %.1f MiB used of %d MiB\n", u / 1048576, s / 1048576 }'

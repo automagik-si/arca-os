@@ -182,7 +182,7 @@ for l in 'File: ../escape.bin' 'RawFile: "/escape.bin"' 'File: fakewifi/../../es
 	sed -i "s#^Link: fakewifi/fw.bin -> fw-2.bin\$#&\\n$l#" "$tmp/src-unsafe$n/WHENCE"
 	grep -qxF "$l" "$tmp/src-unsafe$n/WHENCE" || { fail "unsafe$n" "fixture not edited"; continue; }
 	refused "unsafe$n" "unsafe path: " "$tmp/src-unsafe$n" "$tmp/drivers" "$tmp/mod"
-	[ ! -e "$tmp/escape.bin" ] && [ ! -e "$tmp/unsafe$n/escape.bin" ] || fail "unsafe$n" "a file escaped"
+	if [ -e "$tmp/escape.bin" ] || [ -e "$tmp/unsafe$n/escape.bin" ]; then fail "unsafe$n" "a file escaped"; fi
 done
 
 exit "$failed"
