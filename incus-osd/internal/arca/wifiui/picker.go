@@ -106,14 +106,19 @@ func (p *picker) hide() {
 	slog.InfoContext(p.ctx, "Wi-Fi: picker closed")
 }
 
-// focus moves the keyboard to one of the picker's widgets, if it is shown.
+// focus moves the keyboard to one of the picker's widgets, if it is shown. It is
+// called from key handlers on the TUI's event loop, where a queued update would
+// wait for itself (QueueUpdate returns only after the loop ran it), so the
+// update is queued from another goroutine.
 func (p *picker) focus(widget tview.Primitive) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	go func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
 
-	if p.shown {
-		p.t.ShowArcaOverlay(p.root, widget)
-	}
+		if p.shown {
+			p.t.ShowArcaOverlay(p.root, widget)
+		}
+	}()
 }
 
 func (p *picker) requestScan() {
