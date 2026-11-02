@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -294,20 +296,33 @@ func (p *picker) rebuildList(entries []wifi.Entry) {
 }
 
 // row formats one network as the list shows it: name, Wi-Fi generation, band, width,
-// four signal bars and security. A 2.4 GHz network carries a yellow note; an enterprise
-// or WEP network is greyed out and cannot be chosen.
+// four signal bars and security. A 2.4 GHz network carries a yellow note; a network
+// that cannot be joined is greyed out and cannot be chosen. The list reads colour
+// tags, so the name is escaped.
 func row(e wifi.Entry) string {
-	line := fmt.Sprintf("%-24s %-8s %-7s %4d MHz %-4s  %-26s", tview.Escape(e.SSID), generation(e), band(e.Band), e.Width, bars(e.Signal), security(e))
-
-	if e.NotRecommended {
-		line += "[yellow]2.4 GHz – not recommended[-]"
-	}
+	line := fmt.Sprintf("%-24s %-8s %-7s %4d MHz %-4s  %-26s", tview.Escape(printable(e.SSID)), generation(e), band(e.Band), e.Width, bars(e.Signal), security(e))
 
 	if !e.Selectable {
 		line = "[gray]" + line + "[-]"
 	}
 
+	if e.NotRecommended {
+		line += "[yellow]2.4 GHz – not recommended[-]"
+	}
+
 	return line
+}
+
+// printable returns an SSID as the console may show it: each control character
+// (U+0000-U+001F, U+007F-U+009F), an escape sequence's ESC included, becomes U+FFFD.
+func printable(ssid string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '\uFFFD'
+		}
+
+		return r
+	}, ssid)
 }
 
 // generation names a network's Wi-Fi generation; HE on 6 GHz is Wi-Fi 6E.
@@ -363,6 +378,10 @@ func security(e wifi.Entry) string {
 		return "Enterprise (not supported)"
 	case e.Security == "wep":
 		return "WEP (not supported)"
+	case e.Security == "owe":
+		return "OWE (not supported)"
+	case e.Security == "unsupported":
+		return "Other (not supported)"
 	case e.SAE && e.PSK:
 		return "WPA2/WPA3"
 	case e.SAE:
@@ -411,7 +430,7 @@ func (p *picker) chooseNetwork(i int) {
 
 	e := p.entries[i]
 	if !e.Selectable {
-		p.setStatus(tview.Escape(e.SSID)+" is not supported", false)
+		p.setStatus(printable(e.SSID)+" is not supported", false)
 
 		return
 	}
@@ -458,14 +477,14 @@ func (p *picker) showSecurity() {
 	p.list.AddItem("Open", "", 0, nil)
 	p.list.AddItem("WPA-Personal", "", 0, nil)
 	p.list.SetCurrentItem(0)
-	p.setStatus("Choose the security of "+tview.Escape(p.chosen.SSID)+", then Enter; Esc cancels", false)
+	p.setStatus("Choose the security of "+printable(p.chosen.SSID)+", then Enter; Esc cancels", false)
 	p.focus(p.list)
 }
 
 // askPassphrase shows the masked passphrase field for the chosen network.
 func (p *picker) askPassphrase() {
 	p.step = stepPassphrase
-	p.field.SetAcceptanceFunc(passphraseAccept).SetLabel("Passphrase for " + tview.Escape(p.chosen.SSID) + ": ").SetText("")
+	p.field.SetAcceptanceFunc(passphraseAccept).SetLabel("Passphrase for " + tview.Escape(printable(p.chosen.SSID)) + ": ").SetText("")
 	p.setStatus("Type the passphrase, then Enter", false)
 	p.focus(p.field)
 }
@@ -525,6 +544,6 @@ func (p *picker) connect(passphrase string) {
 			return
 		}
 
-		status("Connected to " + tview.Escape(n.SSID) + "; waiting for the update server")
+		status("Connected to " + printable(n.SSID) + "; waiting for the update server")
 	}()
 }

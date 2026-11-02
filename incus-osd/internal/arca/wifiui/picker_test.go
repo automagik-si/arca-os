@@ -157,6 +157,61 @@ func TestPickerRows(t *testing.T) {
 	if p.step != stepPassphrase || !strings.Contains(p.field.GetLabel(), "Velho") {
 		t.Errorf("choosing a WPA-Personal network asks for no passphrase: step %d, label %q", p.step, p.field.GetLabel())
 	}
+
+	t.Run("unsafe-name", func(t *testing.T) {
+		// A tag, a control byte and an escape sequence in a name are shown as text.
+		const name = "a[red]b\x07c\x1b[31md"
+		const shown = "a[red]b\uFFFDc\uFFFD[31md"
+
+		odd := []wifi.Entry{
+			{SSID: name, Security: "owe", Generation: 6, Band: "2.4", Width: 20, Signal: -50, NotRecommended: true},
+			{SSID: name + "2", Security: wpa, PSK: true, Generation: 6, Band: "5", Width: 80, Signal: -50, Selectable: true},
+		}
+
+		if r := row(odd[0]); !strings.HasPrefix(r, "[gray]") || !strings.HasSuffix(r, "[-][yellow]2.4 GHz – not recommended[-]") {
+			t.Errorf("the yellow note is inside the grey span: %q", r)
+		}
+
+		p := newPicker(context.Background(), &state.State{}, &inlineOverlay{})
+		p.setEntries(odd, nil)
+
+		find := func(screen tcell.SimulationScreen, sub string) string {
+			for y := range testHeight {
+				for x := range testWidth {
+					if r, _, _, _ := screen.GetContent(x, y); r < 0x20 || r == 0x7f {
+						t.Fatalf("a control character %#x at %d,%d", r, x, y)
+					}
+				}
+
+				if line := screenLine(screen, y); strings.Contains(line, sub) {
+					return line
+				}
+			}
+
+			return ""
+		}
+
+		screen := drawPicker(t, p)
+		if line := find(screen, shown+" "); !strings.Contains(line, "OWE (not supported)") {
+			t.Errorf("the row of %q is %q", shown, strings.TrimSpace(line))
+		}
+
+		p.choose(0)
+
+		if p.step != stepList {
+			t.Errorf("an OWE network is selectable: step %d", p.step)
+		}
+
+		if find(drawPicker(t, p), shown+" is not supported") == "" {
+			t.Errorf("the status line does not show %q as text", shown)
+		}
+
+		p.choose(1)
+
+		if find(drawPicker(t, p), "Passphrase for "+shown+"2:") == "" {
+			t.Errorf("the passphrase label does not show %q as text: %q", shown, p.field.GetLabel())
+		}
+	})
 }
 
 // indexOf returns the list index of the network named ssid, or -1.
