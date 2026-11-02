@@ -153,6 +153,8 @@ server.modules = ("mod_accesslog")
 accesslog.filename = "$d/access.log"
 server.errorlog = "$d/lighttpd.log"
 server.pid-file = "$d/lighttpd.pid"
+# A client that stops reading for a while (a slow disk under load) keeps its download.
+server.max-write-idle = 3600
 mimetype.assign = ("" => "application/octet-stream")
 EOF
 ip netns exec ap lighttpd -f "$d/lighttpd.conf"
