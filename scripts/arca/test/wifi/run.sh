@@ -229,7 +229,8 @@ last=""
 for n in /sys/class/net/*; do if [ -e "$n/phy80211" ]; then last=$n; fi; done
 [ -n "$last" ] || { echo "no Wi-Fi device" >&2; exit 1; }
 ip netns add ap
-iw phy "$(cat "$last/phy80211/name")" set netns name ap
+apphy=$(cat "$last/phy80211/name")
+iw phy "$apphy" set netns name ap
 apif=$(ip netns exec ap iw dev | awk "\$1 == \"Interface\" { print \$2; exit }")
 ip -n ap link set lo up
 ip -n ap link add d0 type dummy
@@ -238,15 +239,20 @@ ip -n ap link set d0 up
 ip -n ap addr add 10.42.1.1/24 dev "$apif"
 ip netns exec ap sysctl -qw net.ipv4.ip_forward=1
 tr -dc a-z0-9 < /dev/urandom | head -c 24 > "$d/velho.pass"
-# fragm_threshold: hwsim takes CCMP keys as hardware keys and encrypts in its
-# own transmit, but mac80211 fast-xmit reserves no room for the CCMP header and
-# MIC there, so a data frame without 8 spare bytes at either end is dropped
-# ("WARNING: net/mac80211/wpa.c" in the kernel log), on every retransmission of
-# it too, and a download stalls. Any fragmentation threshold turns fast-xmit off
-# for this radio; 2346 is above every frame here, so nothing is fragmented.
-{ printf "interface=%s\ndriver=nl80211\nssid=Velho\nhw_mode=g\nchannel=1\nieee80211n=1\nfragm_threshold=2346\n" "$apif"
+{ printf "interface=%s\ndriver=nl80211\nssid=Velho\nhw_mode=g\nchannel=1\nieee80211n=1\n" "$apif"
   printf "wpa=2\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\nwpa_passphrase="; cat "$d/velho.pass"; echo; } > "$d/velho.conf"
 ip netns exec ap hostapd -B -t -P "$d/hostapd.pid" -f "$d/hostapd.log" "$d/velho.conf" >/dev/null
+# A fragmentation threshold keeps this radio off mac80211 fast-xmit. hwsim takes
+# CCMP keys as hardware keys and encrypts in its own transmit, but fast-xmit
+# reserves no room for the CCMP header and MIC there, so a data frame without 8
+# spare bytes at either end is dropped ("WARNING: net/mac80211/wpa.c" in the
+# kernel log), on every retransmission of it too, and a download stalls. hwsim
+# has no fragmentation of its own, so any threshold turns fast-xmit off; 2346 is
+# above every frame here, so nothing is fragmented. hostapd fragm_threshold does
+# not reach the radio, so iw sets it, after hostapd, and it is checked.
+ip netns exec ap iw phy "$apphy" set frag 2346
+ip netns exec ap iw phy "$apphy" info | grep -q "Fragmentation threshold: 2346" \
+	|| { echo "the access point radio has no fragmentation threshold" >&2; exit 1; }
 for _ in $(seq 20); do ip -n ap addr show dev "$apif" | grep -q "state UP" && break; sleep 1; done
 ip netns exec ap dnsmasq --conf-file=/dev/null --no-resolv --no-hosts --bind-interfaces --interface="$apif" \
 	--dhcp-range=10.42.1.10,10.42.1.200,255.255.255.0,1h --dhcp-option=option:router,10.42.1.1 \
@@ -332,7 +338,7 @@ if [ -z "$detail" ] && ! { vexec systemctl restart arca-wifi-hwsim.service && hw
 fi
 vexec rm -f "$D/velho.events" "$D/enter.events"
 vexec systemctl stop arca-test-sampler.service 2>/dev/null || true
-# Reported, not judged: dropped encrypted frames (see fragm_threshold above).
+# Reported, not judged: dropped encrypted frames (see the threshold above).
 ccmp=$(vexec journalctl -b0 -k --no-pager -o cat 2>/dev/null | grep -c 'WARNING: net/mac80211/wpa\.c' || true)
 if [ -z "$detail" ]; then
 	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; picker closed; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'; hwsim unit restarts cleanly; ${ccmp:-?} CCMP drop warnings in the kernel log"
