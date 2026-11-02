@@ -23,8 +23,10 @@
 #                    follows, then "Wi-Fi: picker closed", incus and arca are
 #                    listed within 10 min, the server log shows a 10.42.1.x
 #                    station fetching both, arca.service is active, no
-#                    application was pushed, and neither the journal nor the
-#                    console capture holds "already in progress"
+#                    application was pushed, neither the journal nor the
+#                    console capture holds "already in progress", and
+#                    arca-wifi-hwsim.service, active with its monitor device
+#                    in namespace hwsim, starts again cleanly
 # On a FAIL it prints, to stderr, what tells a stalled download apart: a byte
 # timeline of the server's connections (every 5 s), the server's requests, the
 # incus-osd journal around the longest stall, and the access point's and the
@@ -38,7 +40,7 @@ D=/run/arca-wifi-test
 TREE=/root/wifi-tree
 
 project="" vm="" server_url="" updates="" sysext=""
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'wifi-test: %s\n' "$*" >&2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -199,6 +201,13 @@ if ! vsh 'for c in hostapd iw dnsmasq lighttpd evemu-device evemu-play; do comma
 	result FAIL join "the debug sysext did not bring the test tools"
 	exit 1
 fi
+# hwsim_ok: the radios' unit is active and their monitor device is in its namespace.
+hwsim_ok() { vsh 'systemctl is-active -q arca-wifi-hwsim.service && ip -n hwsim -o link show | grep -q " link/ieee802.11/radiotap "'; }
+if ! hwsim_ok; then
+	result FAIL join "arca-wifi-hwsim.service is not active with the monitor device in namespace hwsim"
+	diagnose
+	exit 1
+fi
 log "pushing the update tree and starting Velho"
 vexec mkdir -p "$TREE"
 incus file push -q -r "${P[@]}" "$updates" "$vm$TREE/"
@@ -303,10 +312,13 @@ console
 if [ -z "$detail" ] && { journal_has 'already in progress' || grep -qF 'already in progress' "$tmp/console.txt"; }; then
 	detail="'already in progress' in the journal or on the console"
 fi
+if [ -z "$detail" ] && ! { vexec systemctl restart arca-wifi-hwsim.service && hwsim_ok; }; then
+	detail="arca-wifi-hwsim.service did not start again cleanly"
+fi
 vexec rm -f "$D/velho.events" "$D/enter.events"
 vexec systemctl stop arca-test-sampler.service 2>/dev/null || true
 if [ -z "$detail" ]; then
-	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; picker closed; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'"
+	result PASS join "Velho joined; gate released ${gate_s} s and incus,arca listed ${apps_s} s after the passphrase; picker closed; station $station fetched both; arca.service active; nothing pushed; no 'already in progress'; hwsim unit restarts cleanly"
 else
 	result FAIL join "$detail"
 	diagnose
