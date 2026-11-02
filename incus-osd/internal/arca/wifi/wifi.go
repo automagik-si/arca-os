@@ -150,6 +150,11 @@ func PassphraseValid(p string) bool {
 	return !strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f })
 }
 
+// SSIDValid reports whether s is an acceptable network name: 1-32 bytes of UTF-8.
+func SSIDValid(s string) bool {
+	return s != "" && len(s) <= 32 && utf8.ValidString(s)
+}
+
 // PSKCompatible reports whether p can also be used for WPA-PSK: 8-63 printable ASCII characters.
 func PSKCompatible(p string) bool {
 	if len(p) < 8 || len(p) > 63 {
@@ -195,7 +200,7 @@ func Validate(cfg *api.SystemNetworkConfig, requireValidMAC bool, sysRoot string
 	}
 
 	for i, n := range w.Networks {
-		if n.SSID == "" || len(n.SSID) > 32 || !utf8.ValidString(n.SSID) {
+		if !SSIDValid(n.SSID) {
 			return fmt.Errorf("wireless network %d: the SSID must be 1-32 bytes of UTF-8", i)
 		}
 

@@ -8,13 +8,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/lxc/incus-os/incus-osd/api"
 )
 
 const (
@@ -29,6 +26,10 @@ const (
 
 	// bssMask asks for id, bssid, freq, level, ie, flags and ssid.
 	bssMask = "0x1c87"
+
+	// bssMaskNoIEs asks for the same fields without the information elements, so an
+	// entry too large for one reply still fits.
+	bssMaskNoIEs = "0x1887"
 
 	// maxBSS bounds one walk of the scan results.
 	maxBSS = 1024
@@ -181,7 +182,8 @@ func stripPriority(msg string) string {
 	return msg
 }
 
-// BSS is one scan result.
+// BSS is one scan result. NoIEs marks an entry that was read without its
+// information elements, because the entry with them did not fit in one reply.
 type BSS struct {
 	ID    int
 	BSSID string
@@ -190,10 +192,15 @@ type BSS struct {
 	Flags string
 	SSID  string
 	IEs   []byte
+
+	NoIEs bool
 }
 
 // Scan asks for a scan, waits up to 15 s for its results, and walks them one BSS
-// per request, because each reply is capped at 4096 bytes.
+// per request, because each reply is capped at 4096 bytes. An entry too large for a
+// reply makes the supplicant send nothing for it, which looks like the end of the
+// walk; BSS LAST shows that entries remain, and that entry is then read without its
+// information elements and the walk goes on from it.
 func (c *Conn) Scan(ctx context.Context) ([]BSS, error) {
 	if !c.attached {
 		err := c.Attach(ctx)
@@ -223,16 +230,33 @@ func (c *Conn) Scan(ctx context.Context) ([]BSS, error) {
 	cancel()
 
 	results := []BSS{}
-	cmd := "BSS FIRST MASK=" + bssMask
+	mask := bssMask
 
 	for len(results) < maxBSS {
-		reply, err := c.Request(ctx, cmd)
+		reply, err := c.Request(ctx, nextCmd(results, mask))
 		if err != nil {
 			return nil, err
 		}
 
 		if reply == "" {
-			break
+			// The end of the walk, or an entry that did not fit. Without IEs an entry
+			// fits, so a second empty reply is the end.
+			if mask == bssMaskNoIEs {
+				break
+			}
+
+			skipped, err := c.skipped(ctx, results)
+			if err != nil {
+				return nil, err
+			}
+
+			if !skipped {
+				break
+			}
+
+			mask = bssMaskNoIEs
+
+			continue
 		}
 
 		bss, err := parseBSS(reply)
@@ -240,11 +264,55 @@ func (c *Conn) Scan(ctx context.Context) ([]BSS, error) {
 			return nil, err
 		}
 
+		bss.NoIEs = mask == bssMaskNoIEs
 		results = append(results, bss)
-		cmd = fmt.Sprintf("BSS NEXT-%d MASK=%s", bss.ID, bssMask)
+		mask = bssMask
 	}
 
 	return results, nil
+}
+
+// nextCmd asks for the BSS after the last one read, or the first one.
+func nextCmd(results []BSS, mask string) string {
+	if len(results) == 0 {
+		return "BSS FIRST MASK=" + mask
+	}
+
+	return fmt.Sprintf("BSS NEXT-%d MASK=%s", results[len(results)-1].ID, mask)
+}
+
+// skipped reports whether the supplicant holds a BSS after the last one read. BSS
+// LAST names the newest BSS; a different id than the last one read means an entry
+// was not read. It reports false when the supplicant holds no BSS at all.
+func (c *Conn) skipped(ctx context.Context, results []BSS) (bool, error) {
+	reply, err := c.Request(ctx, "BSS LAST MASK=0x1")
+	if err != nil {
+		return false, err
+	}
+
+	id, ok := lastID(reply)
+	if !ok {
+		return false, nil
+	}
+
+	if len(results) == 0 {
+		return true, nil
+	}
+
+	return id != results[len(results)-1].ID, nil
+}
+
+// lastID reads the "id=" line of a BSS LAST reply.
+func lastID(reply string) (int, bool) {
+	for line := range strings.SplitSeq(reply, "\n") {
+		if v, ok := strings.CutPrefix(line, "id="); ok {
+			id, err := strconv.Atoi(strings.TrimSpace(v))
+
+			return id, err == nil
+		}
+	}
+
+	return 0, false
 }
 
 func parseBSS(reply string) (BSS, error) {
@@ -327,82 +395,4 @@ func unescapeSSID(s string) string {
 	}
 
 	return string(out)
-}
-
-// Entry is one network of the picker list, represented by its best BSS.
-type Entry struct {
-	SSID           string
-	Security       string // wpa-personal, open, enterprise, wep
-	SAE, PSK       bool
-	Generation     int
-	Band           string // "2.4", "5", "6"
-	Width          int
-	Signal         int
-	BSSID          string
-	NotRecommended bool
-	Selectable     bool
-}
-
-// Rank returns one entry per non-empty SSID, by its strongest BSS, strongest first.
-func Rank(bss []BSS) []Entry {
-	best := map[string]Entry{}
-
-	for _, b := range bss {
-		if b.SSID == "" {
-			continue
-		}
-
-		e := entryFor(b)
-
-		cur, ok := best[b.SSID]
-		if !ok || e.Signal > cur.Signal {
-			best[b.SSID] = e
-		}
-	}
-
-	entries := make([]Entry, 0, len(best))
-	for _, e := range best {
-		entries = append(entries, e)
-	}
-
-	slices.SortFunc(entries, func(a Entry, b Entry) int {
-		if a.Signal != b.Signal {
-			return b.Signal - a.Signal
-		}
-
-		return strings.Compare(a.SSID, b.SSID)
-	})
-
-	return entries
-}
-
-func entryFor(b BSS) Entry {
-	e := Entry{SSID: b.SSID, Signal: b.Level, BSSID: b.BSSID, Width: 20}
-
-	switch {
-	case b.Freq >= 2412 && b.Freq <= 2484:
-		e.Band = "2.4"
-	case b.Freq >= 5160 && b.Freq <= 5885:
-		e.Band = "5"
-	case b.Freq >= 5955 && b.Freq <= 7115:
-		e.Band = "6"
-	}
-
-	switch {
-	case strings.Contains(b.Flags, "EAP"):
-		e.Security = "enterprise"
-	case strings.Contains(b.Flags, "[WEP]"):
-		e.Security = "wep"
-	case strings.Contains(b.Flags, "PSK") || strings.Contains(b.Flags, "SAE"):
-		e.Security = api.SystemNetworkWirelessSecurityWPAPersonal
-		e.SAE = strings.Contains(b.Flags, "SAE")
-		e.PSK = strings.Contains(b.Flags, "PSK")
-	default:
-		e.Security = api.SystemNetworkWirelessSecurityOpen
-	}
-
-	e.Selectable = e.Security == api.SystemNetworkWirelessSecurityWPAPersonal || e.Security == api.SystemNetworkWirelessSecurityOpen
-	e.NotRecommended = e.Band == "2.4"
-
-	return e
 }

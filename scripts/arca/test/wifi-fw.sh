@@ -6,7 +6,8 @@
 # It builds a tiny linux-firmware tree from wifi-fw/WHENCE and wifi-fw/files.txt,
 # a module directory of text "modules" read by a stand-in modinfo, and a driver
 # list, then runs the script against them: the complete fixture must install
-# exactly the expected files and links, each completeness rule must fail its
+# exactly the expected files and links (and the regulatory database copies,
+# with regulatory.db linked to its -upstream file), each completeness rule must fail its
 # own broken fixture with exit 1 and that rule's message, and an empty driver
 # list, a failing modinfo and an unsafe WHENCE path must be refused before
 # anything is installed. Prints PASS/FAIL lines; exits 1 when any case fails.
@@ -77,8 +78,13 @@ run() {
 	local c=$1
 	mkdir -p "$tmp/$c/dest"
 	ARCA_WIFI_FW_SRC=$2 ARCA_WIFI_DRIVERS=$3 ARCA_WIFI_MODULES=$4 ARCA_WIFI_MODINFO=${5:-$tmp/modinfo} \
-		DESTDIR=$tmp/$c/dest sh "$script" > "$tmp/$c/out" 2>&1
+		ARCA_WIFI_REGDB=${REGDB:-$tmp/regdb} DESTDIR=$tmp/$c/dest sh "$script" > "$tmp/$c/out" 2>&1
 }
+
+# The wireless-regdb directory: the upstream copies the script installs.
+mkdir -p "$tmp/regdb"
+printf 'fixture regulatory.db-upstream\n' > "$tmp/regdb/regulatory.db-upstream"
+printf 'fixture regulatory.db.p7s-upstream\n' > "$tmp/regdb/regulatory.db.p7s-upstream"
 
 # The complete fixture.
 modules "$tmp/mod"
@@ -101,15 +107,26 @@ fakewifi/up.bin
 iwlwifi-bz-b0-fm-c0-c102.ucode
 iwlwifi-so-a0-gf-a0-89.ucode
 iwlwifi-so-a0-gf-a0.pnvm'
+# The wireless-regdb copies and links, which are not firmware and not in the list.
+want_regdb='regulatory.db-upstream
+regulatory.db.p7s-upstream'
+want_regdb_links='regulatory.db
+regulatory.db.p7s'
 	got_files=$(cd "$fw" && find . -type f | sed 's#^\./##' | LC_ALL=C sort)
+	want_all=$(printf '%s\n%s\n' "$want_files" "$want_regdb" | LC_ALL=C sort)
+	want_all_links=$(printf '%s\n%s\n' "$want_links" "$want_regdb_links" | LC_ALL=C sort)
 	got_links=$(cd "$fw" && find . -type l | sed 's#^\./##' | LC_ALL=C sort)
 	bytes=0
 	while IFS= read -r f; do bytes=$((bytes + $(wc -c < "$tmp/src/$f"))); done <<< "$want_files"
 	list=$tmp/complete/dest/usr/share/arca-wifi/firmware.txt
 	line="wifi-firmware: 6 files, $bytes bytes raw"
-	if [ "$got_files" != "$want_files" ]; then fail complete "files: $(echo "$got_files" | tr '\n' ' ')"
-	elif [ "$got_links" != "$want_links" ]; then fail complete "links: $(echo "$got_links" | tr '\n' ' ')"
+	if [ "$got_files" != "$want_all" ]; then fail complete "files: $(echo "$got_files" | tr '\n' ' ')"
+	elif [ "$got_links" != "$want_all_links" ]; then fail complete "links: $(echo "$got_links" | tr '\n' ' ')"
 	elif [ -n "$(cd "$fw" && find . -type l ! -exec test -e {} \; -print)" ]; then fail complete "a link does not resolve"
+	elif [ "$(readlink "$fw/regulatory.db")" != regulatory.db-upstream ] \
+		|| [ "$(readlink "$fw/regulatory.db.p7s")" != regulatory.db.p7s-upstream ]; then fail complete "a regulatory.db link is not to its -upstream file"
+	elif ! cmp -s "$tmp/regdb/regulatory.db-upstream" "$fw/regulatory.db-upstream" \
+		|| ! cmp -s "$tmp/regdb/regulatory.db.p7s-upstream" "$fw/regulatory.db.p7s-upstream"; then fail complete "a wireless-regdb copy differs from its source"
 	elif [ -n "$(cd "$fw" && find . -type f ! -perm 0644 -print)" ]; then fail complete "a file is not mode 0644"
 	elif [ "$(tail -n 1 "$tmp/complete/out")" != "$line" ]; then fail complete "printed: $(tail -n 1 "$tmp/complete/out")"
 	elif [ "$(head -n 1 "$list")" != "$line" ]; then fail complete "the list's first line differs"
@@ -137,6 +154,9 @@ refused() {
 	fails "$@" || return 0
 	[ -z "$(find "$tmp/$1/dest" ! -type d)" ] || fail "$1" "something was installed"
 }
+
+# No wireless-regdb upstream file: refused before anything is installed.
+REGDB=$tmp/no-regdb refused regdb-missing 'no wireless-regdb file regulatory\.db-upstream in ' "$tmp/src" "$tmp/drivers" "$tmp/mod"
 
 # Rule 1: a listed file is missing from the tree; a listed driver has no section.
 cp -a "$tmp/src" "$tmp/src-missing"

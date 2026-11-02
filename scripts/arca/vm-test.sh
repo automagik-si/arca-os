@@ -64,7 +64,8 @@
 #           kernel-pkg (base.manifest has linux-image-<krel> at the BUILDINFO
 #           version and no Zabbly linux-image-*-zabbly+)
 #   wifi    boot, then scripts/arca/test/wifi/run.sh (its cases: first-boot-gate,
-#           join, firmware against the build's wifi-firmware.txt, debian-units).
+#           rank, rank-6ghz, sae, secret, regdb, firmware against the build's
+#           wifi-firmware.txt, debian-units).
 #           The VM has no NIC (eth0 is masked with a device of type none)
 #           and gets systemd.credential.arca-wifi-hwsim=1, so it has simulated
 #           radios at boot and reaches the update server only over Wi-Fi. Steps 7
