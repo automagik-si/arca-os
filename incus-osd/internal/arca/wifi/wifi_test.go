@@ -392,7 +392,7 @@ func TestScanWalk(t *testing.T) {
 
 	for len(requests) > 0 {
 		req := <-requests
-		if strings.HasPrefix(req, "BSS") {
+		if strings.HasPrefix(req, "BSS") && !strings.HasPrefix(req, "BSS LAST") {
 			last = req
 		}
 	}
@@ -402,7 +402,7 @@ func TestScanWalk(t *testing.T) {
 	}
 
 	entries := Rank(got)
-	if len(entries) != 3 || entries[0].SSID != "Velho" || !entries[0].NotRecommended || !entries[1].SAE || entries[2].Security != api.SystemNetworkWirelessSecurityOpen {
+	if len(entries) != 3 || entries[0].SSID != "Casa" || !entries[0].SAE || !entries[1].NotRecommended || entries[2].Security != api.SystemNetworkWirelessSecurityOpen {
 		t.Errorf("Rank = %+v", entries)
 	}
 }

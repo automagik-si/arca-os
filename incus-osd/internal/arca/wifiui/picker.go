@@ -19,6 +19,19 @@ import (
 
 var errNoDevice = errors.New("no Wi-Fi device answered")
 
+// otherRow is the last row of the list: a network that the scan does not show.
+const otherRow = "Other network…"
+
+// step is what the picker is doing: choosing from the list, or one step of "Other network…".
+type step int
+
+const (
+	stepList       step = iota // the list of networks
+	stepName                   // the name of "Other network…", typed in the field
+	stepSecurity               // the security of "Other network…", offered as the list's two rows
+	stepPassphrase             // the passphrase of a network: a scanned one or "Other network…"
+)
+
 // picker is the console page that lists networks and joins one.
 type picker struct {
 	ctx context.Context //nolint:containedctx
@@ -41,6 +54,8 @@ type picker struct {
 	// Used on the TUI's event loop only.
 	entries    []wifi.Entry
 	chosen     wifi.Entry
+	hidden     bool // the chosen network came from "Other network…", so it is saved hidden
+	step       step
 	scanStatus bool
 }
 
@@ -74,12 +89,22 @@ func passphraseAccept(text string, _ rune) bool {
 	return wifi.PassphraseValid(text)
 }
 
+// ssidAccept refuses a network name that is not 1-32 bytes of UTF-8.
+func ssidAccept(text string, _ rune) bool {
+	return wifi.SSIDValid(text)
+}
+
 func newPicker(ctx context.Context, s *state.State, t overlay) *picker {
 	p := &picker{ctx: ctx, s: s, t: t, rescan: make(chan struct{}, 1)}
 
 	p.list = tview.NewList().ShowSecondaryText(false).SetSelectedFunc(func(i int, _ string, _ string, _ rune) { p.choose(i) })
 	p.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Rune() == 'r' || event.Rune() == 'R' {
+		switch {
+		case event.Key() == tcell.KeyEscape && p.step != stepList:
+			p.backToList()
+
+			return nil
+		case event.Rune() == 'r' || event.Rune() == 'R':
 			p.requestScan()
 
 			return nil
@@ -88,11 +113,15 @@ func newPicker(ctx context.Context, s *state.State, t overlay) *picker {
 		return event
 	})
 
-	p.field = tview.NewInputField().SetMaskCharacter('*').SetAcceptanceFunc(passphraseAccept).SetDoneFunc(p.passphraseDone)
+	p.field = tview.NewInputField().SetMaskCharacter('*').SetAcceptanceFunc(passphraseAccept).SetDoneFunc(p.fieldDone)
 	p.status = tview.NewTextView().SetText("Scanning...")
 
+	header := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(tview.NewTextView().SetText("Connect to Wi-Fi"), 0, 1, false).
+		AddItem(tview.NewTextView().SetText("No wired internet").SetTextAlign(tview.AlignRight), len("No wired internet"), 0, false)
+
 	p.root = &pickerRoot{current: p.list, Flex: tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(tview.NewTextView().SetText("Connect to Wi-Fi"), 1, 0, false).
+		AddItem(header, 1, 0, false).
 		AddItem(p.list, 0, 1, true).
 		AddItem(p.field, 1, 0, false).
 		AddItem(p.status, 1, 0, false).
@@ -208,25 +237,17 @@ func scanDevice(ctx context.Context, device string) ([]wifi.BSS, error) {
 	return conn.Scan(ctx)
 }
 
-// setEntries replaces the list, keeping the selected network selected.
+// setEntries replaces the list with the scanned networks, keeping the selected one
+// selected. While "Other network…" is under way the list is left alone, and the
+// rows are kept for when it ends.
 func (p *picker) setEntries(entries []wifi.Entry, err error) {
-	selected := ""
+	if p.step != stepList {
+		p.entries = entries
 
-	i := p.list.GetCurrentItem()
-	if i >= 0 && i < len(p.entries) {
-		selected = p.entries[i].SSID
+		return
 	}
 
-	p.entries = entries
-	p.list.Clear()
-
-	for i, e := range entries {
-		p.list.AddItem(row(e), "", 0, nil)
-
-		if e.SSID == selected {
-			p.list.SetCurrentItem(i)
-		}
-	}
+	p.rebuildList(entries)
 
 	switch {
 	case len(entries) == 0 && err != nil && (p.scanStatus || p.status.GetText(true) == "Scanning..."):
@@ -238,28 +259,121 @@ func (p *picker) setEntries(entries []wifi.Entry, err error) {
 	}
 }
 
-func row(e wifi.Entry) string {
-	security := "Open"
+// rebuildList shows the entries and the "Other network…" row. The selection stays on
+// the same network, or on "Other network…", when it is still there.
+func (p *picker) rebuildList(entries []wifi.Entry) {
+	cur := p.list.GetCurrentItem()
+	onOther := cur >= len(p.entries)
 
-	switch {
-	case e.Security == "enterprise":
-		security = "Enterprise (not supported)"
-	case e.Security == "wep":
-		security = "WEP (not supported)"
-	case e.SAE && e.PSK:
-		security = "WPA2/WPA3"
-	case e.SAE:
-		security = "WPA3"
-	case e.PSK:
-		security = "WPA2"
+	selected := ""
+	if !onOther && cur >= 0 {
+		selected = p.entries[cur].SSID
 	}
 
-	line := fmt.Sprintf("%-32s %4d dBm  %s", tview.Escape(e.SSID), e.Signal, security)
+	p.entries = entries
+	p.list.Clear()
+
+	for _, e := range entries {
+		p.list.AddItem(row(e), "", 0, nil)
+	}
+
+	p.list.AddItem(otherRow, "", 0, nil)
+
+	idx := min(max(cur, 0), len(entries))
+	if onOther {
+		idx = len(entries)
+	}
+
+	for i, e := range entries {
+		if selected != "" && e.SSID == selected {
+			idx = i
+		}
+	}
+
+	p.list.SetCurrentItem(idx)
+}
+
+// row formats one network as the list shows it: name, Wi-Fi generation, band, width,
+// four signal bars and security. A 2.4 GHz network carries a yellow note; an enterprise
+// or WEP network is greyed out and cannot be chosen.
+func row(e wifi.Entry) string {
+	line := fmt.Sprintf("%-24s %-8s %-7s %4d MHz %-4s  %-26s", tview.Escape(e.SSID), generation(e), band(e.Band), e.Width, bars(e.Signal), security(e))
+
 	if e.NotRecommended {
-		line += "  2.4 GHz - not recommended"
+		line += "[yellow]2.4 GHz – not recommended[-]"
+	}
+
+	if !e.Selectable {
+		line = "[gray]" + line + "[-]"
 	}
 
 	return line
+}
+
+// generation names a network's Wi-Fi generation; HE on 6 GHz is Wi-Fi 6E.
+func generation(e wifi.Entry) string {
+	switch e.Generation {
+	case 7:
+		return "Wi-Fi 7"
+	case 6:
+		if e.Band == "6" {
+			return "Wi-Fi 6E"
+		}
+
+		return "Wi-Fi 6"
+	case 5:
+		return "Wi-Fi 5"
+	case 4:
+		return "Wi-Fi 4"
+	}
+
+	return "Older"
+}
+
+func band(b string) string {
+	switch b {
+	case "2.4":
+		return "2.4 GHz"
+	case "5":
+		return "5 GHz"
+	case "6":
+		return "6 GHz"
+	}
+
+	return ""
+}
+
+// bars draws four signal bars for the thresholds -55, -67 and -75 dBm.
+func bars(level int) string {
+	switch {
+	case level >= -55:
+		return "▂▄▆█"
+	case level >= -67:
+		return "▂▄▆ "
+	case level >= -75:
+		return "▂▄  "
+	}
+
+	return "▂   "
+}
+
+func security(e wifi.Entry) string {
+	switch {
+	case e.Security == "enterprise":
+		return "Enterprise (not supported)"
+	case e.Security == "wep":
+		return "WEP (not supported)"
+	case e.SAE && e.PSK:
+		return "WPA2/WPA3"
+	case e.SAE:
+		return "WPA3"
+	case e.PSK:
+		return "WPA2"
+	case e.Security == api.SystemNetworkWirelessSecurityOpen:
+		return "Open"
+	}
+
+	return "WPA-Personal"
 }
 
 func (p *picker) setStatus(text string, fromScan bool) {
@@ -267,21 +381,42 @@ func (p *picker) setStatus(text string, fromScan bool) {
 	p.scanStatus = fromScan
 }
 
-// choose handles Enter on a network: an open one is joined, a WPA-Personal one
-// asks for its passphrase. It does nothing while a commit runs.
+// choose handles Enter on a row of the list, or on one of the two security rows that
+// "Other network…" offers. It does nothing while a commit runs.
 func (p *picker) choose(i int) {
-	if i < 0 || i >= len(p.entries) || p.committing.Load() {
+	if i < 0 || p.committing.Load() {
+		return
+	}
+
+	switch p.step {
+	case stepList:
+		p.chooseNetwork(i)
+	case stepSecurity:
+		p.chooseSecurity(i)
+	}
+}
+
+// chooseNetwork handles Enter on a network: an open one is joined, a WPA-Personal one
+// asks for its passphrase, and the last row starts "Other network…".
+func (p *picker) chooseNetwork(i int) {
+	if i == len(p.entries) {
+		p.startOther()
+
+		return
+	}
+
+	if i > len(p.entries) {
 		return
 	}
 
 	e := p.entries[i]
 	if !e.Selectable {
-		p.setStatus(e.SSID+" is not supported", false)
+		p.setStatus(tview.Escape(e.SSID)+" is not supported", false)
 
 		return
 	}
 
-	p.chosen = e
+	p.chosen, p.hidden = e, false
 
 	if e.Security == api.SystemNetworkWirelessSecurityOpen {
 		p.connect("")
@@ -289,22 +424,81 @@ func (p *picker) choose(i int) {
 		return
 	}
 
-	p.field.SetLabel("Passphrase for " + tview.Escape(e.SSID) + ": ").SetText("")
+	p.askPassphrase()
+}
+
+// chooseSecurity handles the security row of "Other network…": Open joins at once,
+// WPA-Personal asks for the passphrase.
+func (p *picker) chooseSecurity(i int) {
+	switch i {
+	case 0:
+		p.chosen.Security = api.SystemNetworkWirelessSecurityOpen
+		p.backToList()
+		p.connect("")
+	case 1:
+		p.chosen.Security = api.SystemNetworkWirelessSecurityWPAPersonal
+		p.askPassphrase()
+	}
+}
+
+// startOther begins "Other network…" with the network's name.
+func (p *picker) startOther() {
+	p.step = stepName
+	p.chosen, p.hidden = wifi.Entry{}, true
+	p.field.SetAcceptanceFunc(ssidAccept).SetLabel("Network name: ").SetText("")
+	p.setStatus("Type the network name, then Enter; Esc cancels", false)
+	p.focus(p.field)
+}
+
+// showSecurity offers Open and WPA-Personal, as the list's two rows, for the name typed.
+func (p *picker) showSecurity() {
+	p.step = stepSecurity
+	p.field.SetLabel("").SetText("")
+	p.list.Clear()
+	p.list.AddItem("Open", "", 0, nil)
+	p.list.AddItem("WPA-Personal", "", 0, nil)
+	p.list.SetCurrentItem(0)
+	p.setStatus("Choose the security of "+tview.Escape(p.chosen.SSID)+", then Enter; Esc cancels", false)
+	p.focus(p.list)
+}
+
+// askPassphrase shows the masked passphrase field for the chosen network.
+func (p *picker) askPassphrase() {
+	p.step = stepPassphrase
+	p.field.SetAcceptanceFunc(passphraseAccept).SetLabel("Passphrase for " + tview.Escape(p.chosen.SSID) + ": ").SetText("")
 	p.setStatus("Type the passphrase, then Enter", false)
 	p.focus(p.field)
 }
 
-func (p *picker) passphraseDone(key tcell.Key) {
+// fieldDone handles the field's Enter and Esc. Enter on a name moves on to its
+// security, Enter on a passphrase connects, and Esc or an empty passphrase goes back
+// to the list.
+func (p *picker) fieldDone(key tcell.Key) {
 	text := p.field.GetText()
 
-	p.field.SetLabel("").SetText("")
-	p.focus(p.list)
-
-	if key == tcell.KeyEnter && text != "" {
+	switch {
+	case key != tcell.KeyEnter:
+		p.backToList()
+	case p.step == stepName && text == "":
+		p.setStatus("Type the network name, then Enter; Esc cancels", false)
+	case p.step == stepName:
+		p.chosen = wifi.Entry{SSID: text}
+		p.showSecurity()
+	case p.step == stepPassphrase && text != "":
+		p.backToList()
 		p.connect(text)
-	} else {
-		p.setStatus("", false)
+	default:
+		p.backToList()
 	}
+}
+
+// backToList ends "Other network…" or a passphrase prompt, and shows the list again.
+func (p *picker) backToList() {
+	p.step = stepList
+	p.field.SetAcceptanceFunc(passphraseAccept).SetLabel("").SetText("")
+	p.rebuildList(p.entries)
+	p.setStatus("", false)
+	p.focus(p.list)
 }
 
 // connect commits the chosen network in the background; the status line follows
@@ -314,7 +508,7 @@ func (p *picker) connect(passphrase string) {
 		return
 	}
 
-	n := api.SystemNetworkWirelessNetwork{SSID: p.chosen.SSID, Security: p.chosen.Security, Passphrase: passphrase}
+	n := api.SystemNetworkWirelessNetwork{SSID: p.chosen.SSID, Security: p.chosen.Security, Passphrase: passphrase, Hidden: p.hidden}
 	status := func(text string) { p.t.QueueArcaUpdate(func() { p.setStatus(text, false) }) }
 
 	go func() {
@@ -331,6 +525,6 @@ func (p *picker) connect(passphrase string) {
 			return
 		}
 
-		status("Connected to " + n.SSID + "; waiting for the update server")
+		status("Connected to " + tview.Escape(n.SSID) + "; waiting for the update server")
 	}()
 }
