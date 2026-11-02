@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 )
 
 // fixtureIEs returns the information elements that testdata/ies.txt names.
