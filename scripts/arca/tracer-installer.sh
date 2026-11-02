@@ -138,7 +138,7 @@ rm -f "$zipf"
 # it embeds, one update for this version in the channel, and exactly the
 # applications, each matching its sysext.
 for s in index "$version/update"; do
-	[ -f "$tree/$s.json" ] && [ -f "$tree/$s.sjson" ] || die "image-publisher wrote no updates/$s.sjson"
+	if [ ! -f "$tree/$s.json" ] || [ ! -f "$tree/$s.sjson" ]; then die "image-publisher wrote no updates/$s.sjson"; fi
 	openssl smime -verify -text -partial_chain -CAfile incus-osd/certs/files/update-E1.crt \
 		-in "$tree/$s.sjson" -out "$tmp/verified.json" 2>/dev/null || die "updates/$s.sjson does not verify against the Update CA"
 	[ "$(jq -S . "$tmp/verified.json")" = "$(jq -S . "$tree/$s.json")" ] || die "updates/$s.sjson does not carry $s.json"

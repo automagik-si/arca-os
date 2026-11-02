@@ -1,0 +1,9 @@
+[Unit]
+Description=Wi-Fi supplicant for %I (managed by incus-osd)
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device
+ConditionPathExists=/run/incus-os/wifi/wpa_supplicant.conf
+
+[Service]
+ExecStart=/usr/sbin/wpa_supplicant -s -D nl80211 -i %I -c /run/incus-os/wifi/wpa_supplicant.conf
+Restart=on-failure

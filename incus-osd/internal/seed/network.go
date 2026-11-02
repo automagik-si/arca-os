@@ -6,6 +6,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
 )
 
 // GetNetwork extracts the network configuration from the seed data.
@@ -37,6 +38,7 @@ func GetNetwork(_ context.Context) (*api.SystemNetworkConfig, error) {
 		}
 
 		config.Interfaces = defaultNetwork.Interfaces
+		wifi.MergeSeedDefaults(&config.SystemNetworkConfig, defaultNetwork)
 	}
 
 	// If no timezone was provided, default to UTC.
@@ -68,10 +70,11 @@ func getDefaultNetworkConfig() (*api.SystemNetworkConfig, error) {
 		Time: &api.SystemNetworkTime{
 			Timezone: "UTC",
 		},
+		Wireless: wifi.Defaults(),
 	}
 
 	for _, i := range interfaces {
-		if i.Name == "lo" {
+		if i.Name == "lo" || wifi.IsDevice("/sys", i.Name) {
 			continue
 		}
 

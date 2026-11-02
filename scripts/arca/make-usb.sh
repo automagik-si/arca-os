@@ -292,7 +292,7 @@ else
 		printf '    Which stick? [1-%s] ' "$count"
 		read -r pick </dev/tty
 		case "$pick" in '' | *[!0-9]*) die "not a number: $pick" ;; esac
-		[ "$pick" -ge 1 ] && [ "$pick" -le "$count" ] || die "no stick number $pick"
+		if [ "$pick" -lt 1 ] || [ "$pick" -gt "$count" ]; then die "no stick number $pick"; fi
 	fi
 	line=$(printf '%s\n' "$list" | sed -n "${pick}p")
 fi

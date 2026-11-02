@@ -6,6 +6,9 @@
 #              (--from-builder <vm> | --artifacts <dir>)
 #              --seed-apps <a,b,...> --provider debug|images [--server-url <url>]
 #              --checks stock|tracer|none [--stop-builder] [--keep]
+#   vm-test.sh --project arcaos-* --vm <name> --from-builder <vm>
+#              --seed-apps <a,b,...> --provider images --server-url <url>
+#              --checks wifi [--stop-builder] [--keep]
 #   vm-test.sh --project arcaos-* --vm <name> --install-media <dir>
 #              --checks stock|tracer|none [--keep]
 #
@@ -59,6 +62,18 @@
 #           zfs (modprobe zfs, with lockdown integrity or confidentiality),
 #           kernel-pkg (base.manifest has linux-image-<krel> at the BUILDINFO
 #           version and no Zabbly linux-image-*-zabbly+)
+#   wifi    boot, then scripts/arca/test/wifi/run.sh (its cases: first-boot-gate,
+#           join). The VM has no NIC (eth0 is masked with a device of type none)
+#           and gets systemd.credential.arca-wifi-hwsim=1, so it has simulated
+#           radios at boot and reaches the update server only over Wi-Fi. Steps 7
+#           and 8 are skipped: its first boot installs the applications once it
+#           has joined. The update tree is the builder's
+#           /srv/artifacts/installer/wifi-test/updates (from tracer-installer.sh;
+#           refused with exit 2 when missing), served in the VM at --server-url.
+#           It needs --from-builder and --provider images, and refuses
+#           --install-media. run.sh's progress and diagnostics come to stdout
+#           with its results; a secret-shaped line among them is withheld and
+#           fails wifi-output.
 #   none    no checks
 # With --install-media, every set but none also checks installed,
 # media-removed (no install device left on the VM), apps-from-server (the
@@ -81,6 +96,7 @@ VM_MEMORY=8GiB
 VM_ROOT=50GiB
 SEED_OFFSET=4196352
 BUILDER_ARTIFACTS=/srv/artifacts/os/latest
+WIFI_UPDATES=/srv/artifacts/installer/wifi-test/updates
 # Large files are staged on disk, not under /tmp, which may be a tmpfs.
 STAGE_BASE=${ARCA_VM_TEST_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/arca-os/vm-test}
 OSD_SOCK=/run/incus-os/unix.socket
@@ -93,7 +109,7 @@ stop_builder=0 keep=0
 # the VM still has the install media attached.
 serve_addr="" serve_port="" serve_pid="" install_attached=0
 
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'vm-test: %s\n' "$*" >&2; }
 die() { printf 'vm-test: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'vm-test: refused: %s\n' "$*" >&2; exit 2; }
@@ -162,9 +178,14 @@ images) [ -n "$server_url" ] || refuse "--provider images needs --server-url" ;;
 *) refuse "--provider must be debug or images" ;;
 esac
 case "$checks" in
-stock | tracer | none) ;;
-*) refuse "--checks must be stock, tracer or none" ;;
+stock | tracer | wifi | none) ;;
+*) refuse "--checks must be stock, tracer, wifi or none" ;;
 esac
+if [ "$checks" = wifi ]; then
+	[ -z "$media" ] || refuse "--checks wifi refuses --install-media"
+	[ -n "$builder" ] || refuse "--checks wifi needs --from-builder"
+	[ "$provider" = images ] || refuse "--checks wifi needs --provider images --server-url <url>"
+fi
 
 P=(--project "$project")
 # A project without its own images and profiles would import into, and
@@ -321,6 +342,9 @@ printf "%s\n" "$src" > "$out/SRC"
 
 if [ -n "$builder" ]; then
 	[ "$(instance_state "$builder")" = RUNNING ] || die "builder $builder is not running in $project"
+	if [ "$checks" = wifi ] && ! incus exec "${P[@]}" "$builder" -- test -f "$WIFI_UPDATES/index.sjson"; then
+		refuse "no $WIFI_UPDATES/index.sjson in $builder (run tracer-installer.sh --out ${WIFI_UPDATES%/updates} there)"
+	fi
 	bout=/srv/artifacts/vm-test/$vm
 	log "seeding and converting the image in $builder"
 	incus exec "${P[@]}" "$builder" -- bash -c "$PREP" vm-test-prep \
@@ -337,6 +361,11 @@ if [ -n "$builder" ]; then
 		for a in "${apps[@]}"; do
 			incus file pull -q "${P[@]}" "$builder$bsrc/$a.raw" "$work/" || die "no $a.raw in $builder:$bsrc"
 		done
+	fi
+	if [ "$checks" = wifi ]; then
+		log "pulling the update tree and the debug sysext from $builder"
+		incus file pull -q -r "${P[@]}" "$builder$WIFI_UPDATES" "$work/"
+		incus file pull -q "${P[@]}" "$builder$bsrc/debug.raw" "$work/" || die "no debug.raw in $builder:$bsrc"
 	fi
 	incus exec "${P[@]}" "$builder" -- rm -rf "$bout"
 	if [ "$stop_builder" -eq 1 ]; then
@@ -406,6 +435,10 @@ else
 fi
 incus config device add -q "${P[@]}" "$vm" vtpm tpm
 incus config set "${P[@]}" "$vm" systemd.credential.fully-enable-incus-agent=true
+if [ "$checks" = wifi ]; then
+	incus config device add -q "${P[@]}" "$vm" eth0 none
+	incus config set "${P[@]}" "$vm" systemd.credential.arca-wifi-hwsim=1
+fi
 if [ -z "$media" ]; then
 	incus image delete "${P[@]}" "$alias"
 fi
@@ -477,7 +510,9 @@ t0=$(date +%s)
 posted=0
 listed=""
 missing="${apps[*]}"
-while [ $(($(date +%s) - t0)) -lt 600 ]; do
+step8=1
+[ "$checks" != wifi ] || step8=0
+while [ "$step8" -eq 1 ] && [ $(($(date +%s) - t0)) -lt 600 ]; do
 	if [ "$posted" -eq 0 ] && [ -z "$media" ] && osd -X POST http://localhost/1.0/system/update/:check >/dev/null 2>&1; then
 		posted=1
 		log "update check requested"
@@ -492,14 +527,16 @@ while [ $(($(date +%s) - t0)) -lt 600 ]; do
 	fi
 	sleep 10
 done
-if [ -z "$missing" ]; then
+if [ "$step8" -eq 0 ]; then
+	:
+elif [ -z "$missing" ]; then
 	log "all applications listed after $(($(date +%s) - t0)) s"
 else
 	log "still missing after 600 s:$missing"
 fi
 arca_state=""
 arca_seen=0
-if [ "$has_arca" -eq 1 ]; then
+if [ "$has_arca" -eq 1 ] && [ "$step8" -eq 1 ]; then
 	t0=$(date +%s)
 	while [ $(($(date +%s) - t0)) -lt 600 ]; do
 		arca_state=$(vexec systemctl is-active arca.service 2>/dev/null || true)
@@ -687,7 +724,35 @@ install_checks() {
 	fi
 }
 
-if [ "$checks" != none ]; then
+# withhold_secrets <flag file>: copies lines from stdin, but replaces a
+# secret-shaped one (a passphrase field, a psk= or sae_password= line, a private
+# key) with a note and creates the flag file.
+withhold_secrets() {
+	local line
+	while IFS= read -r line || [ -n "$line" ]; do
+		if printf '%s\n' "$line" | grep -Eiq '"passphrase" *: *"[^"]|psk=|sae_password=|PRIVATE KEY'; then
+			: >"$1"
+			printf 'vm-test: a secret-shaped line was withheld\n'
+		else
+			printf '%s\n' "$line"
+		fi
+	done
+}
+
+wifi_checks() {
+	local rc=0 leak="$work/wifi-secret-shaped"
+	result PASS boot "agent after ${boot_s} s"
+	rm -f "$leak"
+	# Both streams, progress and diagnostics included, go through one check and on to stdout.
+	"$(dirname "$0")/test/wifi/run.sh" --project "$project" --vm "$vm" --server-url "$server_url" \
+		--updates "$work/updates" --debug-sysext "$work/debug.raw" 2>&1 | withhold_secrets "$leak" || rc=$?
+	[ "$rc" -eq 0 ] || result FAIL wifi "run.sh exited $rc"
+	[ ! -e "$leak" ] || result FAIL wifi-output "run.sh printed a secret-shaped line (withheld)"
+}
+
+if [ "$checks" = wifi ]; then
+	wifi_checks
+elif [ "$checks" != none ]; then
 	stock_checks
 	if [ "$checks" = tracer ]; then tracer_checks; fi
 	if [ -n "$media" ]; then install_checks; fi
