@@ -54,6 +54,14 @@ command -v mkosi >/dev/null || die "mkosi is not on PATH"
 osname=$(sed -n 's/^ImageId=//p' mkosi.conf)
 [ -n "$osname" ] || die "no ImageId in mkosi.conf"
 
+# Embed the persistent test CA. This copies the one, stable CA into the
+# checkout before `make`, so upstream's generate-test-certs never regenerates
+# one, and every build embeds the same update CA and Secure Boot signing key
+# that nodes already installed from an earlier build trust. It refuses the
+# build when the CA set is missing rather than silently making a throwaway one.
+log "injecting the persistent test CA"
+scripts/arca/inject-test-ca.sh
+
 shopt -s nullglob
 kdebs=()
 if [ -n "$kdir" ]; then

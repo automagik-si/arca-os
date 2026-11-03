@@ -53,6 +53,29 @@ outputs persist under `/srv/artifacts/` in the VM. Defaults: `--project arcaos-d
 printed), so `kernel/build-kernel.sh` can take its Debian `Maintainer` from them; `--maintainer '<name> <email>'`
 overrides that, and with neither the kernel build is refused.
 
+## The persistent test CA
+
+A build embeds a test CA: the update CA (which signs the update index a node checks), the Secure Boot keys and the
+signing certificate for the UKI and the `usr`-verity image. Upstream's `make` generates a fresh CA whenever `./certs/`
+is absent, and `in-builder.sh`'s `git clean -ffdx` makes it absent on every run. A fresh CA each build would orphan
+every node already installed: it could no longer verify a later build's signed index or `usr`-verity signature, and
+could never be sent a verifiable update again.
+
+So the CA is generated once and kept outside any checkout, and copied into each checkout before the build:
+
+```sh
+# Once, in the builder, from the top of a checkout. Stores the CA at
+# /srv/arca-test-ca (ARCA_TEST_CA_DIR overrides it). Then copy it off the
+# builder and keep it safe; losing every copy orphans every installed node.
+scripts/arca/provision-test-ca.sh
+```
+
+`build.sh` runs `inject-test-ca.sh` before `make`: it copies the stored CA into the checkout's `certs/` and
+`incus-osd/certs/files/`, recreates the `mkosi.crt`/`mkosi.key` symlinks, and verifies the update CA and Secure Boot
+signing certificate against the fingerprints pinned in the CA set's `FINGERPRINTS`. A build **refuses** when the CA set
+is missing or a fingerprint does not match, rather than falling back to a throwaway CA. `inject-test-ca.sh --check`
+verifies the CA set without touching a checkout.
+
 ## Building and booting
 
 ```sh
