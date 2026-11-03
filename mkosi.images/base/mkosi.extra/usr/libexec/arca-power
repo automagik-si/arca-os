@@ -1,0 +1,353 @@
+#!/bin/sh
+# The always-on server power profile: maximum performance, a closed lid turns
+# the panel off and nothing else, the battery is a UPS that ends in a clean
+# poweroff, and an always-plugged battery is held below full charge.
+#
+#   arca-power apply     set the performance and charge-limit knobs (boot)
+#   arca-power watch     the lid and battery loop (service)
+#   arca-power lid       one lid step: the panel backlight follows the lid
+#   arca-power battery   print the battery state: none, mains, battery <n>,
+#                        low <n> or critical <n> (<n> is the highest percent)
+#
+# A missing knob is skipped and logged once; a step is a no-op when done before.
+# The fixture test points it elsewhere: ARCA_POWER_ROOT prefixes every /sys and
+# /proc path, ARCA_POWER_RUN replaces /run/arca-power, ARCA_POWER_POWEROFF the
+# poweroff command, and ARCA_POWER_ITERATIONS bounds the watch loop.
+set -u
+
+# The profile, in one place.
+CRITICAL_PERCENT=5      # discharging at or below this: clean poweroff
+LOW_PERCENT=20          # discharging at or below this: one warning
+CRITICAL_SAMPLES=2      # consecutive critical readings before the poweroff
+CHARGE_START_PERCENT=75 # charging restarts below this
+CHARGE_END_PERCENT=80   # charging stops at this
+LID_POLL_SECONDS=2
+BATTERY_POLL_EVERY=5    # the battery is read every this many lid polls
+
+R=${ARCA_POWER_ROOT:-}
+RUN=${ARCA_POWER_RUN:-/run/arca-power}
+POWEROFF=${ARCA_POWER_POWEROFF:-systemctl poweroff}
+QUIET=0
+WARNED=" "
+
+say() { echo "arca-power: $*"; }
+# note: a line only apply prints (the watch loop repeats its steps).
+note() { [ "$QUIET" = 1 ] || say "$@"; }
+# warn_once <key> <message>: a journal warning, once per key.
+warn_once() {
+	case $WARNED in *" $1 "*) return ;; esac
+	WARNED="$WARNED$1 "
+	echo "<4>arca-power: $2"
+}
+
+# current <file>: the knob's value; for a "[a] b c" list, the bracketed word.
+current() {
+	v=$(cat "$1" 2>/dev/null) || return 1
+	case $v in
+	*\[*\]*)
+		v=${v#*\[}
+		v=${v%%\]*}
+		;;
+	esac
+	printf '%s' "$v"
+}
+
+# offers <file> <word>: the file lists the word.
+offers() {
+	case " $(tr -c 'A-Za-z0-9_-' ' ' < "$1" 2>/dev/null) " in
+	*" $2 "*) return 0 ;;
+	esac
+	return 1
+}
+
+# set_knob <file> <value>: 0 written, 1 already set, 2 missing, 3 not taken.
+set_knob() {
+	[ -e "$1" ] || return 2
+	[ "$(current "$1")" = "$2" ] && return 1
+	{ printf '%s\n' "$2" > "$1"; } 2>/dev/null || return 3
+	[ "$(current "$1")" = "$2" ] || return 3
+	return 0
+}
+
+# begin, then knob <file> <value> [<choices file>] per file, then
+# report <label> <value>: one log line per knob kind.
+begin() { k_set=0 k_same=0 k_bad=0; }
+knob() {
+	[ -e "$1" ] || return 0
+	if [ -n "${3:-}" ] && ! offers "$3" "$2"; then
+		return 0
+	fi
+	set_knob "$1" "$2"
+	case $? in
+	0) k_set=$((k_set + 1)) ;;
+	1) k_same=$((k_same + 1)) ;;
+	3) k_bad=$((k_bad + 1)) ;;
+	esac
+}
+report() {
+	if [ "$k_bad" -gt 0 ]; then
+		warn_once "$1" "$1: $k_bad not set to $2"
+	fi
+	if [ "$k_set" -gt 0 ]; then
+		say "$1: set to $2 ($k_set)"
+	elif [ "$k_same" -gt 0 ]; then
+		note "$1: already $2"
+	elif [ "$k_bad" -eq 0 ]; then
+		note "$1: not on this machine, skipped"
+	fi
+}
+
+performance() {
+	cpu=$R/sys/devices/system/cpu
+	begin
+	for p in "$cpu"/cpufreq/policy*; do
+		knob "$p/scaling_governor" performance "$p/scaling_available_governors"
+	done
+	report "cpufreq governor" performance
+
+	begin
+	for p in "$cpu"/cpufreq/policy*; do
+		knob "$p/energy_performance_preference" performance "$p/energy_performance_available_preferences"
+	done
+	report "energy performance preference" performance
+
+	begin
+	for c in "$cpu"/cpu[0-9]*; do
+		knob "$c/power/energy_perf_bias" 0
+	done
+	report "energy perf bias" 0
+
+	begin
+	knob "$cpu/intel_pstate/no_turbo" 0
+	report "intel_pstate no_turbo" 0
+	begin
+	knob "$cpu/cpufreq/boost" 1
+	for p in "$cpu"/cpufreq/policy*; do
+		knob "$p/boost" 1
+	done
+	report "cpufreq boost" 1
+
+	platform_profile
+
+	begin
+	knob "$R/sys/module/pcie_aspm/parameters/policy" performance "$R/sys/module/pcie_aspm/parameters/policy"
+	report "PCIe ASPM policy" performance
+}
+
+# platform_profile: the firmware profile, the legacy file or else every
+# class device; the watch loop repeats it, as some firmware resets it.
+platform_profile() {
+	begin
+	legacy=$R/sys/firmware/acpi/platform_profile
+	if [ -e "$legacy" ]; then
+		knob "$legacy" performance "${legacy}_choices"
+	else
+		for d in "$R"/sys/class/platform-profile/*; do
+			knob "$d/profile" performance "$d/choices"
+		done
+	fi
+	report "platform profile" performance
+}
+
+# is_battery <power_supply dir>: a system battery, not a mouse's or a pen's.
+is_battery() {
+	[ "$(cat "$1/type" 2>/dev/null)" = Battery ] || return 1
+	[ "$(cat "$1/scope" 2>/dev/null)" != Device ]
+}
+
+# charge_limit: every battery with a charge threshold stops at
+# CHARGE_END_PERCENT; an ideapad's conservation mode goes on.
+charge_limit() {
+	for b in "$R"/sys/class/power_supply/*; do
+		is_battery "$b" || continue
+		end=$b/charge_control_end_threshold
+		start=$b/charge_control_start_threshold
+		name=${b##*/}
+		if [ ! -e "$end" ]; then
+			note "$name: no charge threshold, skipped"
+			continue
+		fi
+		# The start must stay below the end, so the order depends on the end now.
+		re=1 rs=1
+		cur=$(current "$end")
+		case $cur in '' | *[!0-9]*) cur=0 ;; esac
+		if [ -e "$start" ] && [ "$cur" -gt "$CHARGE_START_PERCENT" ]; then
+			set_knob "$start" "$CHARGE_START_PERCENT"
+			rs=$?
+			set_knob "$end" "$CHARGE_END_PERCENT"
+			re=$?
+		else
+			set_knob "$end" "$CHARGE_END_PERCENT"
+			re=$?
+			if [ -e "$start" ]; then
+				set_knob "$start" "$CHARGE_START_PERCENT"
+				rs=$?
+			fi
+		fi
+		if [ "$re" -eq 3 ] || [ "$rs" -eq 3 ]; then
+			warn_once "charge-$name" "$name: charge limit not taken (end $(current "$end"), start $(current "$start"))"
+		elif [ "$re" -eq 0 ] || [ "$rs" -eq 0 ]; then
+			msg="$name: charge limit set, stops at $(current "$end")%"
+			[ -e "$start" ] && msg="$msg, restarts below $(current "$start")%"
+			say "$msg"
+		else
+			note "$name: charge limit already $CHARGE_END_PERCENT%"
+		fi
+	done
+	begin
+	for c in "$R"/sys/bus/platform/drivers/ideapad_acpi/*/conservation_mode; do
+		knob "$c" 1
+	done
+	report "ideapad conservation mode" 1
+}
+
+apply() {
+	performance
+	charge_limit
+	return 0
+}
+
+# lid_state: open, closed or unknown.
+lid_state() {
+	for f in "$R"/proc/acpi/button/lid/*/state; do
+		case $(cat "$f" 2>/dev/null) in
+		*closed*) echo closed && return ;;
+		*open*) echo open && return ;;
+		esac
+	done
+	echo unknown
+}
+
+# lid: a closed lid saves each panel backlight's brightness and turns it off;
+# an open lid turns it back on at the saved brightness (full when none was).
+lid() {
+	state=$(lid_state)
+	[ "$state" = unknown ] && return 0
+	mkdir -p "$RUN"
+	for b in "$R"/sys/class/backlight/*; do
+		[ -e "$b/brightness" ] || continue
+		name=${b##*/}
+		# A DDC/CI backlight is an external monitor's.
+		case $name in ddcci*) continue ;; esac
+		saved=$RUN/$name.brightness
+		changed=0
+		if [ "$state" = closed ]; then
+			br=$(current "$b/brightness")
+			if [ -n "$br" ] && [ "$br" != 0 ]; then
+				printf '%s\n' "$br" > "$saved"
+				set_knob "$b/brightness" 0 && changed=1
+			fi
+			set_knob "$b/bl_power" 4 && changed=1
+			[ "$changed" = 1 ] && say "lid closed: $name off"
+		else
+			set_knob "$b/bl_power" 0 && changed=1
+			if [ -f "$saved" ]; then
+				set_knob "$b/brightness" "$(cat "$saved")" && changed=1
+				rm -f "$saved"
+			elif [ "$(current "$b/brightness")" = 0 ]; then
+				set_knob "$b/brightness" "$(current "$b/max_brightness")" && changed=1
+			fi
+			[ "$changed" = 1 ] && say "lid open: $name on"
+		fi
+	done
+	return 0
+}
+
+# percent <power_supply dir>: capacity, or energy/charge now over full.
+percent() {
+	c=$(cat "$1/capacity" 2>/dev/null)
+	case $c in '' | *[!0-9]*) ;; *) echo "$c" && return ;; esac
+	for k in energy charge; do
+		n=$(cat "$1/${k}_now" 2>/dev/null)
+		f=$(cat "$1/${k}_full" 2>/dev/null)
+		case "$n$f" in '' | *[!0-9]*) continue ;; esac
+		[ "$f" -gt 0 ] && echo $((n * 100 / f)) && return
+	done
+	echo -1
+}
+
+# battery: the state of the system batteries. critical needs a discharging
+# battery and every battery at or below CRITICAL_PERCENT or at the firmware's
+# critical level; low needs every battery at or below LOW_PERCENT.
+battery() {
+	n=0 discharging=0 all_low=1 max=-1
+	for b in "$R"/sys/class/power_supply/*; do
+		is_battery "$b" || continue
+		n=$((n + 1))
+		[ "$(cat "$b/status" 2>/dev/null)" = Discharging ] && discharging=1
+		p=$(percent "$b")
+		[ "$p" -gt "$max" ] && max=$p
+		low=0
+		[ "$p" -ge 0 ] && [ "$p" -le "$CRITICAL_PERCENT" ] && low=1
+		[ "$(cat "$b/capacity_level" 2>/dev/null)" = Critical ] && low=1
+		[ "$low" = 1 ] || all_low=0
+	done
+	if [ "$n" -eq 0 ]; then
+		echo none
+	elif [ "$discharging" -eq 0 ]; then
+		echo "mains $max"
+	elif [ "$all_low" -eq 1 ]; then
+		echo "critical $max"
+	elif [ "$max" -ge 0 ] && [ "$max" -le "$LOW_PERCENT" ]; then
+		echo "low $max"
+	else
+		echo "battery $max"
+	fi
+}
+
+# battery_step: logs each change of battery state; CRITICAL_SAMPLES critical
+# readings in a row power the machine off.
+battery_step() {
+	# shellcheck disable=SC2046  # two words
+	set -- $(battery)
+	state=$1 pct=${2:-}
+	if [ "$state" = critical ]; then
+		crit=$((crit + 1))
+	else
+		crit=0
+	fi
+	if [ "$state" != "$last" ]; then
+		case $state in
+		battery) say "on battery at $pct%, running on as a UPS" ;;
+		low) echo "<4>arca-power: battery low, $pct% and discharging; poweroff at $CRITICAL_PERCENT%" ;;
+		critical) echo "<3>arca-power: battery critical, $pct% and discharging" ;;
+		mains) [ -n "$last" ] && say "on mains power at $pct%" ;;
+		esac
+		last=$state
+	fi
+	if [ "$crit" -ge "$CRITICAL_SAMPLES" ] && [ "$off" = 0 ]; then
+		echo "<2>arca-power: battery critical, $pct% and discharging: clean poweroff"
+		# shellcheck disable=SC2086  # a command and its arguments
+		if $POWEROFF; then
+			off=1
+		else
+			echo "<3>arca-power: poweroff failed, trying again"
+		fi
+	fi
+}
+
+watch() {
+	QUIET=1
+	i=0 crit=0 last="" off=0
+	while :; do
+		lid
+		if [ $((i % BATTERY_POLL_EVERY)) -eq 0 ]; then
+			battery_step
+			platform_profile
+			charge_limit
+		fi
+		i=$((i + 1))
+		if [ -n "${ARCA_POWER_ITERATIONS:-}" ] && [ "$i" -ge "$ARCA_POWER_ITERATIONS" ]; then
+			return 0
+		fi
+		sleep "$LID_POLL_SECONDS"
+	done
+}
+
+case ${1:-} in
+apply | watch | lid | battery) "$1" ;;
+*)
+	echo "usage: arca-power apply|watch|lid|battery" >&2
+	exit 2
+	;;
+esac

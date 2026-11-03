@@ -1,0 +1,19 @@
+# The always-on server profile's watch: a closed lid turns the panel off, the
+# battery is a UPS that ends in a clean poweroff when critical.
+[Unit]
+Description=Lid and battery watch
+After=arca-power.service
+
+[Service]
+ExecStart=/usr/libexec/arca-power watch
+Restart=always
+RestartSec=5
+RuntimeDirectory=arca-power
+RuntimeDirectoryPreserve=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
