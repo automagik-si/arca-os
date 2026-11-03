@@ -49,18 +49,20 @@ func TestWithRedactedWirelessSecretsNoWireless(t *testing.T) {
 func TestFillMissingWirelessPassphrases(t *testing.T) {
 	t.Parallel()
 
+	wpa := api.SystemNetworkWirelessSecurityWPAPersonal
+
 	stored := wirelessConfig(
-		api.SystemNetworkWirelessNetwork{SSID: "home", Passphrase: "stored-home"},
-		api.SystemNetworkWirelessNetwork{SSID: "work", BSSID: "aa:bb", Passphrase: "stored-work"},
+		api.SystemNetworkWirelessNetwork{SSID: "home", Security: wpa, Passphrase: "stored-home"},
+		api.SystemNetworkWirelessNetwork{SSID: "work", BSSID: "aa:bb", Security: wpa, Passphrase: "stored-work"},
 		api.SystemNetworkWirelessNetwork{SSID: "open", Security: api.SystemNetworkWirelessSecurityOpen},
 	)
 
 	// A client PUTs back a read (passphrases omitted), changes one, and adds a new one.
 	incoming := wirelessConfig(
-		api.SystemNetworkWirelessNetwork{SSID: "home"},                                         // omitted -> keep stored
-		api.SystemNetworkWirelessNetwork{SSID: "work", BSSID: "aa:bb", Passphrase: "new-work"}, // provided -> replace
-		api.SystemNetworkWirelessNetwork{SSID: "guest", Passphrase: "guest-pass"},              // new SSID -> keep as given
-		api.SystemNetworkWirelessNetwork{SSID: "nomatch"},                                      // no stored match -> stays empty
+		api.SystemNetworkWirelessNetwork{SSID: "home", Security: wpa},                                         // omitted -> keep stored
+		api.SystemNetworkWirelessNetwork{SSID: "work", BSSID: "aa:bb", Security: wpa, Passphrase: "new-work"}, // provided -> replace
+		api.SystemNetworkWirelessNetwork{SSID: "guest", Security: wpa, Passphrase: "guest-pass"},              // new SSID -> keep as given
+		api.SystemNetworkWirelessNetwork{SSID: "nomatch", Security: wpa},                                      // no stored match -> stays empty
 	)
 
 	incoming.FillMissingWirelessPassphrases(stored)
@@ -75,9 +77,24 @@ func TestFillMissingWirelessPassphrases(t *testing.T) {
 func TestFillMissingWirelessPassphrasesBSSIDMustMatch(t *testing.T) {
 	t.Parallel()
 
-	stored := wirelessConfig(api.SystemNetworkWirelessNetwork{SSID: "home", BSSID: "aa:bb", Passphrase: "stored"})
+	wpa := api.SystemNetworkWirelessSecurityWPAPersonal
+
+	stored := wirelessConfig(api.SystemNetworkWirelessNetwork{SSID: "home", BSSID: "aa:bb", Security: wpa, Passphrase: "stored"})
 	// Same SSID, different BSSID: not the same saved network, so nothing is carried over.
-	incoming := wirelessConfig(api.SystemNetworkWirelessNetwork{SSID: "home", BSSID: "cc:dd"})
+	incoming := wirelessConfig(api.SystemNetworkWirelessNetwork{SSID: "home", BSSID: "cc:dd", Security: wpa})
+
+	incoming.FillMissingWirelessPassphrases(stored)
+
+	require.Empty(t, incoming.Config.Wireless.Networks[0].Passphrase)
+}
+
+func TestFillMissingWirelessPassphrasesWPAToOpen(t *testing.T) {
+	t.Parallel()
+
+	stored := wirelessConfig(api.SystemNetworkWirelessNetwork{SSID: "home", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: "stored"})
+	// The network is switched to open: the stored passphrase must not come back
+	// (an open network takes none, and validation would refuse it).
+	incoming := wirelessConfig(api.SystemNetworkWirelessNetwork{SSID: "home", Security: api.SystemNetworkWirelessSecurityOpen})
 
 	incoming.FillMissingWirelessPassphrases(stored)
 

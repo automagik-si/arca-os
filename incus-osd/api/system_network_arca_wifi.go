@@ -63,10 +63,11 @@ func (n SystemNetwork) WithRedactedWirelessSecrets() SystemNetwork {
 
 // FillMissingWirelessPassphrases copies a saved passphrase from old into the
 // matching network of n (matched by SSID and BSSID) whenever n leaves that
-// network's passphrase empty. A read redacts passphrases, so a client that
-// PUTs back a configuration it read omits them; this keeps the stored
-// passphrase for any network whose passphrase is omitted, while a non-empty
-// passphrase still replaces the stored one.
+// network's passphrase empty and the network is still WPA-Personal. A read
+// redacts passphrases, so a client that PUTs back a configuration it read
+// omits them; this keeps the stored passphrase for any network whose
+// passphrase is omitted, while a non-empty passphrase still replaces the
+// stored one. A network switched to open keeps no passphrase.
 func (n *SystemNetwork) FillMissingWirelessPassphrases(old SystemNetwork) {
 	if n.Config == nil || n.Config.Wireless == nil || old.Config == nil || old.Config.Wireless == nil {
 		return
@@ -74,7 +75,7 @@ func (n *SystemNetwork) FillMissingWirelessPassphrases(old SystemNetwork) {
 
 	for i := range n.Config.Wireless.Networks {
 		net := &n.Config.Wireless.Networks[i]
-		if net.Passphrase != "" {
+		if net.Passphrase != "" || net.Security != SystemNetworkWirelessSecurityWPAPersonal {
 			continue
 		}
 
