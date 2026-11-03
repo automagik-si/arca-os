@@ -98,8 +98,9 @@ func (s *Server) apiSystemNetwork(w http.ResponseWriter, r *http.Request) {
 			s.state.System.Network.Config.Time.Timezone = "UTC"
 		}
 
-		// Return the current network state.
-		_ = response.SyncResponse(true, s.state.System.Network).Render(w)
+		// Return the current network state, with Wi-Fi passphrases redacted;
+		// they are write-only and never returned by a read.
+		_ = response.SyncResponse(true, s.state.System.Network.WithRedactedWirelessSecrets()).Render(w)
 	case http.MethodPut:
 		// Replace the existing network configuration.
 		newConfig := &api.SystemNetwork{}
@@ -126,6 +127,11 @@ func (s *Server) apiSystemNetwork(w http.ResponseWriter, r *http.Request) {
 
 			return
 		}
+
+		// A read redacts Wi-Fi passphrases, so a client PUTing back a prior
+		// read omits them; keep the stored passphrase for any network whose
+		// passphrase is omitted.
+		newConfig.FillMissingWirelessPassphrases(s.state.System.Network)
 
 		var confirmationTimeout time.Duration
 

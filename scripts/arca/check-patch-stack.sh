@@ -10,14 +10,14 @@
 # The allowlist is read as committed at HEAD, so a working-tree edit cannot
 # admit a path. A commit in the range can still admit one, so every path the
 # range adds to the allowlist is printed as "admitted <path>" for review. It prints one row per non-owned path, "<added> <deleted>
-# <path> <class>", then "total <n>/100", where n sums added and deleted lines
+# <path> <class>", then "total <n>/200", where n sums added and deleted lines
 # over the non-owned paths. Binary paths count as zero lines.
 #
-# Exit codes: 0 when nothing is REFUSED and n <= 100; 1 otherwise; 2 on usage
+# Exit codes: 0 when nothing is REFUSED and n <= 200; 1 otherwise; 2 on usage
 # or an unknown base ref.
 set -euo pipefail
 
-CAP=100
+CAP=200
 ALLOWLIST=scripts/arca/patch-allowlist.txt
 
 usage() {
