@@ -3,7 +3,8 @@
 # the panel off and nothing else, the battery is a UPS that ends in a clean
 # poweroff, and an always-plugged battery is held below full charge.
 #
-#   arca-power apply     set the performance and charge-limit knobs (boot)
+#   arca-power apply     at boot: power off again when the battery is still
+#                        empty, else set the performance and charge-limit knobs
 #   arca-power watch     the lid and battery loop (service)
 #   arca-power lid       one lid step: the panel backlight follows the lid
 #   arca-power battery   print the battery state: none, mains, battery <n>,
@@ -23,6 +24,8 @@ CHARGE_START_PERCENT=75 # charging restarts below this
 CHARGE_END_PERCENT=80   # charging stops at this
 LID_POLL_SECONDS=2
 BATTERY_POLL_EVERY=5    # the battery is read every this many lid polls
+WAKE_AFTER_SECONDS=1800 # a UPS poweroff arms the RTC to power on after this
+WAKE_STAY_OFF_PERCENT=$((CRITICAL_PERCENT + 5)) # at boot on battery at or below this: off again
 
 R=${ARCA_POWER_ROOT:-}
 RUN=${ARCA_POWER_RUN:-/run/arca-power}
@@ -201,7 +204,55 @@ charge_limit() {
 	report "ideapad conservation mode" 1
 }
 
+# arm_wake: the RTC powers the machine on WAKE_AFTER_SECONDS from now.
+arm_wake() {
+	w=$R/sys/class/rtc/rtc0/wakealarm
+	if [ ! -e "$w" ]; then
+		echo "<4>arca-power: no RTC wake alarm, the machine stays off"
+		return 1
+	fi
+	if { printf '0\n' > "$w" && printf '+%s\n' "$WAKE_AFTER_SECONDS" > "$w"; } 2>/dev/null; then
+		say "wake alarm armed, power on in $WAKE_AFTER_SECONDS s"
+		return 0
+	fi
+	echo "<4>arca-power: wake alarm not taken, the machine stays off"
+	return 1
+}
+
+# clear_wake: an armed RTC wake alarm is cleared.
+clear_wake() {
+	w=$R/sys/class/rtc/rtc0/wakealarm
+	case $(cat "$w" 2>/dev/null) in '' | 0) return 0 ;; esac
+	{ printf '0\n' > "$w"; } 2>/dev/null && say "wake alarm cleared"
+}
+
+# boot_check: booted on battery at or below WAKE_STAY_OFF_PERCENT (on
+# CRITICAL_SAMPLES readings) re-arms the wake alarm and powers off again;
+# otherwise the machine stays up and the wake alarm is cleared. 0: stay up.
+boot_check() {
+	k=0
+	while :; do
+		# shellcheck disable=SC2046  # two words
+		set -- $(battery)
+		case $1 in mains | none) break ;; esac
+		[ "${2:--1}" -ge 0 ] && [ "$2" -le "$WAKE_STAY_OFF_PERCENT" ] || break
+		k=$((k + 1))
+		if [ "$k" -ge "$CRITICAL_SAMPLES" ]; then
+			echo "<3>arca-power: booted on battery at $2%, at or below $WAKE_STAY_OFF_PERCENT%: off again until charged"
+			arm_wake
+			# shellcheck disable=SC2086  # a command and its arguments
+			$POWEROFF && return 1
+			echo "<3>arca-power: poweroff failed, staying up"
+			return 0
+		fi
+		sleep "$LID_POLL_SECONDS"
+	done
+	clear_wake
+	return 0
+}
+
 apply() {
+	boot_check || return 0
 	performance
 	charge_limit
 	return 0
@@ -333,6 +384,7 @@ battery_step() {
 	fi
 	if [ "$crit" -ge "$CRITICAL_SAMPLES" ] && [ "$off" = 0 ]; then
 		echo "<2>arca-power: battery critical, $pct% and discharging: clean poweroff"
+		arm_wake
 		# shellcheck disable=SC2086  # a command and its arguments
 		if $POWEROFF; then
 			off=1

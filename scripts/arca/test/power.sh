@@ -10,7 +10,9 @@
 # the lid turns the panel backlight off and back on (an external DDC/CI one is
 # left alone); the battery states follow the thresholds and the power source;
 # and the watch loop powers off only after three critical readings in a row,
-# never with a Mains supply online or on a 0% glitch. Prints PASS/FAIL lines;
+# never with a Mains supply online or on a 0% glitch, and arms the RTC wake
+# alarm first; at boot, a battery still empty powers off again with the alarm
+# re-armed, and mains power keeps the machine up with the alarm cleared. Prints PASS/FAIL lines;
 # exits 1 when any case fails.
 set -eu
 
@@ -36,7 +38,9 @@ val() { cat "$1/$2"; }
 run() {
 	root=$1
 	shift
-	out=$(ARCA_POWER_ROOT=$root ARCA_POWER_RUN=$root/run PATH=$tmp/bin:$PATH dash "$script" "$@" 2>&1)
+	rm -f "$tmp/poweroffs"
+	out=$(ARCA_POWER_ROOT=$root ARCA_POWER_RUN=$root/run ARCA_POWER_POWEROFF=fake-poweroff \
+		PATH=$tmp/bin:$PATH dash "$script" "$@" 2>&1)
 }
 # expect <case> <root> <path> <value>
 expect() {
@@ -292,6 +296,57 @@ if [ "$(poweroffs)" = 0 ] && [ "$(count 'battery low, 15% and discharging')" -eq
 else
 	fail watch-low-once "$out"
 fi
+# The UPS poweroff arms the RTC wake alarm; without an RTC it still powers off.
+r=$tmp/w-wake
+bat "$r" BAT0 Discharging 4
+put "$r" sys/class/rtc/rtc0/wakealarm ""
+wrun 16
+if [ "$(poweroffs)" = 1 ] && [ "$(val "$r" sys/class/rtc/rtc0/wakealarm)" = +1800 ] && has 'wake alarm armed, power on in 1800 s'; then
+	pass watch-arm-on-critical
+else
+	fail watch-arm-on-critical "$(poweroffs) poweroffs, alarm $(val "$r" sys/class/rtc/rtc0/wakealarm): $out"
+fi
+r=$tmp/w-no-rtc
+bat "$r" BAT0 Discharging 4
+wrun 16
+if [ "$(poweroffs)" = 1 ] && has '<4>arca-power: no RTC wake alarm'; then
+	pass watch-no-rtc
+else
+	fail watch-no-rtc "$(poweroffs) poweroffs: $out"
+fi
+
+# boot <case> <status> <percent> <mains online>: apply at boot, alarm armed.
+boot() {
+	r=$tmp/boot-$1
+	bat "$r" BAT0 "$2" "$3"
+	put "$r" sys/class/power_supply/AC/type Mains
+	put "$r" sys/class/power_supply/AC/online "$4"
+	put "$r" sys/class/rtc/rtc0/wakealarm 1999999999
+	put "$r" sys/firmware/acpi/platform_profile balanced
+	put "$r" sys/firmware/acpi/platform_profile_choices "low-power balanced performance"
+	run "$r" apply
+}
+boot still-low Discharging 9 0
+if [ "$(poweroffs)" = 1 ] && [ "$(val "$r" sys/class/rtc/rtc0/wakealarm)" = +1800 ] &&
+	[ "$(val "$r" sys/firmware/acpi/platform_profile)" = balanced ] && has 'booted on battery at 9%, at or below 10%'; then
+	pass boot-still-low
+else
+	fail boot-still-low "$(poweroffs) poweroffs: $out"
+fi
+boot on-mains Charging 9 1
+if [ "$(poweroffs)" = 0 ] && [ "$(val "$r" sys/class/rtc/rtc0/wakealarm)" = 0 ] &&
+	[ "$(val "$r" sys/firmware/acpi/platform_profile)" = performance ] && has 'wake alarm cleared'; then
+	pass boot-on-mains
+else
+	fail boot-on-mains "$(poweroffs) poweroffs: $out"
+fi
+boot charged Discharging 11 0
+if [ "$(poweroffs)" = 0 ] && [ "$(val "$r" sys/class/rtc/rtc0/wakealarm)" = 0 ]; then
+	pass boot-on-battery-charged
+else
+	fail boot-on-battery-charged "$(poweroffs) poweroffs: $out"
+fi
+
 # A Mains supply online: never a poweroff, whatever the battery says.
 r=$tmp/w-mains
 bat "$r" BAT0 Discharging 4
