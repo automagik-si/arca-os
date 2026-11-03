@@ -15,11 +15,9 @@
 // and bootctl), which scripts/arca/migrate-node.sh gives it by entering the
 // node's namespaces from a privileged container. It refuses to run anywhere
 // else. It only supports a node with Secure Boot disabled (the degraded state
-// these nodes are in); with Secure Boot enabled it refuses, because the
-// correct re-seal then also rebinds PCR11 to a new signing key, which this
-// does not do.
+// these nodes are in).
 //
-//	arca-node-migrate --version <12-digit> --source <dir>
+//	arca-node-migrate [--check] --version <12-digit> --source <dir>
 //
 // --source holds the build's UKI and usr images for <version>, named as the
 // build wrote them (and as systemd-sysupdate's transfers match):
@@ -30,14 +28,35 @@
 // installed ones are signed with the old key, which the new build does not
 // trust).
 //
-// Steps, in incus-osd's apply order: stage the OS files where sysupdate
-// reads them and the applications where incus-osd keeps them; re-seal the
-// LUKS volumes to the PCR4 the new UKI will produce and to the PCR11 policy
-// of the new UKI's signing key (as incus-osd's key change does); write the
-// partitions and the UKI with systemd-sysupdate; undo boot counting; select
-// the new UKI for the next boot. On any failure after re-sealing, the binding
-// is put back to the running UKI and the staged applications are removed, so
-// the node keeps booting its current build without a recovery passphrase.
+// Both modes first run the same read-only preflight: Secure Boot off, the
+// version newer, the files present, a recovery key file per encrypted volume,
+// the TPM event log validated, the ESP's binaries reproducing the measured
+// PCR4, a sound PCR4 prediction for the new boot loader and UKI, and room on
+// every file system written. --check then also tests that the systemd-boot
+// one-shot variable can be written (restoring it) and stops; it changes
+// nothing else.
+//
+// The migration, in incus-osd's apply order: stage the OS files where
+// sysupdate reads them and the applications where incus-osd keeps them;
+// replace the ESP's systemd-boot with the new build's signed one (PCR4
+// measures it, and the new UKI's stub refuses an untrusted one); re-seal the
+// LUKS volumes to the PCR4 the new boot loader and UKI will produce and to
+// the PCR11 policy of the new UKI's signing key; write the partitions and the
+// UKI with systemd-sysupdate; undo boot counting; select the new UKI for the
+// next boot.
+//
+// On a failure or an interrupt (SIGINT, SIGTERM) after the ESP changed, every
+// rollback step runs even when an earlier one fails: the staged applications
+// and the new UKI are removed, the boot loader and the PCR signing key are
+// put back, the next boot is pointed at the running UKI and, last, the TPM is
+// re-sealed to what is then on the ESP. A running step (the re-seal,
+// sysupdate) always completes first. Hangups and broken pipes are ignored, so
+// a dropped session does not stop it half way. Every line also goes to
+// /var/log/arca-node-migrate.log on the node.
+//
+// Exit codes: 0 migrated (or --check passed); 1 failed, and the node boots
+// its running build as before (nothing changed, or fully rolled back); 2
+// usage; 3 failed and the rollback is incomplete: do not reboot the node.
 package main
 
 import (
@@ -55,6 +74,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/lxc/incus/v7/shared/subprocess"
@@ -62,7 +82,13 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/internal/secureboot"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
-	"github.com/lxc/incus-os/incus-osd/internal/util"
+)
+
+const (
+	exitOK                 = 0
+	exitFailed             = 1
+	exitUsage              = 2
+	exitRollbackIncomplete = 3
 )
 
 // The paths that exist only in the node's own mount namespace.
@@ -73,226 +99,281 @@ var nodeContextPaths = []string{"/dev/mapper/usr", "/var/lib/incus-os/keys", "/b
 // holds, so it must be the new UKI's key when re-sealing for the new UKI.
 const pcrPublicKeyPath = "/run/systemd/tpm2-pcr-public-key.pem"
 
+// logPath is the node-side log every line is appended to.
+const logPath = "/var/log/arca-node-migrate.log"
+
+var logFile *os.File
+
 func main() {
-	err := run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "arca-node-migrate: "+err.Error())
-		os.Exit(1)
+	// A dropped exec session must not stop the helper half way: ignore
+	// hangups, and broken pipes (output writes then fail, and say ignores
+	// that).
+	signal.Ignore(unix.SIGHUP, unix.SIGPIPE)
+
+	os.Exit(run(os.Args[1:]))
+}
+
+// say prints one line and appends it to the node-side log. It never fails:
+// a closed output or an unwritable log is ignored.
+func say(format string, args ...any) {
+	line := fmt.Sprintf("arca-node-migrate: "+format+"\n", args...)
+
+	_, _ = os.Stdout.WriteString(line)
+
+	if logFile != nil {
+		_, _ = logFile.WriteString(time.Now().UTC().Format(time.RFC3339) + " " + line)
+		_ = logFile.Sync()
 	}
 }
 
-func say(format string, args ...any) {
-	fmt.Printf("arca-node-migrate: "+format+"\n", args...)
+type options struct {
+	check   bool
+	version string
+	source  string
 }
 
-func run() error {
-	version, source, err := parseArgs(os.Args[1:])
+func run(args []string) int {
+	opts, err := parseArgs(args)
 	if err != nil {
-		return err
+		say("usage: %v", err)
+
+		return exitUsage
 	}
 
 	if os.Geteuid() != 0 {
-		return errors.New("must run as root in the node's context")
+		say("error: must run as root in the node's context")
+
+		return exitFailed
 	}
 
 	for _, p := range nodeContextPaths {
 		_, err := os.Stat(p)
 		if err != nil {
-			return fmt.Errorf("not in the node's own namespaces (%s: %w)", p, err)
+			say("error: not in the node's own namespaces (%s: %v)", p, err)
+
+			return exitFailed
 		}
 	}
+
+	logFile, err = os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		logFile = nil
+
+		say("warning: cannot write %s (%v); logging to the output only", logPath, err)
+	}
+
+	mode := "migrate"
+	if opts.check {
+		mode = "check"
+	}
+
+	say("start: %s to %s (log %s)", mode, opts.version, logPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), unix.SIGINT, unix.SIGTERM)
 	defer stop()
 
-	// Only migrate a Secure-Boot-disabled node (the state these nodes are in).
-	sbEnabled, err := secureboot.Enabled()
+	p, err := preflight(ctx, opts.version, opts.source)
 	if err != nil {
-		return fmt.Errorf("checking Secure Boot state: %w", err)
+		say("error: %v", err)
+		say("result: failed; nothing changed")
+
+		return exitFailed
 	}
 
-	if sbEnabled {
-		return errors.New("secure boot is enabled; this migration only supports the Secure-Boot-disabled case")
-	}
-
-	ukis, err := util.GetUKIVersions()
-	if err != nil {
-		return fmt.Errorf("reading the running UKI: %w", err)
-	}
-
-	say("running %s (%s)", ukis.CurrentVersion, ukis.CurrentFilepath)
-
-	if strings.Compare(version, ukis.CurrentVersion) <= 0 {
-		return fmt.Errorf("version %s is not newer than the running %s", version, ukis.CurrentVersion)
-	}
-
-	apps, err := installedApps()
-	if err != nil {
-		return err
-	}
-
-	// Stage the OS files where systemd-sysupdate looks for an update.
-	staged, err := stageOS(version, source)
-	if err != nil {
-		return err
-	}
-
-	newUKI := staged.newUKI
-
-	say("staged %d OS files for %s into %s", staged.count, version, systemd.SystemUpdatesPath)
-
-	// Stage the applications as version <version>.
-	appDir := filepath.Join(systemd.LocalExtensionsPath, version)
-
-	err = stageApps(apps, source, appDir)
-	if err != nil {
-		_ = os.RemoveAll(appDir)
-
-		return err
-	}
-
-	say("staged applications %s into %s", strings.Join(apps, ","), appDir)
-
-	// Drop any pcrlock credentials so they are not measured into PCR12 on the
-	// next boot (incus-osd's apply does the same).
-	_, err = secureboot.RemovePCRLockCredentials()
-	if err != nil {
-		_ = os.RemoveAll(appDir)
-
-		return fmt.Errorf("removing pcrlock credentials: %w", err)
-	}
-
-	// The new UKI signs its PCR11 policy with the new key. Like incus-osd's
-	// Secure Boot key change, put that key where systemd-cryptenroll reads
-	// it, so the PCR11 policy binds to the key the new UKI's signatures use.
-	oldKey, err := os.ReadFile(pcrPublicKeyPath)
-	if err != nil {
-		_ = os.RemoveAll(appDir)
-
-		return fmt.Errorf("reading the running PCR signing key: %w", err)
-	}
-
-	newKey, err := ukiPCRPublicKey(newUKI)
-	if err != nil {
-		_ = os.RemoveAll(appDir)
-
-		return err
-	}
-
-	if !bytes.Equal(bytes.TrimSpace(oldKey), bytes.TrimSpace(newKey)) {
-		say("the new UKI signs PCR11 with a different key; binding the PCR11 policy to it")
-	}
-
-	// Keep the running ESP systemd-boot binaries, so rollback can restore them.
-	oldLoaders, err := readBootLoaders()
-	if err != nil {
-		_ = os.RemoveAll(appDir)
-
-		return fmt.Errorf("reading the current boot loader: %w", err)
-	}
-
-	// rollback puts the node back the way it was booting, after a failure past
-	// this point: the ESP boot loader, the PCR signing key and the TPM binding
-	// to the running UKI, and (should sysupdate already have written the newer
-	// UKI, which systemd-boot would otherwise pick) the next boot pointed back
-	// at the running UKI, which the TPM is sealed to again. The staged
-	// applications are removed.
-	rollback := func(cause error) error {
-		say("rolling back to the running UKI")
-
-		_ = os.RemoveAll(appDir)
-
-		rbErr := restoreBootLoaders(oldLoaders)
-		if rbErr == nil {
-			rbErr = os.WriteFile(pcrPublicKeyPath, oldKey, 0o444)
-		}
-
-		if rbErr == nil {
-			rbErr = secureboot.UpdatePCR4Binding(context.Background(), ukis.CurrentFilepath)
-		}
-
-		if rbErr != nil {
-			return fmt.Errorf("%w; rolling back also failed: %w", cause, rbErr)
-		}
-
-		err := setBootOneShot(filepath.Base(ukis.CurrentFilepath))
+	if opts.check {
+		err := testBootOneShot(filepath.Base(p.ukis.CurrentFilepath))
 		if err != nil {
-			say("warning: could not point the next boot back at the running UKI (%v)", err)
+			say("warning: the systemd-boot one-shot variable cannot be written from here (%v); the reboot through the /os API sets it from incus-osd, and systemd-boot boots the newest UKI without it", err)
+		} else {
+			say("the systemd-boot one-shot variable is writable (tested and restored)")
 		}
 
-		return cause
+		say("result: check passed; nothing changed")
+
+		return exitOK
 	}
 
-	// Replace the ESP systemd-boot binaries with the new build's signed ones.
-	// This must happen before the re-seal, because PCR4 measures the boot
-	// loader as well as the UKI.
-	say("updating the ESP boot loader to the new build")
-
-	err = updateBootLoaders(staged.newUsr)
-	if err != nil {
-		return rollback(fmt.Errorf("updating the boot loader: %w", err))
-	}
-
-	err = os.WriteFile(pcrPublicKeyPath, newKey, 0o444)
-	if err != nil {
-		return rollback(fmt.Errorf("writing the new PCR signing key: %w", err))
-	}
-
-	// Re-seal: bind the LUKS volumes to the PCR4 the new boot loader and UKI
-	// will produce (plus the unchanged PCR7, the recomputed PCR12, an empty
-	// PCR15 and the PCR11 policy of the new key), authorised with the node's
-	// recovery key files. computeNewPCR4Value reads the boot loader from the
-	// ESP (just updated) and the UKI from the staged file, which is what lands
-	// on the ESP, so the future PCR4 matches the next boot.
-	say("re-sealing the TPM for the new UKI")
-
-	err = secureboot.UpdatePCR4Binding(ctx, newUKI)
-	if err != nil {
-		return rollback(fmt.Errorf("re-sealing the TPM: %w", err))
-	}
-
-	err = install(ctx, version, filepath.Base(newUKI))
-	if err != nil {
-		return rollback(err)
-	}
-
-	say("migrated to %s; reboot to boot it (the TPM unlocks it)", version)
-
-	return nil
+	return migrate(ctx, p)
 }
 
-func parseArgs(args []string) (string, string, error) {
-	version := ""
-	source := ""
+func parseArgs(args []string) (options, error) {
+	opts := options{}
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--check":
+			opts.check = true
 		case "--version", "--source":
 			if i+1 >= len(args) {
-				return "", "", errors.New(args[i] + " needs a value")
+				return opts, errors.New(args[i] + " needs a value")
 			}
 
 			if args[i] == "--version" {
-				version = args[i+1]
+				opts.version = args[i+1]
 			} else {
-				source = args[i+1]
+				opts.source = args[i+1]
 			}
 
 			i++
 		default:
-			return "", "", errors.New("unknown argument: " + args[i])
+			return opts, errors.New("unknown argument: " + args[i])
 		}
 	}
 
-	if !regexp.MustCompile(`^[0-9]{12}$`).MatchString(version) {
-		return "", "", errors.New("--version must be 12 digits")
+	if !regexp.MustCompile(`^[0-9]{12}$`).MatchString(opts.version) {
+		return opts, errors.New("--version must be 12 digits")
 	}
 
-	if source == "" {
-		return "", "", errors.New("--source <dir> is required")
+	if opts.source == "" {
+		return opts, errors.New("--source <dir> is required")
 	}
 
-	return version, source, nil
+	return opts, nil
+}
+
+// migrate stages, re-seals and installs the build the preflight checked.
+func migrate(ctx context.Context, p *plan) int {
+	appDir := filepath.Join(systemd.LocalExtensionsPath, p.version)
+
+	unstage := func() {
+		_ = os.RemoveAll(appDir)
+		_ = os.RemoveAll(systemd.SystemUpdatesPath)
+	}
+
+	// Stage the OS files where systemd-sysupdate looks for an update, and the
+	// applications as version <version>. Nothing that boots has changed yet.
+	newUKI, err := stageOS(p)
+	if err == nil {
+		say("staged %d OS files into %s", len(p.osFiles), systemd.SystemUpdatesPath)
+
+		err = stageApps(p.apps, p.source, appDir)
+	}
+
+	if err == nil {
+		say("staged applications %s into %s", strings.Join(p.apps, ","), appDir)
+	}
+
+	if err == nil && ctx.Err() != nil {
+		err = errors.New("interrupted")
+	}
+
+	if err != nil {
+		unstage()
+		say("error: staging: %v", err)
+		say("result: failed; nothing changed")
+
+		return exitFailed
+	}
+
+	// From here on the ESP and the TPM binding change, so every failure, and
+	// an interrupt between steps, rolls back.
+	steps := []struct {
+		what string
+		do   func() error
+	}{
+		{"removing pcrlock credentials", func() error {
+			// So they are not measured into PCR12 on the next boot
+			// (incus-osd's apply does the same).
+			_, err := secureboot.RemovePCRLockCredentials()
+
+			return err
+		}},
+		{"updating the ESP boot loader to the new build", func() error {
+			// Before the re-seal, because PCR4 measures the boot loader.
+			return updateBootLoaders(p.newLoader)
+		}},
+		{"binding the PCR11 policy to the new UKI's signing key", func() error {
+			return writeFileAtomic(pcrPublicKeyPath, p.newKey, 0o444)
+		}},
+		{"re-sealing the TPM for the new boot loader and UKI", func() error {
+			// Binds the LUKS volumes to the PCR4 the new boot loader and
+			// UKI will produce (computeNewPCR4Value reads the loader from
+			// the ESP, just updated, and the UKI from the staged file,
+			// which is what lands on the ESP), the unchanged PCR7, the
+			// recomputed PCR12, an empty PCR15 and the PCR11 policy of the
+			// new key, authorised with the recovery key files. It is not
+			// cancelled: an interrupt rolls back once it has finished.
+			return secureboot.UpdatePCR4Binding(context.WithoutCancel(ctx), newUKI)
+		}},
+		{"writing the partitions and the UKI with systemd-sysupdate", func() error {
+			return install(context.WithoutCancel(ctx), p.version, filepath.Base(newUKI))
+		}},
+	}
+
+	for _, s := range steps {
+		say("%s", s.what)
+
+		err := s.do()
+		if err != nil {
+			return rollback(p, appDir, fmt.Errorf("%s: %w", s.what, err))
+		}
+
+		if ctx.Err() != nil {
+			return rollback(p, appDir, errors.New("interrupted"))
+		}
+	}
+
+	say("result: migrated to %s; reboot to boot it (the TPM unlocks it)", p.version)
+
+	return exitOK
+}
+
+// rollback puts the node back the way it was booting. Every step runs, even
+// when an earlier one failed, and the TPM re-seal runs last, against what is
+// then on the ESP.
+func rollback(p *plan, appDir string, cause error) int {
+	say("error: %v", cause)
+	say("rolling back to the running UKI %s", filepath.Base(p.ukis.CurrentFilepath))
+
+	failed := []string{}
+
+	step := func(what string, err error) {
+		if err != nil {
+			say("rollback: %s FAILED: %v", what, err)
+
+			failed = append(failed, what)
+
+			return
+		}
+
+		say("rollback: %s", what)
+	}
+
+	step("removing the staged applications", os.RemoveAll(appDir))
+
+	err := os.RemoveAll(systemd.SystemUpdatesPath)
+	if err != nil {
+		say("rollback: warning: removing the staged OS files: %v", err)
+	}
+
+	ukiErr := removeUKI(p.newUKIName())
+	step("removing the new UKI from the ESP", ukiErr)
+
+	step("restoring the ESP boot loader", restoreBootLoaders(p.oldLoaders))
+	step("restoring the PCR signing key", writeFileAtomic(pcrPublicKeyPath, p.oldKey, 0o444))
+
+	// With the new UKI gone systemd-boot cannot pick it; the one-shot only
+	// matters when its removal failed.
+	err = setBootOneShot(filepath.Base(p.ukis.CurrentFilepath))
+	if ukiErr != nil {
+		step("pointing the next boot at the running UKI", err)
+	} else if err != nil {
+		say("rollback: warning: pointing the next boot at the running UKI: %v (the new UKI is gone, so it boots anyway)", err)
+	}
+
+	unix.Sync()
+
+	step("re-sealing the TPM for the running UKI", secureboot.UpdatePCR4Binding(context.Background(), p.ukis.CurrentFilepath))
+
+	if len(failed) > 0 {
+		say("result: ROLLBACK INCOMPLETE (%s failed); DO NOT REBOOT the node: it may ask for its recovery passphrase or not boot its build; see %s", strings.Join(failed, ", "), logPath)
+
+		return exitRollbackIncomplete
+	}
+
+	say("result: failed and rolled back; the node keeps booting %s", p.ukis.CurrentVersion)
+
+	return exitFailed
 }
 
 // install writes the partitions and the UKI with systemd-sysupdate, then
@@ -300,8 +381,6 @@ func parseArgs(args []string) (string, string, error) {
 func install(ctx context.Context, version string, newUKIName string) error {
 	// In a private mount namespace with the raw /usr mounted (no sysexts),
 	// the same workaround incus-osd uses.
-	say("writing the partitions and the UKI with systemd-sysupdate")
-
 	_, err := subprocess.RunCommandContext(ctx, "unshare", "-m", "--", "sh", "-c",
 		"mount /dev/mapper/usr /usr && /usr/lib/systemd/systemd-sysupdate update "+version)
 	if err != nil {
@@ -323,8 +402,9 @@ func install(ctx context.Context, version string, newUKIName string) error {
 	// the migration runs from one (the node's PID namespace, which bootctl's
 	// container check needs, cannot be joined from a descendant). So the
 	// LoaderEntryOneShot variable is written straight to efivarfs. This is
-	// best-effort: with no pinned default entry (IncusOS does not set one),
-	// systemd-boot boots the newest UKI anyway, and the new build is newer.
+	// best-effort: with no pinned default entry (the preflight refuses one),
+	// systemd-boot boots the newest UKI anyway, and the new build is newer;
+	// the reboot through the /os API also sets it, from incus-osd.
 	err = setBootOneShot(newUKIName)
 	if err != nil {
 		say("warning: could not set the one-shot boot entry (%v); relying on systemd-boot booting the newest UKI", err)
@@ -339,29 +419,16 @@ const loaderGUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 // fsImmutableFl is FS_IMMUTABLE_FL (efivarfs marks existing variables with it).
 const fsImmutableFl = 0x00000010
 
-// setBootOneShot writes the systemd-boot LoaderEntryOneShot EFI variable so the
-// next boot selects entry (a UKI filename under /boot/EFI/Linux). The value is
-// a NUL-terminated UTF-16LE string, prefixed in efivarfs by a 4-byte attribute
-// word (non-volatile + boot-service + runtime access).
-func setBootOneShot(entry string) error {
-	path := "/sys/firmware/efi/efivars/LoaderEntryOneShot-" + loaderGUID
+func efiVarPath(name string) string {
+	return "/sys/firmware/efi/efivars/" + name + "-" + loaderGUID
+}
 
-	// efivarfs marks existing variables immutable; clear that so it can be
-	// rewritten. A missing variable is created by the write below.
-	fd, err := unix.Open(path, unix.O_RDONLY, 0)
-	if err == nil {
-		flags, gerr := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
-		if gerr == nil && flags&fsImmutableFl != 0 {
-			_ = unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags&^fsImmutableFl)
-		}
-
-		_ = unix.Close(fd)
-	} else if !errors.Is(err, unix.ENOENT) {
-		return fmt.Errorf("opening %s: %w", path, err)
-	}
-
-	// The value is a NUL-terminated UTF-16LE string. The entry name is a UKI
-	// filename (ASCII), so each rune is one 16-bit code unit.
+// oneShotValue is the efivarfs content of LoaderEntryOneShot selecting entry:
+// a 4-byte attribute word (non-volatile + boot-service + runtime access), then
+// the NUL-terminated UTF-16LE entry name.
+func oneShotValue(entry string) []byte {
+	// The entry name is a UKI filename (ASCII), so each rune is one 16-bit
+	// code unit.
 	runes := utf16.Encode([]rune(entry + "\x00"))
 
 	buf := make([]byte, 4, 4+2*len(runes))
@@ -371,13 +438,48 @@ func setBootOneShot(entry string) error {
 		buf = append(buf, byte(u), byte(u>>8))
 	}
 
+	return buf
+}
+
+// setBootOneShot writes the systemd-boot LoaderEntryOneShot EFI variable so the
+// next boot selects entry (a UKI filename under /boot/EFI/Linux).
+func setBootOneShot(entry string) error {
+	return writeEFIVar(efiVarPath("LoaderEntryOneShot"), oneShotValue(entry))
+}
+
+// clearImmutable clears the immutable flag efivarfs puts on a variable, so it
+// can be rewritten or removed. A missing variable is not an error.
+func clearImmutable(path string) error {
+	fd, err := unix.Open(path, unix.O_RDONLY, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer unix.Close(fd) //nolint:errcheck
+
+	flags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
+	if err == nil && flags&fsImmutableFl != 0 {
+		_ = unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags&^fsImmutableFl)
+	}
+
+	return nil
+}
+
+// writeEFIVar writes raw (attribute word and data) to an efivarfs variable.
+func writeEFIVar(path string, raw []byte) error {
+	err := clearImmutable(path)
+	if err != nil {
+		return err
+	}
+
 	// efivarfs requires the attribute word and the data in a single write.
 	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec
 	if err != nil {
 		return fmt.Errorf("opening %s for writing: %w", path, err)
 	}
 
-	_, werr := out.Write(buf)
+	_, werr := out.Write(raw)
 	cerr := out.Close()
 
 	if werr != nil {
@@ -385,6 +487,21 @@ func setBootOneShot(entry string) error {
 	}
 
 	return cerr
+}
+
+// removeEFIVar deletes an efivarfs variable.
+func removeEFIVar(path string) error {
+	err := clearImmutable(path)
+	if err != nil {
+		return err
+	}
+
+	err = os.Remove(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	return err
 }
 
 // ukiPCRPublicKey returns the PEM public key in a UKI's .pcrpkey section.
@@ -439,89 +556,28 @@ func installedApps() ([]string, error) {
 	return apps, nil
 }
 
-// stagedOS names the files stageOS copied: how many, the UKI and the plain
-// (non-verity) usr image, both under SystemUpdatesPath.
-type stagedOS struct {
-	count  int
-	newUKI string
-	newUsr string
-}
-
-// stageOS copies the build's UKI and usr images for version from source into
-// SystemUpdatesPath (cleared first, as the provider's download does).
-func stageOS(version string, source string) (stagedOS, error) {
-	out := stagedOS{}
-
+// stageOS copies the build's UKI and usr images into SystemUpdatesPath
+// (cleared first, as the provider's download does) and returns the staged
+// UKI.
+func stageOS(p *plan) (string, error) {
 	err := os.RemoveAll(systemd.SystemUpdatesPath)
 	if err != nil {
-		return out, err
+		return "", err
 	}
 
 	err = os.MkdirAll(systemd.SystemUpdatesPath, 0o700)
 	if err != nil {
-		return out, err
+		return "", err
 	}
 
-	entries, err := os.ReadDir(source)
-	if err != nil {
-		return out, err
-	}
-
-	kinds := map[string]bool{}
-
-	for _, e := range entries {
-		name := e.Name()
-
-		kind := ""
-
-		switch {
-		case strings.HasSuffix(name, "_"+version+".efi"):
-			kind = "efi"
-		case strings.Contains(name, "_"+version+".usr-") && strings.HasSuffix(name, ".raw"):
-			rest := name[strings.Index(name, ".usr-")+1:]
-
-			switch {
-			case strings.Contains(rest, "-verity-sig."):
-				kind = "usr-verity-sig"
-			case strings.Contains(rest, "-verity."):
-				kind = "usr-verity"
-			default:
-				kind = "usr"
-			}
-		default:
-			continue
-		}
-
-		if kinds[kind] {
-			return out, fmt.Errorf("more than one %s file for %s in %s", kind, version, source)
-		}
-
-		kinds[kind] = true
-
-		dst := filepath.Join(systemd.SystemUpdatesPath, name)
-
-		err := copyFile(filepath.Join(source, name), dst)
+	for _, src := range p.osFiles {
+		err := copyFile(src, filepath.Join(systemd.SystemUpdatesPath, filepath.Base(src)))
 		if err != nil {
-			return out, err
-		}
-
-		switch kind {
-		case "efi":
-			out.newUKI = dst
-		case "usr":
-			out.newUsr = dst
+			return "", err
 		}
 	}
 
-	for _, kind := range []string{"efi", "usr", "usr-verity", "usr-verity-sig"} {
-		if !kinds[kind] {
-			return out, fmt.Errorf("no %s file for %s in %s", kind, version, source)
-		}
-	}
-
-	out.count = len(kinds)
-
-	return out, nil
+	return filepath.Join(systemd.SystemUpdatesPath, p.newUKIName()), nil
 }
 
 // espBootLoaders returns the ESP paths of the systemd-boot binary (both the
@@ -562,48 +618,43 @@ func readBootLoaders() (map[string][]byte, error) {
 	return saved, nil
 }
 
-// restoreBootLoaders writes previously-read ESP systemd-boot binaries back.
+// restoreBootLoaders writes previously-read ESP systemd-boot binaries back,
+// each one replaced atomically, or rewritten in place should the ESP have no
+// room for the temporary copy.
 func restoreBootLoaders(saved map[string][]byte) error {
+	errs := []error{}
+
 	for path, data := range saved {
-		err := writeFileSync(path, data)
+		cur, err := os.ReadFile(path) //nolint:gosec
+		if err == nil && bytes.Equal(cur, data) {
+			continue
+		}
+
+		err = writeFileAtomic(path, data, 0o644)
 		if err != nil {
-			return err
+			err = writeFileInPlace(path, data)
+		}
+
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
-// updateBootLoaders replaces the ESP systemd-boot binaries with the signed stub
-// from the new usr image. The new UKI's boot stub refuses to run under a
+// updateBootLoaders replaces the ESP systemd-boot binaries with the new
+// build's signed one. The new UKI's boot stub refuses to run under a
 // systemd-boot binary not signed by a trusted key, so on a CA change the ESP
-// binary must become the new build's. This runs before the PCR4 re-seal so the
-// new binary is the one measured into PCR4.
-func updateBootLoaders(newUsr string) error {
-	stub, dests, err := espBootLoaders()
+// binary must become the new build's.
+func updateBootLoaders(data []byte) error {
+	_, dests, err := espBootLoaders()
 	if err != nil {
 		return err
-	}
-
-	mountDir, err := os.MkdirTemp("/tmp", "arca-usr")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(mountDir)
-
-	err = unix.Mount(newUsr, mountDir, "erofs", unix.MS_RDONLY, "")
-	if err != nil {
-		return fmt.Errorf("mounting the new usr image: %w", err)
-	}
-	defer func() { _ = unix.Unmount(mountDir, 0) }()
-
-	data, err := os.ReadFile(filepath.Join(mountDir, stub)) //nolint:gosec
-	if err != nil {
-		return fmt.Errorf("reading the signed boot stub from the new usr image: %w", err)
 	}
 
 	for _, d := range dests {
-		err := writeFileSync(d, data)
+		err := writeFileAtomic(d, data, 0o644)
 		if err != nil {
 			return err
 		}
@@ -612,8 +663,39 @@ func updateBootLoaders(newUsr string) error {
 	return nil
 }
 
-// writeFileSync writes data to path (truncating it) and flushes it to disk.
-func writeFileSync(path string, data []byte) error {
+// writeFileAtomic replaces path with data: it writes and flushes a temporary
+// file next to it, renames that over path and flushes the directory, so path
+// holds either its old or its new content, never a partial one.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp := filepath.Join(dir, ".arca-tmp-"+filepath.Base(path))
+
+	err := writeFileInPlace(tmp, data)
+	if err == nil {
+		err = os.Chmod(tmp, mode)
+	}
+
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+
+	if err != nil {
+		_ = os.Remove(tmp)
+
+		return fmt.Errorf("replacing %s: %w", path, err)
+	}
+
+	d, err := os.Open(dir) //nolint:gosec
+	if err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+
+	return nil
+}
+
+// writeFileInPlace writes data to path (truncating it) and flushes it.
+func writeFileInPlace(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) //nolint:gosec
 	if err != nil {
 		return fmt.Errorf("opening %s for writing: %w", path, err)
@@ -635,13 +717,6 @@ func writeFileSync(path string, data []byte) error {
 // stageApps copies <app>.raw for each installed application from source into
 // dir (LocalExtensionsPath/<version>).
 func stageApps(apps []string, source string, dir string) error {
-	for _, app := range apps {
-		_, err := os.Stat(filepath.Join(source, app+".raw"))
-		if err != nil {
-			return fmt.Errorf("the node runs application %s but %s has no %s.raw", app, source, app)
-		}
-	}
-
 	err := os.MkdirAll(dir, 0o700)
 	if err != nil {
 		return err
@@ -686,12 +761,46 @@ func copyFile(src string, dst string) error {
 	return out.Close()
 }
 
+// ukiDir is where systemd-boot finds the UKIs.
+const ukiDir = "/boot/EFI/Linux"
+
+// isUKIFile reports whether name is the UKI <stem>.efi or one of its
+// boot-counted names (<stem>+<left>[-<done>].efi).
+func isUKIFile(name string, ukiName string) bool {
+	stem := strings.TrimSuffix(ukiName, ".efi")
+
+	return name == ukiName || (strings.HasPrefix(name, stem+"+") && strings.HasSuffix(name, ".efi"))
+}
+
+// removeUKI deletes a UKI from the ESP under any of its boot-counted names.
+func removeUKI(ukiName string) error {
+	entries, err := os.ReadDir(ukiDir)
+	if err != nil {
+		return err
+	}
+
+	errs := []error{}
+
+	for _, e := range entries {
+		if !isUKIFile(e.Name(), ukiName) {
+			continue
+		}
+
+		err := os.Remove(filepath.Join(ukiDir, e.Name()))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+
+	unix.Sync()
+
+	return errors.Join(errs...)
+}
+
 // clearBootCounting renames any "<uki>+3-0.efi" back to "<uki>.efi", undoing
 // systemd's boot-counting rename so index-based boot selection is stable.
 func clearBootCounting() error {
-	dir := "/boot/EFI/Linux/"
-
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(ukiDir)
 	if err != nil {
 		return err
 	}
@@ -706,7 +815,7 @@ func clearBootCounting() error {
 			continue
 		}
 
-		err := os.Rename(dir+e.Name(), dir+base+".efi")
+		err := os.Rename(filepath.Join(ukiDir, e.Name()), filepath.Join(ukiDir, base+".efi"))
 		if err != nil {
 			return err
 		}

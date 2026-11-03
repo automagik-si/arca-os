@@ -214,34 +214,59 @@ verifies the tree inside the builder. Keep the served tree and the persistent CA
 ## Migrating a node without reinstalling
 
 A node installed from a build whose CA no longer exists cannot verify any signed update, so it can never be updated
-through the normal path. `migrate-node.sh` moves such a node onto a persistent-CA build **without reinstalling**, using
-the node's own Incus (which this host admins): a privileged container, given the node's disk and TPM, runs
-`arca-node-migrate` in the node's context to write the new build's UKI and `usr` images the way
-`systemd-sysupdate` does, and to re-seal the TPM for the new UKI. The node then boots the new build and updates itself
-normally. `arca-node-migrate` lives in the `incus-osd` module and reuses its own update-apply code
-(`secureboot.UpdatePCR4Binding`, `systemd-sysupdate`, the boot-selection helpers); it only supports a
-Secure-Boot-disabled node and refuses otherwise.
+through the normal path. `migrate-node.sh` moves such a node onto a persistent-CA build **without reinstalling** and
+without the keyboard, through the node's own Incus (which this host's client certificate administers): a privileged
+container on the node enters the node's namespaces and runs `arca-node-migrate` there. The helper lives in the
+`incus-osd` module and reuses incus-osd's own update-apply code (`secureboot.UpdatePCR4Binding`, `systemd-sysupdate`);
+it only supports a Secure-Boot-disabled node and refuses otherwise. The node then reboots into the new build and
+updates itself normally.
 
 ```sh
-# Build the one-shot helper (static) in the builder, once:
-in-builder.sh <checkout> -- sh -euc 'cd incus-osd && CGO_ENABLED=0 go build -o /srv/artifacts/arca-node-migrate ./internal/arca/nodemigrate'
-# then place it beside the script as scripts/arca/.arca-node-migrate.
+# Build the one-shot helper (static) with the host's Go toolchain:
+(cd incus-osd && CGO_ENABLED=0 go build -trimpath -o ~/.cache/arca-os/arca-node-migrate ./internal/arca/nodemigrate)
 
-scripts/arca/migrate-node.sh --remote <node-remote> --os-api https://<node>:8443/os/1.0 \
-    --version <12-digit> --build-dir /srv/artifacts/os/<version> \
-    --server-url http://<lan-address>:<port> --check-frequency 1h
+# Check everything first; this changes nothing on the node:
+scripts/arca/migrate-node.sh --remote <node-remote> --version <12-digit> \
+    --tree ~/.cache/arca-os/updates --server-url http://<lan-address>:<port> --check
+
+# Then migrate (the same arguments, without --check):
+scripts/arca/migrate-node.sh --remote <node-remote> --version <12-digit> \
+    --tree ~/.cache/arca-os/updates --server-url http://<lan-address>:<port> --check-frequency 1h
 ```
 
-**TPM re-seal.** The preferred path re-seals before reboot, so the next boot unlocks with no keyboard: the future PCR4
-is computed from the new UKI and the LUKS volumes are rebound with the node's recovery key. On a Secure-Boot-disabled
-node the binding is PCR 4+7+12; PCR7 is unchanged (Secure Boot stays off, the EFI variables and the old boot stub stay),
-so only PCR4 (the new UKI) and PCR12 move. If re-sealing cannot run in the container, the fallback needs the keyboard
-once: boot the new build with the recovery passphrase, then `POST /os/1.0/system/security/:tpm-rebind`
-(`ForceUpdatePCRBindings`), which reseals from the now-running system and reboots to an automatic unlock.
+`--tree` is the served tree `publish-update.sh` wrote; the build's files (UKI, the three `usr` images and every
+application the node runs) are checked against its `update.json`. `--check` runs the host-side preflight, then pushes
+the build into the container and runs `arca-node-migrate --check` on the node: it validates the TPM event log against
+the TPM, checks that rehashing the ESP's boot binaries reproduces the measured PCR4, predicts the PCR4 of the new boot
+loader and UKI, checks free space in the container, under `/var/lib` and on the ESP, and tests (then restores) the
+systemd-boot one-shot variable. Nothing else is written.
 
-Always rehearse in a VM first (project `arcaos-dev`): reproduce the node's conditions, migrate, and prove the new
-version boots, unlocks without the recovery key, and keeps its data, then publish a second build and prove the node
-picks it up on its own.
+**What changes on the node.** In incus-osd's apply order: the OS files are staged in `/var/lib/updates` and the
+applications as version `<version>` under `/var/lib/incus-os-extensions`; the ESP's systemd-boot
+(`EFI/systemd/systemd-bootx64.efi` and `EFI/BOOT/BOOTX64.EFI`) is replaced, atomically, with the new build's signed
+binary, because PCR4 measures it and the new UKI's stub refuses a boot loader its CA did not sign; the new UKI's PCR11
+signing key is put where `systemd-cryptenroll` reads it; the LUKS volumes are re-sealed with the recovery key files to
+PCR 4+7+12+15 (the new boot loader and UKI, the unchanged PCR7, PCR12, an empty PCR15) and to the new key's PCR11
+policy; `systemd-sysupdate` writes the partitions and the UKI; the next boot is selected by writing
+`LoaderEntryOneShot` to efivarfs (bootctl refuses from a container). The reboot goes through
+`POST /os/1.0/system/:reboot` with `{"next_boot_version":"newest"}`; the handler needs a JSON object body.
+
+**Failures.** The helper runs detached from the session that starts it (a dropped connection does not stop it), logs
+to `/var/log/arca-node-migrate.log` on the node and to `/root/migrate.out` in the container, and the script polls it;
+if the script itself is lost, `--resume` with the same arguments follows the run and finishes the steps after it. The
+container is never deleted while the helper may still run. On any failure or interrupt after the ESP changed, the
+helper rolls back every step even when one fails (staged applications and the new UKI removed, the boot loader and
+the signing key restored, the next boot pointed at the running UKI) and re-seals the TPM last, to what is then on the
+ESP. Exit 1 means the node boots its running build as before. Exit 3 prints **DO NOT REBOOT — rollback incomplete**
+and keeps the container: fix what the output names before rebooting.
+
+If the node still asks for its recovery passphrase on the new build's first boot, the re-seal did not take: type it
+once, then `POST /os/1.0/system/security/:tpm-rebind` (`ForceUpdatePCRBindings`), which reseals from the now-running
+system and reboots to an automatic unlock.
+
+Always rehearse in a VM first (project `arcaos-dev`): reproduce the node's conditions, run `--check`, migrate, and
+prove the new version boots, unlocks without the recovery key, and keeps its data, then publish a second build and
+prove the node picks it up on its own.
 
 ## Component map
 
