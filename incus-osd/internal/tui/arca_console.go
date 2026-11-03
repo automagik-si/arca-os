@@ -2,6 +2,7 @@ package tui
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -83,6 +84,10 @@ func (t *TUI) DisableArcaConsole() {
 
 	go t.app.QueueUpdateDraw(func() {
 		if !t.ArcaConsoleEnabled() {
+			if t.textView != nil {
+				t.textView.SetBorder(true)
+			}
+
 			t.frame.SetPrimitive(t.textView)
 		}
 	})
@@ -174,8 +179,37 @@ func (t *TUI) arcaConsoleFrame() bool {
 	return true
 }
 
+// ArcaLogView returns upstream's log view, which the console's wide events panel
+// draws in its own box.
+func (t *TUI) ArcaLogView() *tview.TextView {
+	return t.textView
+}
+
+// ArcaLastLog returns the last non-empty line of upstream's log view, without its
+// colour tags, for the compact layout's last-log line.
+func (t *TUI) ArcaLastLog() string {
+	if t.textView == nil {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimRight(t.textView.GetText(true), "\n"), "\n")
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+
+	return ""
+}
+
 // arcaConsoleShow makes root the frame's only content. It runs on the event loop.
 func (t *TUI) arcaConsoleShow(root tview.Primitive) {
+	// The console's own events panel draws the log view's border.
+	if t.textView != nil {
+		t.textView.SetBorder(false)
+	}
+
 	t.frame.Clear()
 	t.frame.SetPrimitive(root)
 }
@@ -196,7 +230,7 @@ func (t *TUI) arcaConsoleHooks() {
 	arcaOverlay.mu.Lock()
 	prev := t.app.GetInputCapture()
 	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyRune && event.Rune() == 'L' && !t.pages.HasPage(arcaPage) && t.arcaConsoleToggle() {
+		if event.Key() == tcell.KeyRune && (event.Rune() == 'L' || event.Rune() == 'l') && !t.pages.HasPage(arcaPage) && t.arcaConsoleToggle() {
 			return nil
 		}
 
@@ -250,6 +284,10 @@ func (t *TUI) arcaConsoleToggle() bool {
 
 		go slog.Info("Console: enabled by key")
 	} else {
+		if t.textView != nil {
+			t.textView.SetBorder(true)
+		}
+
 		t.frame.SetPrimitive(t.textView)
 
 		go slog.Info("Console: disabled by key")

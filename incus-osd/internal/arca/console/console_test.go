@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -118,6 +117,23 @@ func cellStyle(t *testing.T, screen tcell.SimulationScreen, y int, sub string) (
 	return style.Decompose()
 }
 
+// lastCellStyle returns the foreground of the last occurrence of sub on row y.
+func lastCellStyle(t *testing.T, screen tcell.SimulationScreen, y int, sub string) tcell.Color {
+	t.Helper()
+
+	line := screenLine(screen, y)
+
+	i := strings.LastIndex(line, sub)
+	if i < 0 {
+		t.Fatalf("row %d has no %q: %q", y+1, sub, line)
+	}
+
+	_, _, style, _ := screen.GetContent(utf8.RuneCountInString(line[:i]), y)
+	fg, _, _ := style.Decompose()
+
+	return fg
+}
+
 // rowOf returns the row that holds sub, or -1.
 func rowOf(screen tcell.SimulationScreen, sub string) int {
 	_, h := screen.Size()
@@ -131,24 +147,46 @@ func rowOf(screen tcell.SimulationScreen, sub string) int {
 }
 
 // tracerSnapshot is the node of the golden screens: two applications, two
-// addresses and the instances of testInstances.
+// addresses and the instances of testRows with the numbers a live node reports.
 func tracerSnapshot() Snapshot {
+	rows := testRows()
+
+	// phone-1, probe-1, vm-1 and web, in the table's order.
+	rows[0].CPUPercent, rows[0].CPULimit = 3.9, 2
+	rows[0].MemUsage, rows[0].MemLimit = 2<<30, 4<<30
+	rows[0].DiskUsage, rows[0].StartedAt = 9<<30+614<<20, testNow.Add(-(19*time.Hour + 12*time.Minute))
+	rows[2].CPUPercent, rows[2].CPULimit = 12.1, 4
+	rows[2].MemUsage, rows[2].MemLimit = 3<<30+819<<20, 4<<30
+	rows[2].DiskUsage, rows[2].StartedAt = 18<<30+410<<20, testNow.Add(-(3*24*time.Hour + 4*time.Hour))
+	rows[3].CPUPercent, rows[3].CPULimit = 1.1, 2
+	rows[3].MemUsage, rows[3].MemLimit = 480<<20, 2<<30
+	rows[3].DiskUsage, rows[3].StartedAt = 6<<30+307<<20, testNow.Add(-(3*24*time.Hour + 4*time.Hour))
+
 	return Snapshot{
 		Node:        "node-1",
 		OSRelease:   "202611030000",
 		Apps:        []App{{Name: "arca", Version: "0.1.0"}, {Name: "incus", Version: "6.0.0"}},
 		Online:      Online{Known: true, Up: true},
 		IPs:         []string{"10.42.0.10", "fd42::10"},
-		Instances:   testRows(),
+		Instances:   rows,
+		Details:     []InstanceDetails{{Name: "phone-1", Project: "other", Type: "PHONE", Description: "example/phone", Status: "Running", Disks: []DiskUse{{Name: "root", Usage: rows[0].DiskUsage}}}},
 		InstancesAt: testNow.Add(-5 * time.Second),
 		Now:         testNow,
 	}
 }
 
+// TestMain pins the host the bars are measured against, so the goldens do not
+// depend on the machine running the tests.
+func TestMain(m *testing.M) {
+	hostThreads = func() int { return 8 }
+	hostMemoryBytes = func() int64 { return 8 << 30 }
+
+	os.Exit(m.Run())
+}
+
 func TestGoldenTracer(t *testing.T) {
 	for _, size := range []struct{ w, h int }{{80, 25}, {160, 45}} {
 		screen := draw(t, tracerSnapshot(), size.w, size.h)
-		golden(t, "tracer-"+strconv.Itoa(size.w)+"x"+strconv.Itoa(size.h)+".txt", screen)
 
 		// Colours on named cells.
 		if fg, bg, _ := cellStyle(t, screen, 0, "ARCA"); bg != tcell.ColorTeal || fg != tcell.ColorBlack {
@@ -173,7 +211,7 @@ func TestGoldenTracer(t *testing.T) {
 			t.Errorf("%dx%d: PHONE is %v, want dark cyan", size.w, size.h, fg)
 		}
 
-		if fg, _, _ := cellStyle(t, screen, probe, "—"); fg != tcell.ColorGray {
+		if fg := lastCellStyle(t, screen, probe, "—"); fg != tcell.ColorGray {
 			t.Errorf("%dx%d: probe-1's missing address is %v, want grey", size.w, size.h, fg)
 		}
 	}
@@ -317,13 +355,15 @@ func staticSources() sources {
 	snap := tracerSnapshot()
 
 	return sources{
-		now:       func() time.Time { return testNow },
-		node:      func() string { return snap.Node },
-		release:   func() string { return snap.OSRelease },
-		apps:      func(context.Context) ([]App, error) { return snap.Apps, nil },
-		ips:       func(context.Context) []string { return snap.IPs },
-		online:    func() Online { return snap.Online },
-		instances: func() ([]Instance, error) { return snap.Instances, nil },
+		now:     func() time.Time { return testNow },
+		node:    func() string { return snap.Node },
+		release: func() string { return snap.OSRelease },
+		apps:    func(context.Context) ([]App, error) { return snap.Apps, nil },
+		ips:     func(context.Context) []string { return snap.IPs },
+		online:  func() Online { return snap.Online },
+		instances: func() (instancesResult, error) {
+			return instancesResult{Rows: snap.Instances, Details: snap.Details}, nil
+		},
 	}
 }
 
@@ -347,7 +387,7 @@ func TestPanicFallsBack(t *testing.T) {
 			src := staticSources()
 
 			if where == "collector" {
-				src.instances = func() ([]Instance, error) {
+				src.instances = func() (instancesResult, error) {
 					panic("test panic in a collector")
 				}
 			}

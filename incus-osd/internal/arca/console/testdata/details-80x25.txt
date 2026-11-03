@@ -1,0 +1,25 @@
+ ARCA  node-1  Arca OS 202611030000  arca 0.1.0  incus 6.0.0    ● online  14:22
+ 10.42.0.10  fd42::10
+┌─ Details ────────────────────────────────────────────────────────────────────┐
+│ Name        web                                                              │
+│ Type        CT                                                               │
+│ Project     default                                                          │
+│ Image       debian/13                                                        │
+│ State       Running                                                          │
+│ Processes   31                                                               │
+│ CPU time    12s                                                              │
+│ Memory      212M                                                             │
+│ Peak        300M                                                             │
+│ Limit       1G                                                               │
+│ Disk root   3G                                                               │
+│ Net eth0    10.42.0.2 · ↓ 1.2K/s ↑ 400B/s                                    │
+│ Created     2026-11-01 14:22                                                 │
+│ Started     2026-11-03 12:22                                                 │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,25 @@
+ ARCA  node-1  Arca OS 202611030000  arca 0.1.0  incus 6.0.0    ● online  14:22
+ 10.42.0.10  fd42::10
+┌─ Help ───────────────────────────────────────────────────────────────────────┐
+│ ↑ ↓ j k     select an instance                                               │
+│ PgUp PgDn   first / last instance                                            │
+│ Tab         next panel (instances, events)                                   │
+│ Enter       details of the selected instance                                 │
+│ Esc         close this page                                                  │
+│ ?           this page                                                        │
+│ L           upstream's screen, and back                                      │
+│                                                                              │
+│ Ctrl-C is held by the console.                                               │
+│ Changes are made from the fleet with the owner's approval.                   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

@@ -35,6 +35,8 @@ type host interface {
 	DisableArcaConsole()
 	ArcaConsoleEnabled() bool
 	QueueArcaUpdate(f func())
+	ArcaLogView() *tview.TextView
+	ArcaLastLog() string
 }
 
 // sources are the console's inputs, one per field; tests replace them.
@@ -45,7 +47,7 @@ type sources struct {
 	apps      func(ctx context.Context) ([]App, error)
 	ips       func(ctx context.Context) []string
 	online    func() Online
-	instances func() ([]Instance, error)
+	instances func() (instancesResult, error)
 }
 
 // liveSources reads the running system.
@@ -104,6 +106,9 @@ func newConsole(h host, src sources) *console {
 	c.guard = &guard{Primitive: c.view, focus: c.view, on: h.ArcaConsoleEnabled, fail: c.fail}
 	c.snap.OSRelease = src.release()
 	c.snap.Now = src.now()
+	c.view.key = c.key
+	c.view.log = h.ArcaLogView()
+	c.view.lastLog = h.ArcaLastLog
 	c.view.update(c.snap.clone())
 
 	return c
@@ -150,13 +155,13 @@ func (c *console) collect(ctx context.Context) {
 	})
 
 	go c.every(ctx, instancesEvery, func() {
-		rows, err := c.src.instances()
+		res, err := c.src.instances()
 		now := c.src.now()
 
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		c.table.apply(&c.snap, rows, err, now)
+		c.table.apply(&c.snap, res, err, now)
 	})
 
 	c.every(ctx, clockEvery, func() {})

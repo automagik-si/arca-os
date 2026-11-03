@@ -25,6 +25,15 @@
 #                   repaint, upstream's footer label "Network configuration:" is
 #                   neither on the rebuilt screen nor anywhere in the capture's
 #                   text, and the journal has no "Console: disabled"
+#   keys            home and down select probe-1, Enter shows its details page
+#                   (project default), and Esc returns to the instances; the
+#                   screen is read after a whole-screen repaint each time
+#   upstream-toggle L shows upstream's footer "Network configuration:", and L
+#                   again removes it from a freshly repainted screen
+#   privacy         with the details page open, the rebuilt screen and the
+#                   capture hold none of two canaries set in probe-1's
+#                   configuration and none of an Incus trust token, all
+#                   generated and searched inside the VM
 # Each case prints "PASS|FAIL|SKIP <case> <detail>"; no detail holds an
 # address, a name or another value read from the VM.
 #
@@ -236,6 +245,30 @@ why_screen() {
 	if [ "$replay_failed" -eq 1 ]; then echo "the replay of the capture failed"; return; fi
 	echo "no whole-screen repaint after the cut"
 }
+# repainted <base>: a whole-screen repaint came after the one counted as base.
+# shellcheck disable=SC2317,SC2329  # called through until_s
+repainted() { screen && [ "$(repaints)" -gt "$1" ]; }
+# kbd_setup <dir> (in the VM, bash): a virtual keyboard and one event file per key.
+# shellcheck disable=SC2317,SC2329  # run inside the VM
+kbd_setup() {
+	local d=$1 us=0 k
+	install -d -m 0700 "$d"
+	printf '%s\n' "# EVEMU 1.3" "N: arca-test-keyboard" "I: 0006 0001 0001 0001" \
+		"P: 00 00 00 00 00 00 00 00" "B: 00 03 00 00 00 00 00 00 00" \
+		"B: 01 fe ff ff ff ff ff ff ff" "B: 01 ff ff ff ff ff ff ff ff" > "$d/kbd.desc"
+	systemd-run -q --unit=arca-test-keyboard --collect evemu-device "$d/kbd.desc" || return 1
+	vkey() { case $1 in home) echo 102 ;; up) echo 103 ;; down) echo 108 ;; enter) echo 28 ;; esc) echo 1 ;; l) echo 38 ;; esac; }
+	vevents() { local n c v; for n in "$@"; do c=$(vkey "$n"); for v in 1 0; do us=$((us + 40000))
+		printf 'E: %d.%06d 0001 %04x %d\nE: %d.%06d 0000 0000 0\n' $((us / 1000000)) $((us % 1000000)) "$c" "$v" \
+			$((us / 1000000)) $((us % 1000000)); done; done; }
+	for k in home up down enter esc l; do us=0; vevents "$k" > "$d/$k.events"; done
+	return 0
+}
+# type_keys <file in the VM>: plays a key sequence on the virtual keyboard there.
+# shellcheck disable=SC2016  # expanded by the shell in the VM
+type_keys() { vexec bash -c 'n=$(grep -l "^arca-test-keyboard$" /sys/class/input/event*/device/name | head -1); n=/dev/input/$(basename "$(dirname "$(dirname "$n")")"); evemu-play "$n" < "$1"' _ "$1"; }
+# shellcheck disable=SC2317,SC2329  # called through until_s
+kbd_ready() { vexec sh -c 'grep -lq "^arca-test-keyboard$" /sys/class/input/event*/device/name' 2>/dev/null; }
 
 # The cut.
 t0=$SECONDS
@@ -328,6 +361,104 @@ elif [ "$(repaints)" -eq 0 ]; then
 	result FAIL frame-replaced "no whole-screen repaint within 90 s of the cut"
 else
 	result PASS frame-replaced "no upstream footer label in $((SECONDS - t_cut)) s after the cut ($(repaints) whole-screen repaints)"
+fi
+
+# keys, upstream-toggle and privacy: the console's keys, typed on a virtual keyboard
+# in the VM. Each waits for a whole-screen repaint, so the rebuilt screen holds only
+# what the new state drew, never a stale row from the state before it.
+# The kbd_* predicates are called through until_s.
+# shellcheck disable=SC2317,SC2329
+kbd_details_open() { screen && [ "$(repaints)" -gt "$1" ] && grep -Eq 'Project +default' "$tmp/screen.txt"; }
+# shellcheck disable=SC2317,SC2329
+kbd_dashboard_back() { screen && [ "$(repaints)" -gt "$1" ] && grep -q 'Instances' "$tmp/screen.txt" && ! grep -q 'Project' "$tmp/screen.txt"; }
+# shellcheck disable=SC2317,SC2329
+kbd_upstream_shown() { screen && grep -qF -- "$FOOTER" "$tmp/screen.txt"; }
+# shellcheck disable=SC2317,SC2329
+kbd_console_back() { screen && [ "$(repaints)" -gt "$1" ] && grep -q 'Instances' "$tmp/screen.txt" && ! grep -qF -- "$FOOTER" "$tmp/screen.txt"; }
+
+# The virtual keyboard, once, inside the VM. Its setup prints nothing.
+vexec bash -c "$(declare -f kbd_setup); kbd_setup /run/console-test" >/dev/null 2>&1 || true
+
+if ! until_s $((SECONDS + 60)) kbd_ready; then
+	for c in keys upstream-toggle privacy; do
+		result FAIL "$c" "the virtual keyboard did not appear within 60 s"
+	done
+else
+	# keys: home and down select probe-1, Enter opens its details, Esc closes it.
+	base=$(repaints)
+	type_keys "/run/console-test/home.events"; sleep 1
+	type_keys "/run/console-test/down.events"; sleep 1
+	type_keys "/run/console-test/enter.events"
+	if until_s $((SECONDS + 90)) kbd_details_open "$base"; then
+		base=$(repaints)
+		type_keys "/run/console-test/esc.events"
+		if until_s $((SECONDS + 90)) kbd_dashboard_back "$base"; then
+			result PASS keys "home and down selected probe-1; Enter showed its details page with project default; Esc returned to the instances"
+		else
+			result FAIL keys "the details page did not close within 90 s after Esc ($(why_screen))"
+		fi
+	else
+		result FAIL keys "the details page with project default did not show within 90 s after Enter ($(why_screen))"
+	fi
+
+	# upstream-toggle: L shows upstream's screen, and L brings the console back.
+	type_keys "/run/console-test/l.events"
+	if until_s $((SECONDS + 60)) kbd_upstream_shown; then
+		base=$(repaints)
+		type_keys "/run/console-test/l.events"
+		if until_s $((SECONDS + 90)) kbd_console_back "$base"; then
+			result PASS upstream-toggle "L brought back upstream's footer, and L again removed it"
+		else
+			result FAIL upstream-toggle "the console did not come back within 90 s after the second L ($(why_screen))"
+		fi
+	else
+		result FAIL upstream-toggle "upstream's footer did not appear within 60 s of the first L"
+	fi
+fi
+
+# privacy: canaries and a trust token set inside the VM, searched inside it.
+if ! kbd_ready; then
+	result FAIL privacy "no virtual keyboard"
+else
+	# shellcheck disable=SC2016  # expanded by the shell in the VM
+	vexec bash -uc 'd=/run/console-test
+		c1=CANARY-$(od -An -N6 -tx1 /dev/urandom | tr -d " \n")
+		c2=CANARY-$(od -An -N6 -tx1 /dev/urandom | tr -d " \n")
+		incus config set probe-1 user.secret-probe "$c1" || exit 1
+		incus config set probe-1 user.droid.owner "$c2" || exit 1
+		printf "%s\n%s\n" "$c1" "$c2" > "$d/canaries.txt"
+		t=$(incus config trust add console-probe 2>/dev/null | head -n 1)
+		[ -n "$t" ] || t=$(incus config trust add --name console-probe 2>/dev/null | head -n 1)
+		[ -z "$t" ] || printf "%s\n" "$t" >> "$d/canaries.txt"' 2>/dev/null
+
+	base=$(repaints)
+	type_keys "/run/console-test/home.events"; sleep 1
+	type_keys "/run/console-test/down.events"; sleep 1
+	type_keys "/run/console-test/enter.events"
+	if until_s $((SECONDS + 90)) kbd_details_open "$base"; then
+		incus file push -q -p "${P[@]}" "$tmp/screen.txt" "$vm/run/console-test/screen.txt" 2>/dev/null || true
+		incus file push -q -p "${P[@]}" "$tmp/text.txt" "$vm/run/console-test/text.txt" 2>/dev/null || true
+		# shellcheck disable=SC2016  # expanded by the shell in the VM
+		scan=$(vexec bash -euc 'n=0; bad=0
+			while IFS= read -r s; do
+				[ -n "$s" ] || continue
+				n=$((n + 1))
+				if grep -qF -- "$s" /run/console-test/screen.txt /run/console-test/text.txt; then bad=$((bad + 1)); fi
+			done < /run/console-test/canaries.txt
+			echo "$n $bad"' 2>/dev/null || echo "0 0")
+		n=${scan%% *}
+		bad=${scan##* }
+		if [ "$n" -ge 3 ] && [ "$bad" -eq 0 ]; then
+			result PASS privacy "with the details page open, the screen and the capture hold none of the $n canaries or the trust token"
+		elif [ "$n" -lt 3 ]; then
+			result FAIL privacy "the canaries or the trust token could not be set inside the VM"
+		else
+			result FAIL privacy "$bad of the $n canaries or the trust token reached the screen or the capture"
+		fi
+		type_keys "/run/console-test/esc.events"; sleep 2
+	else
+		result FAIL privacy "the details page did not show, so the search proves nothing ($(why_screen))"
+	fi
 fi
 
 [ "$fails" -eq 0 ] || exit 1

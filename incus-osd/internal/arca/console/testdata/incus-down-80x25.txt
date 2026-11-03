@@ -1,12 +1,14 @@
  ARCA  node-1  Arca OS 202611030000  arca 0.1.0  incus 6.0.0    ● online  14:22
  10.42.0.10  fd42::10
+ Hardware —
+
 ─ Instances 4 · 3 running ──────────────────────────────────────────────────────
-  NAME           TYPE   STATE       IP
+  NAME            TYPE   STATE     CPU     RAM          IP
  Incus is not running since 14:02
-▶ phone-1        PHONE  RUNNING     10.42.0.3
-  probe-1        CT     STOPPED     —
-  vm-1           VM     RUNNING     —
-  web            CT     RUNNING     10.42.0.2
+▶ phone-1         PHONE  RUNNING   —       —            10.42.0.3
+  probe-1         CT     STOPPED   —       —            —
+  vm-1            VM     RUNNING   —       —            —
+  web             CT     RUNNING   —       —            10.42.0.2
 
 
 
@@ -17,9 +19,7 @@
 
 
 
-
-
-
-
-
- ? help
+ ▶ phone-1 · PHONE
+ ✓ No alerts
+ —
+ ↑↓ select  Tab next panel  Enter details  ? help  L upstream

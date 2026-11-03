@@ -63,7 +63,7 @@ func testInstances() []api.InstanceFull {
 func testRows() []Instance {
 	rows := []Instance{}
 	for _, inst := range testInstances() {
-		rows = append(rows, toInstance(inst))
+		rows = append(rows, toInstance(inst, -1, 0))
 	}
 
 	slices.SortFunc(rows, func(a, b Instance) int { return strings.Compare(a.Name, b.Name) })
@@ -124,16 +124,18 @@ func fakeIncus(t *testing.T, instances []api.InstanceFull) (string, func()) {
 func TestIncusCollect(t *testing.T) {
 	sock, _ := fakeIncus(t, testInstances())
 
-	rows, err := (&incusReader{sock: sock}).read()
+	res, err := (&incusReader{sock: sock}).read()
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	rows := res.Rows
+
 	want := []Instance{
-		{Name: "phone-1", Project: "other", Type: "PHONE", Status: "Running", IPv4: "10.42.0.3"},
-		{Name: "probe-1", Project: "default", Type: "CT", Status: "Stopped"},
-		{Name: "vm-1", Project: "default", Type: "VM", Status: "Running"},
-		{Name: "web", Project: "default", Type: "CT", Status: "Running", IPv4: "10.42.0.2"},
+		{Name: "phone-1", Project: "other", Type: "PHONE", Status: "Running", IPv4: "10.42.0.3", CPUPercent: -1},
+		{Name: "probe-1", Project: "default", Type: "CT", Status: "Stopped", CPUPercent: -1},
+		{Name: "vm-1", Project: "default", Type: "VM", Status: "Running", CPUPercent: -1},
+		{Name: "web", Project: "default", Type: "CT", Status: "Running", IPv4: "10.42.0.2", CPUPercent: -1},
 	}
 
 	if !slices.Equal(rows, want) {
@@ -165,8 +167,8 @@ func TestIncusDown(t *testing.T) {
 	snap := tracerSnapshot()
 	snap.Instances, snap.InstancesAt = nil, time.Time{}
 
-	rows, err := r.read()
-	table.apply(&snap, rows, err, testNow.Add(-20*time.Minute))
+	res, err := r.read()
+	table.apply(&snap, res, err, testNow.Add(-20*time.Minute))
 
 	if err != nil || len(snap.Instances) != 4 || snap.InstancesErr != "" {
 		t.Fatalf("the first read: %v, %d rows, %q", err, len(snap.Instances), snap.InstancesErr)
@@ -178,12 +180,12 @@ func TestIncusDown(t *testing.T) {
 	first := time.Date(2026, 11, 3, 14, 2, 30, 0, time.UTC)
 
 	for _, at := range []time.Time{first, testNow} {
-		rows, err = r.read()
+		res, err := r.read()
 		if err == nil {
 			t.Fatal("a read without the socket worked")
 		}
 
-		table.apply(&snap, rows, err, at)
+		table.apply(&snap, res, err, at)
 	}
 
 	if snap.InstancesErr != "Incus is not running since 14:02" {
