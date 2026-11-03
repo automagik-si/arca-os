@@ -434,14 +434,14 @@ api_edit() {
 	jq -e '[.metadata.config.wireless.networks[] | .passphrase // ""] | all(. == "")' "$d/get-api2.json" >/dev/null \
 		|| { fail get2 "a passphrase is in the GET body"; return 0; }
 
-	[ "$(grep -cE '^[[:space:]]*psk=' "$conf")" = 2 ] || { fail psk "the supplicant configuration does not hold two psk= lines"; return 0; }
+	[ "$(grep -cE '^[[:space:]]*psk=' "$conf")" = 2 ] || { fail psk "the supplicant configuration does not hold two PSK lines"; return 0; }
 	[ "$(stat -c %a "$conf")" = 600 ] || { fail psk "the supplicant configuration is not mode 600"; return 0; }
 	h1=$(psks)
 	jq '{config: .metadata.config}' "$d/get-api2.json" > "$d/put.json"
 	put "$d/put.json"
 	[ "$code" = 200 ] || { fail keep-psk "a PUT of the GET body gave status $code${err:+: $err}"; return 0; }
 	h2=$(psks)
-	[ "$h1" = "$h2" ] || { fail keep-psk "the psk= lines changed"; return 0; }
+	[ "$h1" = "$h2" ] || { fail keep-psk "the PSK lines changed"; return 0; }
 
 	jq '{config: (.metadata.config | .wireless.networks += [{ssid: "Nova", security: "wpa-personal"}])}' \
 		"$d/get-api2.json" > "$d/put.json"
@@ -785,7 +785,7 @@ fi
 api=$(vm_fn api_edit "$D" 2>/dev/null) || true
 line=$(grep '^api-edit: ' <<<"$api" | head -n 1 || true)
 if [ "$line" = "api-edit: ok" ]; then
-	result PASS api-edit "Velho added second with its passphrase; GET lists it with an empty passphrase; a PUT of that GET body keeps the two psk= lines (compared by hash); a new WPA-Personal network without a passphrase gets 400; the wl* firewall rule is in nft list ruleset"
+	result PASS api-edit "Velho added second with its passphrase; GET lists it with an empty passphrase; a PUT of that GET body keeps the two PSK lines (compared by hash); a new WPA-Personal network without a passphrase gets 400; the wl* firewall rule is in nft list ruleset"
 else
 	result FAIL api-edit "${line#api-edit: }"
 fi
