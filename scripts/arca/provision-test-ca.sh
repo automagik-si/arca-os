@@ -33,7 +33,7 @@ case "${1:-}" in
 esac
 
 cd "$(dirname "$0")/../.."
-[ -f mkosi.conf ] && [ -f Makefile ] || die "not at the top of an Arca OS checkout"
+{ [ -f mkosi.conf ] && [ -f Makefile ]; } || die "not at the top of an Arca OS checkout"
 for s in generate-test-certificates generate-secure-boot-vars switch-secure-boot-signing-key; do
 	[ -x "scripts/test/$s.sh" ] || die "missing scripts/test/$s.sh"
 done

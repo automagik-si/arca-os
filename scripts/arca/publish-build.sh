@@ -52,7 +52,7 @@ done
 printf '%s' "$version" | grep -Eqx '[0-9]{12}' || refuse "version '$version' is not 12 digits"
 [ "$(id -u)" -eq 0 ] || die "run as root (inside the builder)"
 cd "$(dirname "$0")/../.."
-[ -f mkosi.conf ] && [ -f Makefile ] || die "not at the top of an Arca OS checkout"
+{ [ -f mkosi.conf ] && [ -f Makefile ]; } || die "not at the top of an Arca OS checkout"
 for c in jq openssl pigz zip sha256sum; do command -v "$c" >/dev/null || die "missing tool: $c"; done
 osname=$(sed -n 's/^ImageId=//p' mkosi.conf)
 [ -n "$osname" ] || die "no ImageId in mkosi.conf"
@@ -120,7 +120,7 @@ SIG_KEY=$sig_key SIG_CERTIFICATE=$sig_cert SIG_CHAIN=$sig_chain UPDATE_CHANNEL=$
 
 # Read the tree back as the node will.
 for s in index "$version/update"; do
-	[ -f "$out/$s.json" ] && [ -f "$out/$s.sjson" ] || die "image-publisher wrote no $s.sjson"
+	{ [ -f "$out/$s.json" ] && [ -f "$out/$s.sjson" ]; } || die "image-publisher wrote no $s.sjson"
 	openssl smime -verify -text -partial_chain -CAfile "$sig_chain" \
 		-in "$out/$s.sjson" -out "$tmp/verified.json" 2>/dev/null || die "$s.sjson does not verify against the update CA"
 	[ "$(jq -S . "$tmp/verified.json")" = "$(jq -S . "$out/$s.json")" ] || die "$s.sjson does not carry $s.json"

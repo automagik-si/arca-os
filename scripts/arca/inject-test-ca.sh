@@ -43,13 +43,13 @@ case "${1:-}" in
 esac
 
 cd "$(dirname "$0")/../.."
-[ -f mkosi.conf ] && [ -f Makefile ] || die "not at the top of an Arca OS checkout"
+{ [ -f mkosi.conf ] && [ -f Makefile ]; } || die "not at the top of an Arca OS checkout"
 command -v openssl >/dev/null || die "openssl is not on PATH"
 
 # The CA set must be present and complete, or we refuse rather than let the
 # build generate a throwaway one.
 [ -d "$CA_DIR" ] || die "no test CA at $CA_DIR (run provision-test-ca.sh once); refusing to build with a throwaway CA"
-[ -d "$CA_DIR/certs" ] && [ -d "$CA_DIR/files" ] || die "$CA_DIR is incomplete (need certs/ and files/)"
+{ [ -d "$CA_DIR/certs" ] && [ -d "$CA_DIR/files" ]; } || die "$CA_DIR is incomplete (need certs/ and files/)"
 [ -f "$CA_DIR/FINGERPRINTS" ] || die "$CA_DIR has no FINGERPRINTS file"
 for f in files/update-E1.crt "files/$SB_KEY.crt" "certs/$SB_KEY.key"; do
 	[ -e "$CA_DIR/$f" ] || die "$CA_DIR/$f is missing"
@@ -58,7 +58,7 @@ done
 fp() { openssl x509 -in "$1" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g'; }
 want_update=$(sed -n 's/^update_ca_sha256=//p' "$CA_DIR/FINGERPRINTS")
 want_db1=$(sed -n 's/^secureboot_db1_sha256=//p' "$CA_DIR/FINGERPRINTS")
-[ -n "$want_update" ] && [ -n "$want_db1" ] || die "$CA_DIR/FINGERPRINTS is missing a pinned fingerprint"
+{ [ -n "$want_update" ] && [ -n "$want_db1" ]; } || die "$CA_DIR/FINGERPRINTS is missing a pinned fingerprint"
 got_update=$(fp "$CA_DIR/files/update-E1.crt")
 got_db1=$(fp "$CA_DIR/files/$SB_KEY.crt")
 [ "$got_update" = "$want_update" ] || die "Update CA fingerprint $got_update does not match the pinned $want_update"
