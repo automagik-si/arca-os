@@ -86,6 +86,8 @@ func TestKeepSecret(t *testing.T) {
 			Networks: []api.SystemNetworkWirelessNetwork{
 				{SSID: "Velho", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: "password-Velho"},
 				{SSID: "Cafe", Security: api.SystemNetworkWirelessSecurityOpen},
+				{SSID: "Anexo", BSSID: "aa:bb:cc:dd:ee:ff", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: "pin-passphrase"},
+				{SSID: "Loja", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: "loja-passphrase"},
 			},
 		},
 	}
@@ -100,13 +102,17 @@ func TestKeepSecret(t *testing.T) {
 				{SSID: "Casa", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: "new-passphrase"},
 				// The same SSID with another security does not match.
 				{SSID: "Cafe", Security: api.SystemNetworkWirelessSecurityWPAPersonal},
+				// The same SSID and security pinned to another BSSID is not the same saved network.
+				{SSID: "Anexo", BSSID: "11:22:33:44:55:66", Security: api.SystemNetworkWirelessSecurityWPAPersonal},
+				// A saved network switched to open keeps no passphrase.
+				{SSID: "Loja", Security: api.SystemNetworkWirelessSecurityOpen},
 			},
 		},
 	}
 
 	KeepSecrets(next, saved)
 
-	want := []string{"password-Velho", "new-passphrase", ""}
+	want := []string{"password-Velho", "new-passphrase", "", "", ""}
 	for i, n := range next.Wireless.Networks {
 		if n.Passphrase != want[i] {
 			t.Errorf("network %d (%s): passphrase %q, want %q", i, n.SSID, n.Passphrase, want[i])

@@ -53,6 +53,29 @@ outputs persist under `/srv/artifacts/` in the VM. Defaults: `--project arcaos-d
 printed), so `kernel/build-kernel.sh` can take its Debian `Maintainer` from them; `--maintainer '<name> <email>'`
 overrides that, and with neither the kernel build is refused.
 
+## The persistent test CA
+
+A build embeds a test CA: the update CA (which signs the update index a node checks), the Secure Boot keys and the
+signing certificate for the UKI and the `usr`-verity image. Upstream's `make` generates a fresh CA whenever `./certs/`
+is absent, and `in-builder.sh`'s `git clean -ffdx` makes it absent on every run. A fresh CA each build would orphan
+every node already installed: it could no longer verify a later build's signed index or `usr`-verity signature, and
+could never be sent a verifiable update again.
+
+So the CA is generated once and kept outside any checkout, and copied into each checkout before the build:
+
+```sh
+# Once, in the builder, from the top of a checkout. Stores the CA at
+# /srv/arca-test-ca (ARCA_TEST_CA_DIR overrides it). Then copy it off the
+# builder and keep it safe; losing every copy orphans every installed node.
+scripts/arca/provision-test-ca.sh
+```
+
+`build.sh` runs `inject-test-ca.sh` before `make`: it copies the stored CA into the checkout's `certs/` and
+`incus-osd/certs/files/`, recreates the `mkosi.crt`/`mkosi.key` symlinks, and verifies the update CA and Secure Boot
+signing certificate against the fingerprints pinned in the CA set's `FINGERPRINTS`. A build **refuses** when the CA set
+is missing or a fingerprint does not match, rather than falling back to a throwaway CA. `inject-test-ca.sh --check`
+verifies the CA set without touching a checkout.
+
 ## Building and booting
 
 ```sh
@@ -71,7 +94,7 @@ no longer points to the commit in `arca.commit`. With `--local-kernel <dir>`, th
 `mkosi.packages/` (mkosi's local repository) for that build only, and its `BUILDINFO` goes beside the image as
 `kernel.BUILDINFO`.
 
-`build.sh` runs upstream's `make build` (test certificates are generated when there is no `mkosi.crt`) and copies the
+`build.sh` runs upstream's `make build` (after injecting the persistent test CA, so `make` never generates one) and copies the
 image, the `.efi`, the `usr` images, every sysext, the manifests and the tree's `test/metadata.tar.xz` to
 `/srv/artifacts/os/<version>/`, with `/srv/artifacts/os/latest` pointing at the newest. `vm-test.sh` takes the image,
 its metadata and the expected ImageId from there, not from the checkout it runs in, and never accepts the builder's
@@ -94,7 +117,7 @@ to start the VM when the host has less than 12 GiB of `MemAvailable`
 
 `tracer-installer.sh` writes a test-signed build as one USB installer image, plus the update tree that the installed
 system fetches `incus` and `arca` from. It runs in the builder right after `build.sh`, in the same checkout, before
-anything cleans it, because it signs with that build's throwaway test update key. `--server-url` is required: it is
+anything cleans it, because it signs with the checkout's test update key (the injected persistent one). `--server-url` is required: it is
 the URL the tree will be served at, and it goes into the image's seed.
 
 ```sh
@@ -112,8 +135,8 @@ It writes, in one directory:
   onto the one disk it finds and refuses when it finds several.
 - `updates/`, a static tree in the layout incus-osd's `images` provider reads, made by the build's own
   `image-publisher`: `index.json` and `index.sjson`, and `<version>/` with `update.json`, `update.sjson`,
-  `x86_64/incus.raw.gz` and `x86_64/arca.raw.gz`, in channel `stable`. Both `.sjson` files are signed with the build's
-  test update key, which the image trusts, so plain `http` is enough. The tree holds no OS files, so the OS is never
+  `x86_64/incus.raw.gz` and `x86_64/arca.raw.gz`, in channel `stable`. Both `.sjson` files are signed with the
+  persistent test update key, which the image trusts, so plain `http` is enough. The tree holds no OS files, so the OS is never
   updated from it. The script reads it back the way incus-osd will: both signatures, one release, and exactly the two
   applications, each unpacking to the built sysext.
 - `seed/`, `RELEASE`, `OSNAME`, `base.manifest`, `kernel.BUILDINFO` and `SHA256SUMS`, which covers the image and every
@@ -160,6 +183,93 @@ When it asks for the install media to be removed, remove the stick. The laptop r
 which downloads `incus` and `arca` from the server and installs them. Stop the server once both are listed. If the
 server could not be reached during that boot, every later boot tries again until a primary application is installed.
 
+## Releasing updates to nodes
+
+Once a build exists at `/srv/artifacts/os/<version>/`, publish it into the update tree that nodes check. The tree uses
+the layout and the signed `index.sjson`/`update.sjson` that incus-osd's `images` provider reads; both are signed with
+the persistent update key, so any node installed from a build with the same CA verifies them over plain `http`.
+
+```sh
+# On the build host. Publishes the OS (UKI + usr images) and the incus and arca
+# applications, and copies the tree to a local directory to serve.
+scripts/arca/publish-update.sh --version <version> --serve-dir <dir> --channel stable
+
+# Serve that directory to the node's network. Any static file server works; the
+# LAN address and port are chosen here, at serve time, not baked into anything:
+python3 -m http.server --bind <lan-address> --directory <dir> <port>
+```
+
+A node whose provider `server_url` is `http://<lan-address>:<port>` and whose update check frequency is a real interval
+then finds and applies the newest build in its channel on its own. Republishing a later `--version` into the same tree
+adds it; the node moves to it at its next check (and reboots if `auto_reboot` is set). Each release carries the OS
+(UKI and `usr` images) and the applications named by `--apps` (default `incus,arca`).
+
+New sticks that should keep themselves current are written with `tracer-installer.sh --auto-updates`, which seeds the
+update policy as check-frequency `1h` and `auto_reboot true` (the default is `never`/`false`, for a one-off test
+stick). Valid check frequencies are `never` or any positive Go duration (`30m`, `1h`, `24h`).
+
+`publish-build.sh` is the builder-side half that `publish-update.sh` runs through `in-builder.sh`; it signs and
+verifies the tree inside the builder. Keep the served tree and the persistent CA backed up together.
+
+## Migrating a node without reinstalling
+
+A node installed from a build whose CA no longer exists cannot verify any signed update, so it can never be updated
+through the normal path. `migrate-node.sh` moves such a node onto a persistent-CA build **without reinstalling** and
+without the keyboard, through the node's own Incus (which this host's client certificate administers): a privileged
+container on the node enters the node's namespaces and runs `arca-node-migrate` there. The helper lives in the
+`incus-osd` module and reuses incus-osd's own update-apply code (`secureboot.UpdatePCR4Binding`, `systemd-sysupdate`);
+it only supports a Secure-Boot-disabled node and refuses otherwise. The node then reboots into the new build and
+updates itself normally.
+
+```sh
+# Build the one-shot helper (static) with the host's Go toolchain:
+(cd incus-osd && CGO_ENABLED=0 go build -trimpath -o ~/.cache/arca-os/arca-node-migrate ./internal/arca/nodemigrate)
+
+# Check everything first; this changes nothing on the node:
+scripts/arca/migrate-node.sh --remote <node-remote> --version <12-digit> \
+    --tree ~/.cache/arca-os/updates --server-url http://<lan-address>:<port> --check
+
+# Then migrate (the same arguments, without --check):
+scripts/arca/migrate-node.sh --remote <node-remote> --version <12-digit> \
+    --tree ~/.cache/arca-os/updates --server-url http://<lan-address>:<port> --check-frequency 1h
+```
+
+`--tree` is the served tree `publish-update.sh` wrote; the build's files (UKI, the three `usr` images and every
+application the node runs) are checked against its `update.json`. `--check` runs the host-side preflight, then pushes
+the build into the container and runs `arca-node-migrate --check` on the node: it validates the TPM event log against
+the TPM, checks that rehashing the ESP's boot binaries reproduces the measured PCR4, predicts the PCR4 of the new boot
+loader and UKI, checks free space in the container, under `/var/lib` and on the ESP, and tests (then restores) the
+systemd-boot one-shot variable. Nothing else is written.
+
+**What changes on the node.** In incus-osd's apply order: the OS files are staged in `/var/lib/updates` and the
+applications as version `<version>` under `/var/lib/incus-os-extensions`; the ESP's systemd-boot
+(`EFI/systemd/systemd-bootx64.efi` and `EFI/BOOT/BOOTX64.EFI`) is replaced, atomically, with the new build's signed
+binary, because PCR4 measures it and the new UKI's stub refuses a boot loader its CA did not sign; the new UKI's PCR11
+signing key is put where `systemd-cryptenroll` reads it; the LUKS volumes are re-sealed with the recovery key files to
+PCR 4+7+12+15 (the new boot loader and UKI, the unchanged PCR7, PCR12, an empty PCR15) and to the new key's PCR11
+policy; `systemd-sysupdate` writes the partitions and the UKI; the next boot is selected by writing
+`LoaderEntryOneShot` to efivarfs (bootctl refuses from a container). The reboot goes through
+`POST /os/1.0/system/:reboot` with `{"next_boot_version":"newest"}`; the handler needs a JSON object body.
+
+**Failures.** The helper runs detached from the session that starts it (a dropped connection does not stop it), logs
+to `/root/migrate.out` in the container and, on the node, to `/run/arca-node-migrate.log` and the journal (identifier
+`arca-node-migrate`, served by `GET /os/1.0/debug/log`; IncusOS's initrd removes unlisted files under `/var/log` at
+boot, the journal persists), and the script polls it;
+if the script itself is lost, `--resume` with the same arguments follows the run and finishes the steps after it. The
+container is never deleted while the helper may still run. On any failure or interrupt after the ESP changed, the
+helper rolls back every step even when one fails (staged applications and the new UKI removed, the boot loader and
+the signing key restored, the next boot pointed at the running UKI) and re-seals the TPM last, to what is then on the
+ESP. Exit 1 means the node boots its running build as before. Exit 3 prints **DO NOT REBOOT — rollback incomplete**
+and keeps the container: fix what the output names before rebooting.
+
+If the node still asks for its recovery passphrase on the new build's first boot, the re-seal did not take: type it
+once, then `POST /os/1.0/system/security/:tpm-rebind` (`ForceUpdatePCRBindings`), which reseals from the now-running
+system and reboots to an automatic unlock.
+
+Always rehearse in a VM first (project `arcaos-dev`): reproduce the node's conditions, run `--check`, migrate, and
+prove the new version boots, unlocks without the recovery key, and keeps its data, then publish a second build and
+prove the node picks it up on its own.
+
 ## Component map
 
 | Component | Files |
@@ -169,6 +279,7 @@ server could not be reached during that boot, every later boot tries again until
 | Binder kernel from Zabbly's tree | `kernel/`, `mkosi.sandbox/etc/apt/preferences.d/arca-kernel.pref` |
 | `arca` as an IncusOS application | `incus-osd/internal/applications/app_arca*.go`, `mkosi.images/arca/`, `scripts/arca/{build-arca.sh,arca.version,arca.commit}` |
 | Name, update URL, notice, patch-stack guard | `NOTICE`, `scripts/arca/PATCHES.md`, `scripts/arca/check-patch-stack.sh` |
+| Always-on power profile ([POWER.md](POWER.md)) | `mkosi.images/base/mkosi.extra/usr/libexec/arca-power`, `mkosi.images/base/mkosi.extra/usr/lib/{systemd,udev}/**/arca-power*`, `scripts/arca/test/power.sh` |
 | Signing keys | `scripts/arca/keys/` |
 | Update server | `scripts/arca/r2/` |
 | Kernel apt repository | `kernel/publish-apt.sh`, `.github/workflows/arca-kernel.yml` |

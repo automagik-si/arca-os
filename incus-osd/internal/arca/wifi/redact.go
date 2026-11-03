@@ -33,9 +33,10 @@ func Redact(cfg *api.SystemNetworkConfig) *api.SystemNetworkConfig {
 }
 
 // KeepSecrets fills each saved network of next that has no passphrase with the passphrase
-// of the network in prior that has the same SSID and security. A client that sends back
-// what GET returned therefore keeps every passphrase it did not change. It changes next,
-// and it is safe on nil configurations and on configurations without a wireless object.
+// of the network in prior that is the same saved network: the same SSID, BSSID and security.
+// A client that sends back what GET returned therefore keeps every passphrase it did not
+// change, while a network switched to another security keeps none. It changes next, and it
+// is safe on nil configurations and on configurations without a wireless object.
 func KeepSecrets(next, prior *api.SystemNetworkConfig) {
 	if next == nil || next.Wireless == nil || prior == nil || prior.Wireless == nil {
 		return
@@ -48,7 +49,7 @@ func KeepSecrets(next, prior *api.SystemNetworkConfig) {
 		}
 
 		for _, p := range prior.Wireless.Networks {
-			if p.SSID == n.SSID && p.Security == n.Security {
+			if p.SSID == n.SSID && p.BSSID == n.BSSID && p.Security == n.Security && p.Passphrase != "" {
 				n.Passphrase = p.Passphrase
 
 				break

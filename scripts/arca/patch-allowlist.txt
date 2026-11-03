@@ -9,6 +9,7 @@ incus-osd/internal/state/struct.go
 scripts/prepare-upload.sh
 # Wi-Fi hooks in upstream code.
 incus-osd/api/system_network.go
+incus-osd/api/system_network_arca_wifi_test.go
 incus-osd/internal/rest/api_system_network.go
 incus-osd/internal/network/networkd.go
 incus-osd/internal/network/templates/network-common.txt
@@ -16,3 +17,5 @@ incus-osd/internal/seed/network.go
 incus-osd/internal/nftables/nft.go
 incus-osd/internal/tui/tui.go
 incus-osd/cmd/incus-osd/main.go
+# The always-on power profile: the console never blanks on a timer.
+mkosi.conf
