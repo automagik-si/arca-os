@@ -10,9 +10,9 @@
 #                     [--checkout <worktree>]
 #
 # The LAN address and port the tree is served at are NOT configured here: they
-# are arguments to whatever serves --serve-dir (see docs/updates.md). The tree
-# accumulates releases, so republishing adds a version; a node picks the newest
-# in its channel. Defaults: --serve-dir $ARCA_UPDATES_DIR or
+# are arguments to whatever serves --serve-dir (see scripts/arca/README.md,
+# "Releasing updates to nodes"). The tree accumulates releases, so republishing
+# adds a version; a node picks the newest in its channel. Defaults: --serve-dir $ARCA_UPDATES_DIR or
 # ~/.cache/arca-os/updates, channel stable, applications incus and arca.
 set -euo pipefail
 

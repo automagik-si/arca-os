@@ -94,7 +94,7 @@ no longer points to the commit in `arca.commit`. With `--local-kernel <dir>`, th
 `mkosi.packages/` (mkosi's local repository) for that build only, and its `BUILDINFO` goes beside the image as
 `kernel.BUILDINFO`.
 
-`build.sh` runs upstream's `make build` (test certificates are generated when there is no `mkosi.crt`) and copies the
+`build.sh` runs upstream's `make build` (after injecting the persistent test CA, so `make` never generates one) and copies the
 image, the `.efi`, the `usr` images, every sysext, the manifests and the tree's `test/metadata.tar.xz` to
 `/srv/artifacts/os/<version>/`, with `/srv/artifacts/os/latest` pointing at the newest. `vm-test.sh` takes the image,
 its metadata and the expected ImageId from there, not from the checkout it runs in, and never accepts the builder's
@@ -117,7 +117,7 @@ to start the VM when the host has less than 12 GiB of `MemAvailable`
 
 `tracer-installer.sh` writes a test-signed build as one USB installer image, plus the update tree that the installed
 system fetches `incus` and `arca` from. It runs in the builder right after `build.sh`, in the same checkout, before
-anything cleans it, because it signs with that build's throwaway test update key. `--server-url` is required: it is
+anything cleans it, because it signs with the checkout's test update key (the injected persistent one). `--server-url` is required: it is
 the URL the tree will be served at, and it goes into the image's seed.
 
 ```sh
@@ -135,8 +135,8 @@ It writes, in one directory:
   onto the one disk it finds and refuses when it finds several.
 - `updates/`, a static tree in the layout incus-osd's `images` provider reads, made by the build's own
   `image-publisher`: `index.json` and `index.sjson`, and `<version>/` with `update.json`, `update.sjson`,
-  `x86_64/incus.raw.gz` and `x86_64/arca.raw.gz`, in channel `stable`. Both `.sjson` files are signed with the build's
-  test update key, which the image trusts, so plain `http` is enough. The tree holds no OS files, so the OS is never
+  `x86_64/incus.raw.gz` and `x86_64/arca.raw.gz`, in channel `stable`. Both `.sjson` files are signed with the
+  persistent test update key, which the image trusts, so plain `http` is enough. The tree holds no OS files, so the OS is never
   updated from it. The script reads it back the way incus-osd will: both signatures, one release, and exactly the two
   applications, each unpacking to the built sysext.
 - `seed/`, `RELEASE`, `OSNAME`, `base.manifest`, `kernel.BUILDINFO` and `SHA256SUMS`, which covers the image and every
@@ -201,8 +201,8 @@ python3 -m http.server --bind <lan-address> --directory <dir> <port>
 
 A node whose provider `server_url` is `http://<lan-address>:<port>` and whose update check frequency is a real interval
 then finds and applies the newest build in its channel on its own. Republishing a later `--version` into the same tree
-adds it; the node moves to it at its next check (and reboots if `auto_reboot` is set). The OS files make it an OS
-update; leave them out (publish only applications) by passing `--apps` with no OS — the usual case is to publish both.
+adds it; the node moves to it at its next check (and reboots if `auto_reboot` is set). Each release carries the OS
+(UKI and `usr` images) and the applications named by `--apps` (default `incus,arca`).
 
 New sticks that should keep themselves current are written with `tracer-installer.sh --auto-updates`, which seeds the
 update policy as check-frequency `1h` and `auto_reboot true` (the default is `never`/`false`, for a one-off test
