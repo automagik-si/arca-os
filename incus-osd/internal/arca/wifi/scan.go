@@ -347,6 +347,8 @@ func parseBSS(reply string) (BSS, error) {
 			bss.Flags = value
 		case "ssid":
 			bss.SSID = unescapeSSID(value)
+		default:
+			// A field the scan does not use.
 		}
 	}
 

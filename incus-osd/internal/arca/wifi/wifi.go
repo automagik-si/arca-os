@@ -224,6 +224,8 @@ func RenderNetwork(cfg *api.SystemNetworkConfig) string {
 		b.WriteString("DHCP=ipv4\n")
 	case dhcp6:
 		b.WriteString("DHCP=ipv6\n")
+	default:
+		// No DHCP address is requested; the link keeps the addresses it has.
 	}
 
 	b.WriteString("\n[DHCPv4]\nClientIdentifier=mac\nRouteMetric=600\nUseMTU=true\n")
@@ -314,7 +316,8 @@ func WriteFiles(root string, cfg *api.SystemNetworkConfig) error {
 		return err
 	}
 
-	err = os.Chmod(dir, 0o700)
+	// G302 asks for a file mode of 0600 or less; a directory needs the execute bit.
+	err = os.Chmod(dir, 0o700) //nolint:gosec // a directory is 0700, its files 0600
 	if err != nil {
 		return err
 	}
@@ -385,7 +388,7 @@ func Activate(ctx context.Context, sysRoot string, start func(ctx context.Contex
 		}
 
 		_, _ = conn.Request(ctx, "RECONFIGURE")
-		_ = conn.Close()
+		_ = conn.Close() //nolint:contextcheck // Close detaches with its own one-second deadline
 	}
 
 	return nil

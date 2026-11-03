@@ -9,6 +9,8 @@ import (
 )
 
 func TestEmptyDevices(t *testing.T) {
+	t.Parallel()
+
 	saved := &api.SystemNetworkWireless{
 		Addresses: []string{"dhcp4", "slaac"},
 		Networks:  []api.SystemNetworkWirelessNetwork{{SSID: "Velho", Security: api.SystemNetworkWirelessSecurityOpen}},

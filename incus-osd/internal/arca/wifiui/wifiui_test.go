@@ -17,7 +17,7 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
 
-func TestCommitWaitsOnGuards(t *testing.T) {
+func TestCommitWaitsOnGuards(t *testing.T) { //nolint:paralleltest // replaces the package's apply function
 	savedApply, savedTick := applyFunc, guardTick
 
 	t.Cleanup(func() { applyFunc, guardTick = savedApply, savedTick })
@@ -92,6 +92,8 @@ func TestCommitWaitsOnGuards(t *testing.T) {
 }
 
 func TestPassphraseFieldCap(t *testing.T) {
+	t.Parallel()
+
 	if !passphraseAccept(strings.Repeat("a", wifi.MaxPassphraseBytes), 'a') {
 		t.Error("128 bytes were refused")
 	}
@@ -137,6 +139,8 @@ func onLoop[T any](app *tview.Application, f func() T) T {
 }
 
 func TestPickerRootFocus(t *testing.T) {
+	t.Parallel()
+
 	screen := tcell.NewSimulationScreen("UTF-8")
 
 	pages := tview.NewPages().AddPage("frame", tview.NewBox(), true, true)
@@ -148,7 +152,11 @@ func TestPickerRootFocus(t *testing.T) {
 
 	t.Cleanup(func() {
 		app.Stop()
-		<-done
+
+		err := <-done
+		if err != nil {
+			t.Errorf("the application stopped with %v", err)
+		}
 	})
 
 	p := newPicker(context.Background(), &state.State{}, &appOverlay{app: app, pages: pages})
@@ -202,7 +210,7 @@ func TestPickerRootFocus(t *testing.T) {
 	}
 }
 
-func TestCommitWaitTimesOut(t *testing.T) {
+func TestCommitWaitTimesOut(t *testing.T) { //nolint:paralleltest // replaces the package's apply function and guard timing
 	savedApply, savedTick, savedWait := applyFunc, guardTick, guardWait
 
 	t.Cleanup(func() { applyFunc, guardTick, guardWait = savedApply, savedTick, savedWait })
@@ -230,6 +238,8 @@ func TestCommitWaitTimesOut(t *testing.T) {
 }
 
 func TestWithFirstNilConfig(t *testing.T) {
+	t.Parallel()
+
 	n := api.SystemNetworkWirelessNetwork{SSID: "Velho", Security: api.SystemNetworkWirelessSecurityOpen}
 
 	next, err := withFirst(nil, n)
@@ -254,7 +264,7 @@ func (o *inlineOverlay) QueueArcaUpdate(f func()) {
 	f()
 }
 
-func TestConnectIgnoresSecondEnter(t *testing.T) {
+func TestConnectIgnoresSecondEnter(t *testing.T) { //nolint:paralleltest // replaces the package's apply function
 	savedApply := applyFunc
 
 	t.Cleanup(func() { applyFunc = savedApply })
@@ -265,7 +275,9 @@ func TestConnectIgnoresSecondEnter(t *testing.T) {
 
 	applyFunc = func(context.Context, *state.State, *api.SystemNetworkConfig) error {
 		calls.Add(1)
+
 		started <- struct{}{}
+
 		<-release
 
 		return nil

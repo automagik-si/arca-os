@@ -10,6 +10,8 @@ import (
 )
 
 func TestRedact(t *testing.T) {
+	t.Parallel()
+
 	if Redact(nil) != nil {
 		t.Error("Redact of nil is not nil")
 	}
@@ -80,6 +82,8 @@ func TestRedact(t *testing.T) {
 }
 
 func TestKeepSecret(t *testing.T) {
+	t.Parallel()
+
 	saved := &api.SystemNetworkConfig{
 		Wireless: &api.SystemNetworkWireless{
 			Addresses: []string{"dhcp4", "slaac"},

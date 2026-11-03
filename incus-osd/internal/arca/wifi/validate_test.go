@@ -20,7 +20,7 @@ func savedNetworks(ns ...api.SystemNetworkWirelessNetwork) *api.SystemNetworkWir
 func pskOf(t *testing.T, ssid string, passphrase string) string {
 	t.Helper()
 
-	for _, line := range strings.Split(RenderSupplicant(wpa(ssid, passphrase)), "\n") {
+	for line := range strings.SplitSeq(RenderSupplicant(wpa(ssid, passphrase)), "\n") {
 		if psk, ok := strings.CutPrefix(line, "\tpsk="); ok {
 			return psk
 		}
@@ -32,6 +32,8 @@ func pskOf(t *testing.T, ssid string, passphrase string) string {
 }
 
 func TestValidateWireless(t *testing.T) {
+	t.Parallel()
+
 	velho := func(passphrase string) api.SystemNetworkWirelessNetwork {
 		return api.SystemNetworkWirelessNetwork{SSID: "Velho", Security: api.SystemNetworkWirelessSecurityWPAPersonal, Passphrase: passphrase}
 	}
@@ -117,7 +119,9 @@ func TestValidateWireless(t *testing.T) {
 }
 
 func TestValidateNoSecretInError(t *testing.T) {
-	const passphrase = "Sup3r-Secret-Phrase"
+	t.Parallel()
+
+	const passphrase = "Sup3r-Secret-Phrase" //nolint:gosec // G101: a test fixture that never leaves the test
 
 	// Only the errors are checked: none may carry the passphrase, its hex form or its PSK.
 	secrets := []string{passphrase, hex.EncodeToString([]byte(passphrase)), pskOf(t, "Velho", passphrase)}
@@ -179,6 +183,8 @@ func addSysDevice(t *testing.T, root string, name string, wifi bool, hwaddr stri
 }
 
 func TestValidateRequireValidMAC(t *testing.T) {
+	t.Parallel()
+
 	root := t.TempDir()
 	addSysDevice(t, root, "wlan0", true, "0a:00:00:00:00:10")
 	addSysDevice(t, root, "enp1s0", false, "02:00:00:00:00:01")

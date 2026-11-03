@@ -278,6 +278,7 @@ func commit(ctx context.Context, s *state.State, n api.SystemNetworkWirelessNetw
 		}
 
 		err := guardTick(waitCtx)
+
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

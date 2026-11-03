@@ -36,6 +36,8 @@ func wpa(ssid string, passphrase string) *api.SystemNetworkWireless {
 }
 
 func TestRenderSupplicant(t *testing.T) {
+	t.Parallel()
+
 	// IEEE 802.11i-2004 H.4.1: passphrase "password", SSID "IEEE".
 	got := RenderSupplicant(wpa("IEEE", "password"))
 
@@ -58,6 +60,8 @@ func TestRenderSupplicant(t *testing.T) {
 }
 
 func TestPassphraseBound(t *testing.T) {
+	t.Parallel()
+
 	hex64 := strings.Repeat("0123456789abcdef", 4)
 	rows := []struct {
 		name       string
@@ -107,6 +111,8 @@ func TestPassphraseBound(t *testing.T) {
 }
 
 func TestRenderNetwork(t *testing.T) {
+	t.Parallel()
+
 	got := RenderNetwork(&api.SystemNetworkConfig{Wireless: Defaults()})
 
 	for _, want := range []string{"[Match]\nType=wlan\nWLANInterfaceType=station\n", "RequiredForOnline=no\n", "DHCP=ipv4\n", "IPv6AcceptRA=true\n", "[DHCPv4]\n", "[IPv6AcceptRA]\nRouteMetric=600\n"} {
@@ -121,6 +127,8 @@ func TestRenderNetwork(t *testing.T) {
 }
 
 func TestWriteFilesModes(t *testing.T) {
+	t.Parallel()
+
 	for _, w := range []*api.SystemNetworkWireless{wpa("Velho", "abcdefgh"), nil} {
 		root := t.TempDir()
 
@@ -148,6 +156,8 @@ func TestWriteFilesModes(t *testing.T) {
 var supplicantLine = regexp.MustCompile(`^(ctrl_interface=DIR=/[a-z/-]+|[a-z_0-9]+=[A-Za-z0-9:,._ -]*|network=\{|\t[a-z_0-9]+=[A-Za-z0-9:._ -]*|\}|)$`)
 
 func TestWriteFilesHostileInput(t *testing.T) {
+	t.Parallel()
+
 	const passphrase = "abcdefgh"
 
 	for _, bad := range []string{"\n", "\"", "}", "="} {
@@ -164,6 +174,8 @@ func TestWriteFilesHostileInput(t *testing.T) {
 				n.BSSID += bad
 			case "country":
 				w.Country = "U" + bad
+			default:
+				t.Fatalf("unknown field %q", field)
 			}
 
 			w.Networks = []api.SystemNetworkWirelessNetwork{n}
@@ -233,6 +245,8 @@ func fakeSys(t *testing.T, devices map[string]bool) string {
 }
 
 func TestDevices(t *testing.T) {
+	t.Parallel()
+
 	root := fakeSys(t, map[string]bool{"wlp2s0": true, "enp1s0": false, "wlan0": true})
 
 	got, err := Devices(root)
@@ -247,6 +261,8 @@ func TestDevices(t *testing.T) {
 }
 
 func TestCountAddresses(t *testing.T) {
+	t.Parallel()
+
 	wired := []api.SystemNetworkInterface{{Name: "enp1s0", Hwaddr: "00:16:3e:00:00:01"}}
 	noWifi := fakeSys(t, map[string]bool{"enp1s0": false})
 	withWifi := fakeSys(t, map[string]bool{"enp1s0": false, "wlan0": true})
@@ -274,6 +290,8 @@ func TestCountAddresses(t *testing.T) {
 }
 
 func TestResetStateKeepsInProcess(t *testing.T) {
+	t.Parallel()
+
 	for _, inProcess := range []bool{true, false} {
 		prev := api.SystemNetworkState{
 			Interfaces:             map[string]api.SystemNetworkInterfaceState{"enp1s0": {State: "routable"}},
@@ -291,6 +309,8 @@ func TestResetStateKeepsInProcess(t *testing.T) {
 }
 
 func TestSeedMergeWirelessDefaults(t *testing.T) {
+	t.Parallel()
+
 	defaults := &api.SystemNetworkConfig{Wireless: Defaults()}
 
 	cfg := &api.SystemNetworkConfig{}
@@ -347,6 +367,8 @@ func fakeSupplicant(t *testing.T, dir string, bss []string, requests chan<- stri
 				if id+1 < len(bss) {
 					reply = bss[id+1]
 				}
+			default:
+				// An unknown request; answer nothing.
 			}
 
 			_, _ = server.WriteToUnix([]byte(reply), from)
@@ -355,6 +377,8 @@ func fakeSupplicant(t *testing.T, dir string, bss []string, requests chan<- stri
 }
 
 func TestScanWalk(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	bss := []string{
 		"id=0\nbssid=02:00:00:00:00:01\nfreq=2412\nlevel=-40\nie=000556656c686f\nflags=[WPA2-PSK-CCMP][ESS]\nssid=Velho\n",
@@ -408,6 +432,8 @@ func TestScanWalk(t *testing.T) {
 }
 
 func TestUnescapeSSIDMalformed(t *testing.T) {
+	t.Parallel()
+
 	for in, want := range map[string]string{
 		`Velho`:       "Velho",
 		`Caf\xc3\xa9`: "Café",
@@ -431,6 +457,8 @@ func TestUnescapeSSIDMalformed(t *testing.T) {
 }
 
 func TestParseBSSMalformed(t *testing.T) {
+	t.Parallel()
+
 	for _, reply := range []string{"", "FAIL\n", "UNKNOWN COMMAND\n", "bssid=02:00:00:00:00:01\nssid=Velho\n", "id=x\nssid=Velho\n", "id=\n", "garbage"} {
 		_, err := parseBSS(reply)
 		if err == nil {
@@ -445,6 +473,8 @@ func TestParseBSSMalformed(t *testing.T) {
 }
 
 func TestScanMalformedReply(t *testing.T) {
+	t.Parallel()
+
 	for _, bss := range [][]string{
 		{"FAIL\n"},
 		{"id=0\nbssid=02:00:00:00:00:01\nfreq=2412\nlevel=-40\nflags=[ESS]\nssid=Velho\n", "no id here\n"},

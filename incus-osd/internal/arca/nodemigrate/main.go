@@ -127,7 +127,7 @@ func main() {
 
 // say prints one line and appends it to the node-side log. It never fails:
 // a closed output or an unwritable log is ignored.
-func say(format string, args ...any) {
+func sayf(format string, args ...any) {
 	line := fmt.Sprintf("arca-node-migrate: "+format+"\n", args...)
 
 	_, _ = os.Stdout.WriteString(line)
@@ -154,13 +154,13 @@ type options struct {
 func run(args []string) int {
 	opts, err := parseArgs(args)
 	if err != nil {
-		say("usage: %v", err)
+		sayf("usage: %v", err)
 
 		return exitUsage
 	}
 
 	if os.Geteuid() != 0 {
-		say("error: must run as root in the node's context")
+		sayf("error: must run as root in the node's context")
 
 		return exitFailed
 	}
@@ -168,7 +168,7 @@ func run(args []string) int {
 	for _, p := range nodeContextPaths {
 		_, err := os.Stat(p)
 		if err != nil {
-			say("error: not in the node's own namespaces (%s: %v)", p, err)
+			sayf("error: not in the node's own namespaces (%s: %v)", p, err)
 
 			return exitFailed
 		}
@@ -178,14 +178,14 @@ func run(args []string) int {
 	if err != nil {
 		logFile = nil
 
-		say("warning: cannot write %s (%v)", logPath, err)
+		sayf("warning: cannot write %s (%v)", logPath, err)
 	}
 
 	journal, err = net.DialUnix("unixgram", nil, &net.UnixAddr{Name: journalSocket, Net: "unixgram"})
 	if err != nil {
 		journal = nil
 
-		say("warning: cannot log to the journal (%v)", err)
+		sayf("warning: cannot log to the journal (%v)", err)
 	}
 
 	mode := "migrate"
@@ -193,15 +193,15 @@ func run(args []string) int {
 		mode = "check"
 	}
 
-	say("start: %s to %s (log %s and the journal)", mode, opts.version, logPath)
+	sayf("start: %s to %s (log %s and the journal)", mode, opts.version, logPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), unix.SIGINT, unix.SIGTERM)
 	defer stop()
 
 	p, err := preflight(ctx, opts.version, opts.source)
 	if err != nil {
-		say("error: %v", err)
-		say("result: failed; nothing changed")
+		sayf("error: %v", err)
+		sayf("result: failed; nothing changed")
 
 		return exitFailed
 	}
@@ -209,12 +209,12 @@ func run(args []string) int {
 	if opts.check {
 		err := testBootOneShot(filepath.Base(p.ukis.CurrentFilepath))
 		if err != nil {
-			say("warning: the systemd-boot one-shot variable cannot be written from here (%v); the reboot through the /os API sets it from incus-osd, and systemd-boot boots the newest UKI without it", err)
+			sayf("warning: the systemd-boot one-shot variable cannot be written from here (%v); the reboot through the /os API sets it from incus-osd, and systemd-boot boots the newest UKI without it", err)
 		} else {
-			say("the systemd-boot one-shot variable is writable (tested and restored)")
+			sayf("the systemd-boot one-shot variable is writable (tested and restored)")
 		}
 
-		say("result: check passed; nothing changed")
+		sayf("result: check passed; nothing changed")
 
 		return exitOK
 	}
@@ -235,9 +235,9 @@ func parseArgs(args []string) (options, error) {
 			}
 
 			if args[i] == "--version" {
-				opts.version = args[i+1]
+				opts.version = args[i+1] //nolint:gosec // G602: i+1 is bounds-checked above
 			} else {
-				opts.source = args[i+1]
+				opts.source = args[i+1] //nolint:gosec // G602: i+1 is bounds-checked above
 			}
 
 			i++
@@ -270,13 +270,13 @@ func migrate(ctx context.Context, p *plan) int {
 	// applications as version <version>. Nothing that boots has changed yet.
 	newUKI, err := stageOS(p)
 	if err == nil {
-		say("staged %d OS files into %s", len(p.osFiles), systemd.SystemUpdatesPath)
+		sayf("staged %d OS files into %s", len(p.osFiles), systemd.SystemUpdatesPath)
 
 		err = stageApps(p.apps, p.source, appDir)
 	}
 
 	if err == nil {
-		say("staged applications %s into %s", strings.Join(p.apps, ","), appDir)
+		sayf("staged applications %s into %s", strings.Join(p.apps, ","), appDir)
 	}
 
 	if err == nil && ctx.Err() != nil {
@@ -285,8 +285,8 @@ func migrate(ctx context.Context, p *plan) int {
 
 	if err != nil {
 		unstage()
-		say("error: staging: %v", err)
-		say("result: failed; nothing changed")
+		sayf("error: staging: %v", err)
+		sayf("result: failed; nothing changed")
 
 		return exitFailed
 	}
@@ -327,19 +327,19 @@ func migrate(ctx context.Context, p *plan) int {
 	}
 
 	for _, s := range steps {
-		say("%s", s.what)
+		sayf("%s", s.what)
 
 		err := s.do()
 		if err != nil {
-			return rollback(p, appDir, fmt.Errorf("%s: %w", s.what, err))
+			return rollback(ctx, p, appDir, fmt.Errorf("%s: %w", s.what, err))
 		}
 
 		if ctx.Err() != nil {
-			return rollback(p, appDir, errors.New("interrupted"))
+			return rollback(ctx, p, appDir, errors.New("interrupted"))
 		}
 	}
 
-	say("result: migrated to %s; reboot to boot it (the TPM unlocks it)", p.version)
+	sayf("result: migrated to %s; reboot to boot it (the TPM unlocks it)", p.version)
 
 	return exitOK
 }
@@ -347,29 +347,29 @@ func migrate(ctx context.Context, p *plan) int {
 // rollback puts the node back the way it was booting. Every step runs, even
 // when an earlier one failed, and the TPM re-seal runs last, against what is
 // then on the ESP.
-func rollback(p *plan, appDir string, cause error) int {
-	say("error: %v", cause)
-	say("rolling back to the running UKI %s", filepath.Base(p.ukis.CurrentFilepath))
+func rollback(ctx context.Context, p *plan, appDir string, cause error) int {
+	sayf("error: %v", cause)
+	sayf("rolling back to the running UKI %s", filepath.Base(p.ukis.CurrentFilepath))
 
 	failed := []string{}
 
 	step := func(what string, err error) {
 		if err != nil {
-			say("rollback: %s FAILED: %v", what, err)
+			sayf("rollback: %s FAILED: %v", what, err)
 
 			failed = append(failed, what)
 
 			return
 		}
 
-		say("rollback: %s", what)
+		sayf("rollback: %s", what)
 	}
 
 	step("removing the staged applications", os.RemoveAll(appDir))
 
 	err := os.RemoveAll(systemd.SystemUpdatesPath)
 	if err != nil {
-		say("rollback: warning: removing the staged OS files: %v", err)
+		sayf("rollback: warning: removing the staged OS files: %v", err)
 	}
 
 	ukiErr := removeUKI(p.newUKIName())
@@ -384,20 +384,20 @@ func rollback(p *plan, appDir string, cause error) int {
 	if ukiErr != nil {
 		step("pointing the next boot at the running UKI", err)
 	} else if err != nil {
-		say("rollback: warning: pointing the next boot at the running UKI: %v (the new UKI is gone, so it boots anyway)", err)
+		sayf("rollback: warning: pointing the next boot at the running UKI: %v (the new UKI is gone, so it boots anyway)", err)
 	}
 
 	unix.Sync()
 
-	step("re-sealing the TPM for the running UKI", secureboot.UpdatePCR4Binding(context.Background(), p.ukis.CurrentFilepath))
+	step("re-sealing the TPM for the running UKI", secureboot.UpdatePCR4Binding(context.WithoutCancel(ctx), p.ukis.CurrentFilepath))
 
 	if len(failed) > 0 {
-		say("result: ROLLBACK INCOMPLETE (%s failed); DO NOT REBOOT the node: it may ask for its recovery passphrase or not boot its build; see %s or the journal (arca-node-migrate)", strings.Join(failed, ", "), logPath)
+		sayf("result: ROLLBACK INCOMPLETE (%s failed); DO NOT REBOOT the node: it may ask for its recovery passphrase or not boot its build; see %s or the journal (arca-node-migrate)", strings.Join(failed, ", "), logPath)
 
 		return exitRollbackIncomplete
 	}
 
-	say("result: failed and rolled back; the node keeps booting %s", p.ukis.CurrentVersion)
+	sayf("result: failed and rolled back; the node keeps booting %s", p.ukis.CurrentVersion)
 
 	return exitFailed
 }
@@ -433,7 +433,7 @@ func install(ctx context.Context, version string, newUKIName string) error {
 	// the reboot through the /os API also sets it, from incus-osd.
 	err = setBootOneShot(newUKIName)
 	if err != nil {
-		say("warning: could not set the one-shot boot entry (%v); relying on systemd-boot booting the newest UKI", err)
+		sayf("warning: could not set the one-shot boot entry (%v); relying on systemd-boot booting the newest UKI", err)
 	}
 
 	return nil
@@ -461,7 +461,7 @@ func oneShotValue(entry string) []byte {
 	buf[0] = 0x07 // NON_VOLATILE | BOOTSERVICE_ACCESS | RUNTIME_ACCESS
 
 	for _, u := range runes {
-		buf = append(buf, byte(u), byte(u>>8))
+		buf = append(buf, byte(u), byte(u>>8)) //nolint:gosec // G115: u is 16 bits, so both bytes fit
 	}
 
 	return buf
@@ -609,7 +609,7 @@ func stageOS(p *plan) (string, error) {
 // espBootLoaders returns the ESP paths of the systemd-boot binary (both the
 // systemd and the fallback BOOT location) and the path of the signed stub
 // inside a mounted usr image, for the running architecture.
-func espBootLoaders() (stub string, dests []string, err error) {
+func espBootLoaders() (string, []string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
 		return "lib/systemd/boot/efi/systemd-bootx64.efi.signed",
@@ -733,6 +733,7 @@ func writeFileInPlace(path string, data []byte) error {
 	}
 
 	cerr := f.Close()
+
 	if werr != nil {
 		return fmt.Errorf("writing %s: %w", path, werr)
 	}
