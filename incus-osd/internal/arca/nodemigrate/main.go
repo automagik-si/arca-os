@@ -52,7 +52,10 @@
 // re-sealed to what is then on the ESP. A running step (the re-seal,
 // sysupdate) always completes first. Hangups and broken pipes are ignored, so
 // a dropped session does not stop it half way. Every line also goes to
-// /var/log/arca-node-migrate.log on the node.
+// /run/arca-node-migrate.log on the node (until it reboots) and to the node's
+// journal as arca-node-migrate, which persists (the initrd's root cleanup
+// removes any other file under /var/log at boot) and which the /os API serves
+// at /1.0/debug/log.
 //
 // Exit codes: 0 migrated (or --check passed); 1 failed, and the node boots
 // its running build as before (nothing changed, or fully rolled back); 2
@@ -67,6 +70,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -99,10 +103,18 @@ var nodeContextPaths = []string{"/dev/mapper/usr", "/var/lib/incus-os/keys", "/b
 // holds, so it must be the new UKI's key when re-sealing for the new UKI.
 const pcrPublicKeyPath = "/run/systemd/tpm2-pcr-public-key.pem"
 
-// logPath is the node-side log every line is appended to.
-const logPath = "/var/log/arca-node-migrate.log"
+// logPath is the node-side log every line is appended to. It is on /run,
+// because the initrd removes unlisted files from the root partition at boot;
+// the journal keeps the lines across reboots.
+const logPath = "/run/arca-node-migrate.log"
 
-var logFile *os.File
+// journalSocket is journald's native protocol socket.
+const journalSocket = "/run/systemd/journal/socket"
+
+var (
+	logFile *os.File
+	journal *net.UnixConn
+)
 
 func main() {
 	// A dropped exec session must not stop the helper half way: ignore
@@ -123,6 +135,13 @@ func say(format string, args ...any) {
 	if logFile != nil {
 		_, _ = logFile.WriteString(time.Now().UTC().Format(time.RFC3339) + " " + line)
 		_ = logFile.Sync()
+	}
+
+	if journal != nil {
+		msg := strings.ReplaceAll(strings.TrimSuffix(line, "\n"), "\n", " ")
+
+		_ = journal.SetWriteDeadline(time.Now().Add(time.Second))
+		_, _ = journal.Write([]byte("SYSLOG_IDENTIFIER=arca-node-migrate\nPRIORITY=6\nMESSAGE=" + msg + "\n"))
 	}
 }
 
@@ -159,7 +178,14 @@ func run(args []string) int {
 	if err != nil {
 		logFile = nil
 
-		say("warning: cannot write %s (%v); logging to the output only", logPath, err)
+		say("warning: cannot write %s (%v)", logPath, err)
+	}
+
+	journal, err = net.DialUnix("unixgram", nil, &net.UnixAddr{Name: journalSocket, Net: "unixgram"})
+	if err != nil {
+		journal = nil
+
+		say("warning: cannot log to the journal (%v)", err)
 	}
 
 	mode := "migrate"
@@ -167,7 +193,7 @@ func run(args []string) int {
 		mode = "check"
 	}
 
-	say("start: %s to %s (log %s)", mode, opts.version, logPath)
+	say("start: %s to %s (log %s and the journal)", mode, opts.version, logPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), unix.SIGINT, unix.SIGTERM)
 	defer stop()
@@ -366,7 +392,7 @@ func rollback(p *plan, appDir string, cause error) int {
 	step("re-sealing the TPM for the running UKI", secureboot.UpdatePCR4Binding(context.Background(), p.ukis.CurrentFilepath))
 
 	if len(failed) > 0 {
-		say("result: ROLLBACK INCOMPLETE (%s failed); DO NOT REBOOT the node: it may ask for its recovery passphrase or not boot its build; see %s", strings.Join(failed, ", "), logPath)
+		say("result: ROLLBACK INCOMPLETE (%s failed); DO NOT REBOOT the node: it may ask for its recovery passphrase or not boot its build; see %s or the journal (arca-node-migrate)", strings.Join(failed, ", "), logPath)
 
 		return exitRollbackIncomplete
 	}

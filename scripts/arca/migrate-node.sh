@@ -40,8 +40,8 @@
 # checksums match); launch the container (privileged, unconfined, the node's
 # /proc at /hostproc) and check it has room; push the helper and the build;
 # start the helper in the node's namespaces, detached from this session (its
-# output goes to /root/migrate.out in the container and to
-# /var/log/arca-node-migrate.log on the node), and poll it until it exits;
+# output goes to /root/migrate.out in the container, and on the node to
+# /run/arca-node-migrate.log and the journal), and poll it until it exits;
 # delete the container; point the provider at --server-url; reboot; wait for
 # the node to answer again on --version; set the update policy (channel, check
 # frequency, automatic reboot); report.
@@ -306,7 +306,7 @@ case "$rc" in
 2)
 	die "arca-node-migrate refused its arguments; nothing changed" ;;
 *)
-	keep_reason="the rollback is incomplete; inspect /root/migrate.out in it and /var/log/arca-node-migrate.log on the node"
+	keep_reason="the rollback is incomplete; inspect /root/migrate.out in it, or on the node /run/arca-node-migrate.log and its journal (incus query '$remote:/os/1.0/debug/log?entries=200')"
 	log "************************************************************"
 	log "DO NOT REBOOT — rollback incomplete (arca-node-migrate exit $rc)"
 	log "the node may ask for its recovery passphrase, or not boot its"

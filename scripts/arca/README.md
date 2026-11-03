@@ -252,7 +252,9 @@ policy; `systemd-sysupdate` writes the partitions and the UKI; the next boot is 
 `POST /os/1.0/system/:reboot` with `{"next_boot_version":"newest"}`; the handler needs a JSON object body.
 
 **Failures.** The helper runs detached from the session that starts it (a dropped connection does not stop it), logs
-to `/var/log/arca-node-migrate.log` on the node and to `/root/migrate.out` in the container, and the script polls it;
+to `/root/migrate.out` in the container and, on the node, to `/run/arca-node-migrate.log` and the journal (identifier
+`arca-node-migrate`, served by `GET /os/1.0/debug/log`; IncusOS's initrd removes unlisted files under `/var/log` at
+boot, the journal persists), and the script polls it;
 if the script itself is lost, `--resume` with the same arguments follows the run and finishes the steps after it. The
 container is never deleted while the helper may still run. On any failure or interrupt after the ESP changed, the
 helper rolls back every step even when one fails (staged applications and the new UKI removed, the boot loader and
