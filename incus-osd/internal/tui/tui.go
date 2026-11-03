@@ -284,6 +284,9 @@ func (t *TUI) renderModal(title string, msg string, progress float64) {
 // redrawScreen clears and completely re-draws the TUI frame. This is necessary when updating
 // header or footer values, such as showing the current time.
 func (t *TUI) redrawScreen() {
+	if t.arcaConsoleFrame() {
+		return
+	}
 	if t.frame == nil {
 		return
 	}

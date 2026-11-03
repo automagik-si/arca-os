@@ -24,6 +24,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/certs"
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/console"
 	"github.com/lxc/incus-os/incus-osd/internal/arca/wifiui"
 	"github.com/lxc/incus-os/incus-osd/internal/install"
 	"github.com/lxc/incus-os/incus-osd/internal/kernel"
@@ -194,6 +195,7 @@ func main() {
 	logger := slog.New(tui.NewCustomTextHandler(tuiApp))
 	slog.SetDefault(logger)
 	wifiui.Start(ctx, s, tuiApp)
+	console.Start(ctx, s, tuiApp)
 
 	// Run the daemon.
 	err = run(ctx, s)
