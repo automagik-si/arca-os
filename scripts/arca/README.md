@@ -211,6 +211,38 @@ stick). Valid check frequencies are `never` or any positive Go duration (`30m`, 
 `publish-build.sh` is the builder-side half that `publish-update.sh` runs through `in-builder.sh`; it signs and
 verifies the tree inside the builder. Keep the served tree and the persistent CA backed up together.
 
+## Migrating a node without reinstalling
+
+A node installed from a build whose CA no longer exists cannot verify any signed update, so it can never be updated
+through the normal path. `migrate-node.sh` moves such a node onto a persistent-CA build **without reinstalling**, using
+the node's own Incus (which this host admins): a privileged container, given the node's disk and TPM, runs
+`arca-node-migrate` in the node's context to write the new build's UKI and `usr` images the way
+`systemd-sysupdate` does, and to re-seal the TPM for the new UKI. The node then boots the new build and updates itself
+normally. `arca-node-migrate` lives in the `incus-osd` module and reuses its own update-apply code
+(`secureboot.UpdatePCR4Binding`, `systemd-sysupdate`, the boot-selection helpers); it only supports a
+Secure-Boot-disabled node and refuses otherwise.
+
+```sh
+# Build the one-shot helper (static) in the builder, once:
+in-builder.sh <checkout> -- sh -euc 'cd incus-osd && CGO_ENABLED=0 go build -o /srv/artifacts/arca-node-migrate ./internal/arca/nodemigrate'
+# then place it beside the script as scripts/arca/.arca-node-migrate.
+
+scripts/arca/migrate-node.sh --remote <node-remote> --os-api https://<node>:8443/os/1.0 \
+    --version <12-digit> --build-dir /srv/artifacts/os/<version> \
+    --server-url http://<lan-address>:<port> --check-frequency 1h
+```
+
+**TPM re-seal.** The preferred path re-seals before reboot, so the next boot unlocks with no keyboard: the future PCR4
+is computed from the new UKI and the LUKS volumes are rebound with the node's recovery key. On a Secure-Boot-disabled
+node the binding is PCR 4+7+12; PCR7 is unchanged (Secure Boot stays off, the EFI variables and the old boot stub stay),
+so only PCR4 (the new UKI) and PCR12 move. If re-sealing cannot run in the container, the fallback needs the keyboard
+once: boot the new build with the recovery passphrase, then `POST /os/1.0/system/security/:tpm-rebind`
+(`ForceUpdatePCRBindings`), which reseals from the now-running system and reboots to an automatic unlock.
+
+Always rehearse in a VM first (project `arcaos-dev`): reproduce the node's conditions, migrate, and prove the new
+version boots, unlocks without the recovery key, and keeps its data, then publish a second build and prove the node
+picks it up on its own.
+
 ## Component map
 
 | Component | Files |
