@@ -18,12 +18,15 @@ safe.
 | PCIe ASPM policy `performance` | at boot, through `/sys/module/pcie_aspm/parameters/policy` (the kernel command line is untouched) |
 | No USB autosuspend for network adapters | `usr/lib/udev/rules.d/arca-power.rules`: the USB device behind every network interface gets `power/control=on` |
 | Charge limit for an always-plugged battery | at boot and every 10 s: `charge_control_end_threshold=80` and `charge_control_start_threshold=75` on every battery that has them; `conservation_mode=1` on a Lenovo ideapad (its firmware picks the level, 60% or 80%) |
-| Battery as a UPS | every 10 s: one log line on battery, one warning at 20%, and `systemctl poweroff` after two readings in a row (10 s apart) at or below 5% and discharging, or at the firmware's critical level |
+| Battery as a UPS | every 10 s: one log line on battery, one warning at 20%, and `systemctl poweroff` after three readings in a row (20 s) at or below 5% and discharging, or at the firmware's critical level; never while a Mains (or USB) supply is online |
 
 Each knob is written only when the machine has it and offers the value; a missing knob is skipped with one log line,
 and a step done before is not repeated. The thresholds are constants at the top of
-`mkosi.images/base/mkosi.extra/usr/libexec/arca-power`. A battery's own threshold is the highest one: with two
-batteries the machine powers off only when both are low. A mouse's or a pen's battery (`scope` `Device`) is ignored.
+`mkosi.images/base/mkosi.extra/usr/libexec/arca-power`. With no Mains or USB supply online, a battery that is
+discharging, or reports `Unknown`, `Not charging` or no status, counts as discharging; one that is charging or full
+does not. A battery's level is the higher of `capacity` and `energy_now`/`energy_full` (or `charge_now`/`charge_full`),
+so a glitched 0% that the other disagrees with is ignored. With two batteries the machine powers off only when both
+are low. A mouse's or a pen's battery (`scope` `Device`) is ignored.
 
 `systemctl poweroff` stops incus-osd with `SIGTERM`, which runs its normal shutdown sequence before the machine powers
 off. incus-osd's suspend action (`incus admin os system suspend`) fails, since suspend is not allowed.
@@ -44,4 +47,4 @@ The watch prints `lid closed: intel_backlight off`, `on battery at 97%, running 
 
 `scripts/arca/test/power.sh` runs the script under `dash` against fake `/sys` and `/proc` trees: present, missing,
 not offered and refused knobs, a second run that changes nothing, the lid in each state, the battery states, and the
-watch loop's poweroff after two critical readings.
+watch loop's poweroff after three critical readings, and none with a Mains supply online or on a 0% glitch.

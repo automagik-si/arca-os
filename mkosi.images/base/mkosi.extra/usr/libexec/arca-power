@@ -18,7 +18,7 @@ set -u
 # The profile, in one place.
 CRITICAL_PERCENT=5      # discharging at or below this: clean poweroff
 LOW_PERCENT=20          # discharging at or below this: one warning
-CRITICAL_SAMPLES=2      # consecutive critical readings before the poweroff
+CRITICAL_SAMPLES=3      # consecutive critical readings before the poweroff
 CHARGE_START_PERCENT=75 # charging restarts below this
 CHARGE_END_PERCENT=80   # charging stops at this
 LID_POLL_SECONDS=2
@@ -54,7 +54,7 @@ current() {
 
 # offers <file> <word>: the file lists the word.
 offers() {
-	case " $(tr -c 'A-Za-z0-9_-' ' ' < "$1" 2>/dev/null) " in
+	case " $({ tr -c 'A-Za-z0-9_-' ' ' < "$1"; } 2>/dev/null) " in
 	*" $2 "*) return 0 ;;
 	esac
 	return 1
@@ -253,28 +253,44 @@ lid() {
 	return 0
 }
 
-# percent <power_supply dir>: capacity, or energy/charge now over full.
+# percent <power_supply dir>: the higher of capacity and energy (or charge)
+# now over full, so a glitched 0% that the other disagrees with is ignored;
+# -1 when neither is known.
 percent() {
 	c=$(cat "$1/capacity" 2>/dev/null)
-	case $c in '' | *[!0-9]*) ;; *) echo "$c" && return ;; esac
+	case $c in '' | *[!0-9]*) c=-1 ;; esac
 	for k in energy charge; do
 		n=$(cat "$1/${k}_now" 2>/dev/null)
 		f=$(cat "$1/${k}_full" 2>/dev/null)
 		case "$n$f" in '' | *[!0-9]*) continue ;; esac
-		[ "$f" -gt 0 ] && echo $((n * 100 / f)) && return
+		[ -n "$n" ] && [ -n "$f" ] && [ "$f" -gt 0 ] || continue
+		e=$((n * 100 / f))
+		[ "$e" -gt "$c" ] && c=$e
+		break
 	done
-	echo -1
+	echo "$c"
 }
 
-# battery: the state of the system batteries. critical needs a discharging
-# battery and every battery at or below CRITICAL_PERCENT or at the firmware's
-# critical level; low needs every battery at or below LOW_PERCENT.
+# battery: the state of the system batteries. A Mains (or USB) supply online,
+# or a battery charging or full, is mains. Otherwise a battery discharging, or
+# with status Unknown, Not charging or none, is on battery: critical when every
+# battery is at or below CRITICAL_PERCENT or at the firmware's critical level,
+# low when the highest is at or below LOW_PERCENT.
 battery() {
-	n=0 discharging=0 all_low=1 max=-1
+	n=0 power=0 draining=0 all_low=1 max=-1
 	for b in "$R"/sys/class/power_supply/*; do
+		case $(cat "$b/type" 2>/dev/null) in
+		Mains | USB*)
+			[ "$(cat "$b/online" 2>/dev/null)" = 1 ] && power=1
+			continue
+			;;
+		esac
 		is_battery "$b" || continue
 		n=$((n + 1))
-		[ "$(cat "$b/status" 2>/dev/null)" = Discharging ] && discharging=1
+		case $(cat "$b/status" 2>/dev/null) in
+		Charging | Full) power=1 ;;
+		*) draining=1 ;;
+		esac
 		p=$(percent "$b")
 		[ "$p" -gt "$max" ] && max=$p
 		low=0
@@ -284,7 +300,7 @@ battery() {
 	done
 	if [ "$n" -eq 0 ]; then
 		echo none
-	elif [ "$discharging" -eq 0 ]; then
+	elif [ "$power" -eq 1 ] || [ "$draining" -eq 0 ]; then
 		echo "mains $max"
 	elif [ "$all_low" -eq 1 ]; then
 		echo "critical $max"

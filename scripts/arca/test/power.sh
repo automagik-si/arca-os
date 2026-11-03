@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The fixture test of mkosi.images/base/mkosi.extra/usr/libexec/arca-power.
 #
 #   scripts/arca/test/power.sh
@@ -8,10 +8,11 @@
 # empty tree skips every knob and succeeds, a value the knob does not offer is
 # left alone, a knob that refuses the write is logged and the rest still set;
 # the lid turns the panel backlight off and back on (an external DDC/CI one is
-# left alone); the battery states follow the thresholds; and the watch loop
-# powers off only after two critical readings in a row. Prints PASS/FAIL lines;
+# left alone); the battery states follow the thresholds and the power source;
+# and the watch loop powers off only after three critical readings in a row,
+# never with a Mains supply online or on a 0% glitch. Prints PASS/FAIL lines;
 # exits 1 when any case fails.
-set -euo pipefail
+set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 script=$here/../../../mkosi.images/base/mkosi.extra/usr/libexec/arca-power
@@ -20,6 +21,9 @@ trap 'rm -rf "$tmp"' EXIT
 failed=0
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2"; failed=1; }
+# has <pattern>: $out has a line matching it; count <pattern>: how many.
+has() { printf '%s\n' "$out" | grep -q -- "$1"; }
+count() { printf '%s\n' "$out" | grep -c -- "$1" || true; }
 
 # put <root> <path> <value>: writes one fake sysfs file.
 put() {
@@ -30,13 +34,12 @@ put() {
 val() { cat "$1/$2"; }
 # run <root> <args...>: the script against a root, output in $out.
 run() {
-	local root=$1
+	root=$1
 	shift
 	out=$(ARCA_POWER_ROOT=$root ARCA_POWER_RUN=$root/run PATH=$tmp/bin:$PATH dash "$script" "$@" 2>&1)
 }
 # expect <case> <root> <path> <value>
 expect() {
-	local got
 	got=$(val "$2" "$3" 2>/dev/null || echo '<missing>')
 	if [ "$got" = "$4" ]; then
 		return 0
@@ -53,7 +56,7 @@ chmod 0755 "$tmp/bin/sleep" "$tmp/bin/fake-poweroff"
 
 # full <root>: a laptop with every knob.
 full() {
-	local r=$1 p
+	r=$1
 	for p in 0 1; do
 		put "$r" "sys/devices/system/cpu/cpufreq/policy$p/scaling_governor" powersave
 		put "$r" "sys/devices/system/cpu/cpufreq/policy$p/scaling_available_governors" "performance powersave"
@@ -96,11 +99,11 @@ expect apply-full "$r" sys/class/power_supply/BAT0/charge_control_end_threshold 
 expect apply-full "$r" sys/class/power_supply/BAT0/charge_control_start_threshold 75 || ok=0
 expect apply-full "$r" sys/class/power_supply/hid-mouse/charge_control_end_threshold 100 || ok=0
 expect apply-full "$r" sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode 1 || ok=0
-grep -q 'cpufreq governor: set to performance (2)' <<<"$out" || { fail apply-full "no governor line: $out"; ok=0; }
-grep -q 'BAT0: charge limit set, stops at 80%, restarts below 75%' <<<"$out" || { fail apply-full "no charge line: $out"; ok=0; }
+has 'cpufreq governor: set to performance (2)' || { fail apply-full "no governor line: $out"; ok=0; }
+has 'BAT0: charge limit set, stops at 80%, restarts below 75%' || { fail apply-full "no charge line: $out"; ok=0; }
 [ "$ok" = 1 ] && pass apply-full
 run "$r" apply && rc=0 || rc=$?
-if [ "$rc" -eq 0 ] && ! grep -q 'set' <<<"$out" && grep -q 'cpufreq governor: already performance' <<<"$out"; then
+if [ "$rc" -eq 0 ] && ! has 'set' && has 'cpufreq governor: already performance'; then
 	pass apply-idempotent
 else
 	fail apply-idempotent "exit $rc: $out"
@@ -110,8 +113,8 @@ fi
 r=$tmp/empty
 mkdir -p "$r"
 run "$r" apply && rc=0 || rc=$?
-n=$(grep -c 'not on this machine, skipped' <<<"$out" || true)
-if [ "$rc" -eq 0 ] && [ "$n" -eq 8 ] && ! grep -q '<4>' <<<"$out"; then
+n=$(count 'not on this machine, skipped' || true)
+if [ "$rc" -eq 0 ] && [ "$n" -eq 8 ] && ! has '<4>'; then
 	pass apply-empty
 else
 	fail apply-empty "exit $rc, $n skipped: $out"
@@ -133,7 +136,7 @@ expect apply-not-offered "$r" sys/devices/system/cpu/cpufreq/policy0/scaling_gov
 expect apply-not-offered "$r" sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference balance_power || ok=0
 expect apply-not-offered "$r" sys/class/power_supply/BAT1/charge_control_end_threshold 80 || ok=0
 expect apply-not-offered "$r" sys/class/power_supply/BAT1/charge_control_start_threshold 75 || ok=0
-grep -q 'cpufreq governor: not on this machine, skipped' <<<"$out" || { fail apply-not-offered "$out"; ok=0; }
+has 'cpufreq governor: not on this machine, skipped' || { fail apply-not-offered "$out"; ok=0; }
 [ "$ok" = 1 ] && pass apply-not-offered
 
 # A knob that refuses the write (a read-only file; root writes it anyway).
@@ -146,7 +149,7 @@ if [ "$(id -u)" -ne 0 ]; then
 	[ "$rc" -eq 0 ] || { fail apply-refused "exit $rc"; ok=0; }
 	expect apply-refused "$r" sys/firmware/acpi/platform_profile balanced || ok=0
 	expect apply-refused "$r" sys/devices/system/cpu/cpufreq/policy0/scaling_governor performance || ok=0
-	grep -q '<4>arca-power: platform profile: 1 not set to performance' <<<"$out" || { fail apply-refused "$out"; ok=0; }
+	has '<4>arca-power: platform profile: 1 not set to performance' || { fail apply-refused "$out"; ok=0; }
 	[ "$ok" = 1 ] && pass apply-refused
 fi
 
@@ -171,7 +174,7 @@ expect lid-closed "$r" sys/class/backlight/intel_backlight/brightness 0 || ok=0
 expect lid-closed "$r" sys/class/backlight/intel_backlight/bl_power 4 || ok=0
 expect lid-closed "$r" sys/class/backlight/ddcci0/brightness 50 || ok=0
 expect lid-closed "$r" sys/class/backlight/ddcci0/bl_power 0 || ok=0
-grep -q 'lid closed: intel_backlight off' <<<"$out" || { fail lid-closed "$out"; ok=0; }
+has 'lid closed: intel_backlight off' || { fail lid-closed "$out"; ok=0; }
 run "$r" lid
 [ -z "$out" ] || { fail lid-closed "second step logged: $out"; ok=0; }
 expect lid-closed "$r" run/intel_backlight.brightness 4000 || ok=0
@@ -181,7 +184,7 @@ run "$r" lid
 ok=1
 expect lid-reopened "$r" sys/class/backlight/intel_backlight/brightness 4000 || ok=0
 expect lid-reopened "$r" sys/class/backlight/intel_backlight/bl_power 0 || ok=0
-grep -q 'lid open: intel_backlight on' <<<"$out" || { fail lid-reopened "$out"; ok=0; }
+has 'lid open: intel_backlight on' || { fail lid-reopened "$out"; ok=0; }
 [ "$ok" = 1 ] && pass lid-reopened
 put "$r" sys/class/backlight/intel_backlight/brightness 0
 run "$r" lid
@@ -213,6 +216,20 @@ state battery-none none
 r=$tmp/b-mains
 bat "$r" BAT0 Charging 3
 state battery-mains "mains 3"
+r=$tmp/b-laptop
+bat "$r" BAT0 "Not charging" 91
+put "$r" sys/class/power_supply/ADP1/type Mains
+put "$r" sys/class/power_supply/ADP1/online 1
+state battery-not-charging-on-ac "mains 91"
+put "$r" sys/class/power_supply/ADP1/online 0
+state battery-not-charging-unplugged "battery 91"
+bat "$r" BAT0 "Not charging" 4
+state battery-not-charging-empty "critical 4"
+r=$tmp/b-ac-online
+bat "$r" BAT0 Discharging 4
+put "$r" sys/class/power_supply/AC/type Mains
+put "$r" sys/class/power_supply/AC/online 1
+state battery-ac-online "mains 4"
 r=$tmp/b-ups
 bat "$r" BAT0 Discharging 50
 state battery-ups "battery 50"
@@ -242,34 +259,74 @@ put "$r" sys/class/power_supply/hid-pen/status Discharging
 put "$r" sys/class/power_supply/hid-pen/capacity 90
 state battery-energy-device "critical 4"
 
-# The watch loop: battery read every fifth lid poll, so five polls give one
-# critical reading and six give two.
+# wrun <iterations>: the watch loop on $r, output in $out.
+wrun() {
+	rm -f "$tmp/poweroffs"
+	out=$(ARCA_POWER_ROOT=$r ARCA_POWER_RUN=$r/run ARCA_POWER_POWEROFF=fake-poweroff ARCA_POWER_ITERATIONS=$1 \
+		PATH=$tmp/bin:$PATH dash "$script" watch 2>&1)
+}
+# poweroffs: how many times the loop powered off.
+poweroffs() { [ -e "$tmp/poweroffs" ] && wc -l < "$tmp/poweroffs" | tr -d ' ' || echo 0; }
+
+# The watch loop: the battery is read every fifth lid poll, so ten polls give
+# two critical readings and eleven give three.
 r=$tmp/w
 bat "$r" BAT0 Discharging 4
-rm -f "$tmp/poweroffs"
-out=$(ARCA_POWER_ROOT=$r ARCA_POWER_RUN=$r/run ARCA_POWER_POWEROFF=fake-poweroff ARCA_POWER_ITERATIONS=5 \
-	PATH=$tmp/bin:$PATH dash "$script" watch 2>&1)
-if [ ! -e "$tmp/poweroffs" ] && grep -q '<3>arca-power: battery critical, 4% and discharging' <<<"$out"; then
-	pass watch-one-critical
+wrun 10
+if [ "$(poweroffs)" = 0 ] && has '<3>arca-power: battery critical, 4% and discharging'; then
+	pass watch-two-critical
 else
-	fail watch-one-critical "$out"
+	fail watch-two-critical "$(poweroffs) poweroffs: $out"
 fi
-out=$(ARCA_POWER_ROOT=$r ARCA_POWER_RUN=$r/run ARCA_POWER_POWEROFF=fake-poweroff ARCA_POWER_ITERATIONS=16 \
-	PATH=$tmp/bin:$PATH dash "$script" watch 2>&1)
-if [ "$(cat "$tmp/poweroffs" 2>/dev/null)" = poweroff ] && grep -q '<2>arca-power: battery critical, 4% and discharging: clean poweroff' <<<"$out"; then
+wrun 16
+if [ "$(poweroffs)" = 1 ] && has '<2>arca-power: battery critical, 4% and discharging: clean poweroff'; then
 	pass watch-poweroff
 else
-	fail watch-poweroff "$(cat "$tmp/poweroffs" 2>/dev/null) / $out"
+	fail watch-poweroff "$(poweroffs) poweroffs: $out"
 fi
 r=$tmp/w-low
 bat "$r" BAT0 Discharging 15
-rm -f "$tmp/poweroffs"
-out=$(ARCA_POWER_ROOT=$r ARCA_POWER_RUN=$r/run ARCA_POWER_POWEROFF=fake-poweroff ARCA_POWER_ITERATIONS=16 \
-	PATH=$tmp/bin:$PATH dash "$script" watch 2>&1)
-if [ ! -e "$tmp/poweroffs" ] && [ "$(grep -c 'battery low, 15% and discharging' <<<"$out")" -eq 1 ]; then
+wrun 16
+if [ "$(poweroffs)" = 0 ] && [ "$(count 'battery low, 15% and discharging')" -eq 1 ]; then
 	pass watch-low-once
 else
 	fail watch-low-once "$out"
+fi
+# A Mains supply online: never a poweroff, whatever the battery says.
+r=$tmp/w-mains
+bat "$r" BAT0 Discharging 4
+put "$r" sys/class/power_supply/AC/type Mains
+put "$r" sys/class/power_supply/AC/online 1
+wrun 16
+if [ "$(poweroffs)" = 0 ] && ! has critical; then
+	pass watch-mains-online
+else
+	fail watch-mains-online "$(poweroffs) poweroffs: $out"
+fi
+# Mains offline and the firmware's status Unknown: discharging.
+r=$tmp/w-unknown
+put "$r" sys/class/power_supply/AC/type Mains
+put "$r" sys/class/power_supply/AC/online 0
+bat "$r" BAT0 Unknown 15
+wrun 1
+has 'battery low, 15% and discharging' || fail watch-unknown "no warning: $out"
+bat "$r" BAT0 Unknown 3
+wrun 16
+if [ "$(poweroffs)" = 1 ] && has 'battery critical, 3% and discharging: clean poweroff'; then
+	pass watch-unknown
+else
+	fail watch-unknown "$(poweroffs) poweroffs: $out"
+fi
+# A capacity of 0 that energy_now/energy_full (60%) disagrees with.
+r=$tmp/w-glitch
+bat "$r" BAT0 Discharging 0
+put "$r" sys/class/power_supply/BAT0/energy_now 30000
+put "$r" sys/class/power_supply/BAT0/energy_full 50000
+wrun 16
+if [ "$(poweroffs)" = 0 ] && has 'on battery at 60%'; then
+	pass watch-capacity-glitch
+else
+	fail watch-capacity-glitch "$(poweroffs) poweroffs: $out"
 fi
 
 exit "$failed"
