@@ -5,12 +5,12 @@
 #   vm-test.sh --project arcaos-* --vm <name>
 #              (--from-builder <vm> | --artifacts <dir>)
 #              --seed-apps <a,b,...> --provider debug|images [--server-url <url>]
-#              --checks stock|tracer|none [--stop-builder] [--keep]
+#              --checks stock|tracer|console|none [--stop-builder] [--keep]
 #   vm-test.sh --project arcaos-* --vm <name> --from-builder <vm>
 #              --seed-apps <a,b,...> --provider images --server-url <url>
 #              --checks wifi [--stop-builder] [--keep]
 #   vm-test.sh --project arcaos-* --vm <name> --install-media <dir>
-#              --checks stock|tracer|none [--keep]
+#              --checks stock|tracer|console|none [--keep]
 #
 # The whole run holds the builder lock, a flock on $ARCA_BUILDER_LOCK (default
 # ${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock), so one builder or test VM run
@@ -69,6 +69,8 @@
 #           zfs (modprobe zfs, with lockdown integrity or confidentiality),
 #           kernel-pkg (base.manifest has linux-image-<krel> at the BUILDINFO
 #           version and no Zabbly linux-image-*-zabbly+)
+#   console stock, plus scripts/arca/test/console/run.sh (its cases: header,
+#           instances, frame-replaced): the console on the VM's screen
 #   wifi    boot, then scripts/arca/test/wifi/run.sh (its cases: first-boot-gate,
 #           rank, rank-6ghz, sae, secret, regdb, firmware against the build's
 #           wifi-firmware.txt, debian-units).
@@ -187,8 +189,8 @@ images) [ -n "$server_url" ] || refuse "--provider images needs --server-url" ;;
 *) refuse "--provider must be debug or images" ;;
 esac
 case "$checks" in
-stock | tracer | wifi | none) ;;
-*) refuse "--checks must be stock, tracer, wifi or none" ;;
+stock | tracer | console | wifi | none) ;;
+*) refuse "--checks must be stock, tracer, console, wifi or none" ;;
 esac
 if [ "$checks" = wifi ]; then
 	[ -z "$media" ] || refuse "--checks wifi refuses --install-media"
@@ -771,11 +773,18 @@ wifi_checks() {
 	[ ! -e "$leak" ] || result FAIL wifi-output "run.sh printed a secret-shaped line (withheld)"
 }
 
+console_checks() {
+	local rc=0
+	"$(dirname "$0")/test/console/run.sh" --project "$project" --vm "$vm" || rc=$?
+	[ "$rc" -eq 0 ] || result FAIL console "run.sh exited $rc"
+}
+
 if [ "$checks" = wifi ]; then
 	wifi_checks
 elif [ "$checks" != none ]; then
 	stock_checks
 	if [ "$checks" = tracer ]; then tracer_checks; fi
+	if [ "$checks" = console ]; then console_checks; fi
 	if [ -n "$media" ]; then install_checks; fi
 fi
 
