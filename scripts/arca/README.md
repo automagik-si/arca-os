@@ -183,6 +183,34 @@ When it asks for the install media to be removed, remove the stick. The laptop r
 which downloads `incus` and `arca` from the server and installs them. Stop the server once both are listed. If the
 server could not be reached during that boot, every later boot tries again until a primary application is installed.
 
+## Releasing updates to nodes
+
+Once a build exists at `/srv/artifacts/os/<version>/`, publish it into the update tree that nodes check. The tree uses
+the layout and the signed `index.sjson`/`update.sjson` that incus-osd's `images` provider reads; both are signed with
+the persistent update key, so any node installed from a build with the same CA verifies them over plain `http`.
+
+```sh
+# On the build host. Publishes the OS (UKI + usr images) and the incus and arca
+# applications, and copies the tree to a local directory to serve.
+scripts/arca/publish-update.sh --version <version> --serve-dir <dir> --channel stable
+
+# Serve that directory to the node's network. Any static file server works; the
+# LAN address and port are chosen here, at serve time, not baked into anything:
+python3 -m http.server --bind <lan-address> --directory <dir> <port>
+```
+
+A node whose provider `server_url` is `http://<lan-address>:<port>` and whose update check frequency is a real interval
+then finds and applies the newest build in its channel on its own. Republishing a later `--version` into the same tree
+adds it; the node moves to it at its next check (and reboots if `auto_reboot` is set). The OS files make it an OS
+update; leave them out (publish only applications) by passing `--apps` with no OS — the usual case is to publish both.
+
+New sticks that should keep themselves current are written with `tracer-installer.sh --auto-updates`, which seeds the
+update policy as check-frequency `1h` and `auto_reboot true` (the default is `never`/`false`, for a one-off test
+stick). Valid check frequencies are `never` or any positive Go duration (`30m`, `1h`, `24h`).
+
+`publish-build.sh` is the builder-side half that `publish-update.sh` runs through `in-builder.sh`; it signs and
+verifies the tree inside the builder. Keep the served tree and the persistent CA backed up together.
+
 ## Component map
 
 | Component | Files |
