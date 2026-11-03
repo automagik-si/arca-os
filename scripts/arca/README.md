@@ -277,6 +277,7 @@ prove the node picks it up on its own.
 | Binder kernel from Zabbly's tree | `kernel/`, `mkosi.sandbox/etc/apt/preferences.d/arca-kernel.pref` |
 | `arca` as an IncusOS application | `incus-osd/internal/applications/app_arca*.go`, `mkosi.images/arca/`, `scripts/arca/{build-arca.sh,arca.version,arca.commit}` |
 | Name, update URL, notice, patch-stack guard | `NOTICE`, `scripts/arca/PATCHES.md`, `scripts/arca/check-patch-stack.sh` |
+| Always-on power profile ([POWER.md](POWER.md)) | `mkosi.images/base/mkosi.extra/usr/libexec/arca-power`, `mkosi.images/base/mkosi.extra/usr/lib/{systemd,udev}/**/arca-power*`, `scripts/arca/test/power.sh` |
 | Signing keys | `scripts/arca/keys/` |
 | Update server | `scripts/arca/r2/` |
 | Kernel apt repository | `kernel/publish-apt.sh`, `.github/workflows/arca-kernel.yml` |
