@@ -53,9 +53,10 @@ func GetNetwork(_ context.Context) (*api.SystemNetworkConfig, error) {
 	return &config.SystemNetworkConfig, nil
 }
 
-// NetworkConfigHasEmptyDevices checks if any device (interface, bond, or vlan) is defined in the given config.
+// NetworkConfigHasEmptyDevices checks if no device (interface, bond, or vlan) is defined in the given config,
+// and no Wi-Fi network is saved: a config with a saved Wi-Fi network has a device.
 func NetworkConfigHasEmptyDevices(networkCfg api.SystemNetworkConfig) bool {
-	return len(networkCfg.Interfaces) == 0 && len(networkCfg.Bonds) == 0 && len(networkCfg.VLANs) == 0
+	return len(networkCfg.Interfaces) == 0 && len(networkCfg.Bonds) == 0 && len(networkCfg.VLANs) == 0 && !networkCfg.Wireless.HasNetworks()
 }
 
 // getDefaultNetworkConfig returns a minimal network configuration, with every interface

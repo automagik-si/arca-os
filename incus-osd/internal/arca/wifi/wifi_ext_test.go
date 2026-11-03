@@ -31,7 +31,7 @@ func fakeSys(t *testing.T, name string, isWifi bool) string {
 	return root
 }
 
-func TestValidateZeroAddressesWiredOnly(t *testing.T) {
+func TestValidateZeroAddressesWiredOnly(t *testing.T) { //nolint:paralleltest // points the package's sysfs at a fake tree
 	wiredOnly := func() *api.SystemNetworkConfig {
 		return &api.SystemNetworkConfig{
 			Interfaces: []api.SystemNetworkInterface{{Name: "enp1s0", Hwaddr: "00:16:3e:00:00:01"}},
@@ -65,7 +65,7 @@ func TestValidateZeroAddressesWiredOnly(t *testing.T) {
 	}
 }
 
-func TestValidateWifiOnlyDefaults(t *testing.T) {
+func TestValidateWifiOnlyDefaults(t *testing.T) { //nolint:paralleltest // points the package's sysfs at a fake tree
 	cfg := &api.SystemNetworkConfig{Wireless: wifi.Defaults()}
 
 	err := network.ValidateNetworkConfiguration(context.TODO(), cfg, false)

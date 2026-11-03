@@ -16,5 +16,7 @@ incus-osd/internal/seed/network.go
 incus-osd/internal/nftables/nft.go
 incus-osd/internal/tui/tui.go
 incus-osd/cmd/incus-osd/main.go
+# The generated REST API specification, which documents the Wi-Fi types.
+doc/rest-api.yaml
 # The always-on power profile: the console never blanks on a timer.
 mkosi.conf

@@ -17,8 +17,10 @@
 # vm-test.sh, the kernel's BUILDINFO as kernel.BUILDINFO with --local-kernel,
 # and /srv/artifacts/os/latest points there.
 # It also copies the base image's Wi-Fi firmware list (usr/share/arca-wifi/
-# firmware.txt in the base tree) there as wifi-firmware.txt and prints its
-# first line, "wifi-firmware: <files> files, <bytes> bytes raw". It reads the
+# firmware.txt in the base tree) there as wifi-firmware.txt and the GPU
+# firmware list (usr/share/arca-gpu/firmware.txt) as gpu-firmware.txt, and
+# prints the first line of each ("wifi-firmware: ..." and "gpu-firmware: ...").
+# It reads the
 # usr erofs filesystem's block count and block size from its superblock (the
 # usr image file is always the partition's full size), prints
 # "usr: <MiB> MiB used of <MiB> MiB" and the usr image and UKI file sizes, and
@@ -53,6 +55,14 @@ if [ ! -f mkosi.conf ] || [ ! -f Makefile ]; then die "not at the top of an Arca
 command -v mkosi >/dev/null || die "mkosi is not on PATH"
 osname=$(sed -n 's/^ImageId=//p' mkosi.conf)
 [ -n "$osname" ] || die "no ImageId in mkosi.conf"
+
+# Embed the persistent test CA. This copies the one, stable CA into the
+# checkout before `make`, so upstream's generate-test-certs never regenerates
+# one, and every build embeds the same update CA and Secure Boot signing key
+# that nodes already installed from an earlier build trust. It refuses the
+# build when the CA set is missing rather than silently making a throwaway one.
+log "injecting the persistent test CA"
+scripts/arca/inject-test-ca.sh
 
 shopt -s nullglob
 kdebs=()
@@ -109,6 +119,9 @@ files+=(test/metadata.tar.xz)
 fwlist=mkosi.output/base/usr/share/arca-wifi/firmware.txt
 [ -s "$fwlist" ] || die "no $fwlist (the base image's Wi-Fi firmware list)"
 head -n 1 "$fwlist"
+gpulist=mkosi.output/base/usr/share/arca-gpu/firmware.txt
+[ -s "$gpulist" ] || die "no $gpulist (the base image's GPU firmware list)"
+head -n 1 "$gpulist"
 # The usr partition is a fixed size, so its image file says nothing about use.
 # erofs keeps its superblock at byte 1024: blkszbits (u8) at +12, blocks
 # (le32) at +36.
@@ -142,6 +155,7 @@ rm -rf "$dest.tmp"
 install -d -m 0755 "$dest.tmp"
 cp --sparse=always -- "${files[@]}" "$dest.tmp/"
 cp -- "$fwlist" "$dest.tmp/wifi-firmware.txt"
+cp -- "$gpulist" "$dest.tmp/gpu-firmware.txt"
 if [ -n "$kdir" ]; then
 	cp -- "$kdir/BUILDINFO" "$dest.tmp/kernel.BUILDINFO"
 fi

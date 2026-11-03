@@ -784,7 +784,8 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		skipInitialUpdateCheck = false
 	}
 
-	if err := wifiui.WaitOnline(ctx, s); err != nil {
+	err = wifiui.WaitOnline(ctx, s)
+	if err != nil {
 		return err
 	}
 

@@ -26,7 +26,9 @@ func drawPicker(t *testing.T, p *picker) tcell.SimulationScreen {
 	t.Helper()
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
+
+	err := screen.Init()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -42,24 +44,32 @@ func screenLine(screen tcell.SimulationScreen, y int) string {
 	var b strings.Builder
 
 	for x := range testWidth {
-		r, _, _, _ := screen.GetContent(x, y)
-		b.WriteRune(r)
+		b.WriteString(cellAt(screen, x, y))
 	}
 
 	return b.String()
 }
 
+// cellAt returns the text of one cell of a simulated screen.
+func cellAt(screen tcell.SimulationScreen, x int, y int) string {
+	cell, _, _ := screen.Get(x, y)
+
+	return cell
+}
+
 // column returns the cell column at which sub starts in a row of the screen, or -1.
 func column(line string, sub string) int {
-	i := strings.Index(line, sub)
-	if i < 0 {
+	before, _, ok := strings.Cut(line, sub)
+	if !ok {
 		return -1
 	}
 
-	return utf8.RuneCountInString(line[:i])
+	return utf8.RuneCountInString(before)
 }
 
 func TestPickerRows(t *testing.T) {
+	t.Parallel()
+
 	wpa := api.SystemNetworkWirelessSecurityWPAPersonal
 	open := api.SystemNetworkWirelessSecurityOpen
 
@@ -128,7 +138,7 @@ func TestPickerRows(t *testing.T) {
 			t.Fatalf("%q is not on row %d", sub, y)
 		}
 
-		_, _, style, _ := screen.GetContent(x, y)
+		_, style, _ := screen.Get(x, y)
 		color, _, _ := style.Decompose()
 
 		return color
@@ -159,8 +169,11 @@ func TestPickerRows(t *testing.T) {
 	}
 
 	t.Run("unsafe-name", func(t *testing.T) {
+		t.Parallel()
+
 		// A tag, a control byte and an escape sequence in a name are shown as text.
 		const name = "a[red]b\x07c\x1b[31md"
+
 		const shown = "a[red]b\uFFFDc\uFFFD[31md"
 
 		odd := []wifi.Entry{
@@ -178,8 +191,10 @@ func TestPickerRows(t *testing.T) {
 		find := func(screen tcell.SimulationScreen, sub string) string {
 			for y := range testHeight {
 				for x := range testWidth {
-					if r, _, _, _ := screen.GetContent(x, y); r < 0x20 || r == 0x7f {
-						t.Fatalf("a control character %#x at %d,%d", r, x, y)
+					for _, r := range cellAt(screen, x, y) {
+						if r < 0x20 || r == 0x7f {
+							t.Fatalf("a control character %#x at %d,%d", r, x, y)
+						}
 					}
 				}
 
@@ -226,13 +241,15 @@ func indexOf(entries []wifi.Entry, ssid string) int {
 }
 
 func TestPickerNeverRendersSecret(t *testing.T) {
+	t.Parallel()
+
 	p := newPicker(context.Background(), &state.State{}, &inlineOverlay{})
 	p.setEntries([]wifi.Entry{
 		{SSID: "Casa", Security: api.SystemNetworkWirelessSecurityWPAPersonal, SAE: true, PSK: true, Generation: 6, Band: "5", Width: 80, Signal: -50, Selectable: true},
 	}, nil)
 	p.choose(0)
 
-	const secret = "Tr0ub4dor&3-horse"
+	const secret = "Tr0ub4dor&3-horse" //nolint:gosec // G101: a test fixture that never leaves the test
 
 	for _, r := range secret {
 		p.field.InputHandler()(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone), func(tview.Primitive) {})
@@ -265,6 +282,8 @@ func TestPickerNeverRendersSecret(t *testing.T) {
 }
 
 func TestPickerOtherNetwork(t *testing.T) {
+	t.Parallel()
+
 	savedApply := applyFunc
 
 	t.Cleanup(func() { applyFunc = savedApply })
