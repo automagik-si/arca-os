@@ -5,7 +5,7 @@
 # it).
 #
 #   tracer-installer.sh --server-url <url> [--client-cert <file>|-]
-#                       [--force-install] [--out <dir>]
+#                       [--force-install] [--auto-updates] [--out <dir>]
 #
 # --server-url is required. It is the URL that will serve updates/ (below) as
 # its root, such as http://<address>:<port>, and it goes into the image's seed.
@@ -18,7 +18,9 @@
 #       install (force_install only with --force-install; no forced reboot,
 #       so it waits for the stick to be removed), applications incus and arca,
 #       provider images with that server_url, update (channel stable,
-#       check_frequency never, auto_reboot false), and with --client-cert,
+#       check_frequency never, auto_reboot false; --auto-updates instead sets
+#       check_frequency 1h and auto_reboot true, so the stick keeps itself
+#       current), and with --client-cert,
 #       incus (apply_defaults, that certificate trusted as a client). It
 #       installs onto the one disk it finds, and refuses when it finds none
 #       or several.
@@ -52,12 +54,13 @@ log() { printf 'tracer-installer: %s\n' "$*" >&2; }
 die() { printf 'tracer-installer: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'tracer-installer: refused: %s\n' "$*" >&2; exit 2; }
 
-cert_src='' out='' force_install=false server_url=''
+cert_src='' out='' force_install=false server_url='' auto_updates=false
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--server-url) [ $# -ge 2 ] || usage; server_url=$2; shift 2 ;;
 	--client-cert) [ $# -ge 2 ] || usage; cert_src=$2; shift 2 ;;
 	--force-install) force_install=true; shift ;;
+	--auto-updates) auto_updates=true; shift ;;
 	--out) [ $# -ge 2 ] || usage; out=$2; shift 2 ;;
 	-h | --help) usage ;;
 	*) refuse "unknown argument: $1" ;;
@@ -170,7 +173,12 @@ seed=$stage/seed
 jq -n --argjson f "$force_install" '{version: "1", force_install: $f, force_reboot: false}' > "$seed/install.json"
 jq -n '{version: "1", applications: ($ARGS.positional | map({name: .}))}' --args "${APPS[@]}" > "$seed/applications.json"
 jq -n --arg u "$server_url" '{version: "1", name: "images", config: {server_url: $u}}' > "$seed/provider.json"
-jq -n --arg c "$CHANNEL" '{version: "1", auto_reboot: false, channel: $c, check_frequency: "never"}' > "$seed/update.json"
+# A new stick that should keep itself current: check about hourly and reboot
+# into a new build on its own. The default stays "never" so a one-off test
+# installer does not keep reaching for an update server that isn't there.
+if $auto_updates; then upd_freq=1h upd_reboot=true; else upd_freq=never upd_reboot=false; fi
+jq -n --arg c "$CHANNEL" --argjson r "$upd_reboot" --arg f "$upd_freq" \
+	'{version: "1", auto_reboot: $r, channel: $c, check_frequency: $f}' > "$seed/update.json"
 seed_files=(install.json applications.json provider.json update.json)
 if [ -n "$cert" ]; then
 	jq -n --rawfile c "$cert" \
