@@ -12,6 +12,11 @@
 # VM checkout's local identity (passed on stdin, never printed), so a build
 # there can read them; otherwise the VM checkout has none.
 # A stopped builder is started first, if the host has the memory for it.
+# From the worktree check on, the run holds the builder lock, a flock on
+# $ARCA_BUILDER_LOCK (default ${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock),
+# so one builder or test VM run goes at a time; while another run holds it, it
+# prints "waiting for the builder lock" and waits. A caller that holds the lock
+# already sets ARCA_BUILDER_LOCK_HELD=1, and the run does not take it again.
 #
 # Exit codes: the command's, or 2 when refused (dirty tree, bad project, usage).
 set -euo pipefail
@@ -22,7 +27,7 @@ VM=arcaos-builder
 MIN_MEM_GIB=20
 VM_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'in-builder: %s\n' "$*" >&2; }
 die() { printf 'in-builder: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'in-builder: refused: %s\n' "$*" >&2; exit 2; }
@@ -45,6 +50,16 @@ case "$PROJECT" in
 arcaos-*) ;;
 *) refuse "project '$PROJECT' does not start with arcaos-" ;;
 esac
+
+# The builder lock (see the header), before anything reads the worktree or calls incus.
+if [ "${ARCA_BUILDER_LOCK_HELD:-}" != 1 ]; then
+	exec 9>>"${ARCA_BUILDER_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock}"
+	if ! flock -n 9; then
+		log "waiting for the builder lock"
+		flock 9
+	fi
+	export ARCA_BUILDER_LOCK_HELD=1
+fi
 
 top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) || refuse "$WT is not a git worktree"
 if [ -n "$(git -C "$top" status --porcelain)" ]; then
