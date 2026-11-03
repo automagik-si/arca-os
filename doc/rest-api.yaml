@@ -533,7 +533,24 @@ definitions:
                     $ref: '#/definitions/SystemNetworkWireguard'
                 type: array
                 x-go-name: Wireguard
+            wireless:
+                $ref: '#/definitions/SystemNetworkWireless'
         title: SystemNetworkConfig represents the user modifiable network configuration.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemNetworkConnectivity:
+        properties:
+            last_check:
+                format: date-time
+                type: string
+                x-go-name: LastCheck
+            online:
+                type: boolean
+                x-go-name: Online
+            reason:
+                type: string
+                x-go-name: Reason
+        title: SystemNetworkConnectivity holds the result of the last connectivity check.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemNetworkDNS:
@@ -724,6 +741,8 @@ definitions:
                 x-go-name: Type
             wireguard:
                 $ref: '#/definitions/SystemNetworkWireguardState'
+            wireless:
+                $ref: '#/definitions/SystemNetworkWirelessState'
         title: SystemNetworkInterfaceState holds state information about a specific network interface.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
@@ -844,6 +863,8 @@ definitions:
             configuration_in_process:
                 type: boolean
                 x-go-name: ConfigurationInProcess
+            connectivity:
+                $ref: '#/definitions/SystemNetworkConnectivity'
             interfaces:
                 additionalProperties:
                     $ref: '#/definitions/SystemNetworkInterfaceState'
@@ -1016,6 +1037,78 @@ definitions:
                 type: string
                 x-go-name: PublicKey
         title: SystemNetworkWireguardState holds state information about a specific wireguard interface.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemNetworkWireless:
+        description: |-
+            SystemNetworkWireless holds the Wi-Fi configuration. Networks are keyed by
+            network, not by device: any Wi-Fi device present may join any of them.
+        properties:
+            addresses:
+                items:
+                    type: string
+                type: array
+                x-go-name: Addresses
+            country:
+                type: string
+                x-go-name: Country
+            firewall_rules:
+                items:
+                    $ref: '#/definitions/SystemNetworkFirewallRule'
+                type: array
+                x-go-name: FirewallRules
+            networks:
+                items:
+                    $ref: '#/definitions/SystemNetworkWirelessNetwork'
+                type: array
+                x-go-name: Networks
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemNetworkWirelessNetwork:
+        properties:
+            bssid:
+                type: string
+                x-go-name: BSSID
+            hidden:
+                type: boolean
+                x-go-name: Hidden
+            passphrase:
+                type: string
+                x-go-name: Passphrase
+            security:
+                type: string
+                x-go-name: Security
+            ssid:
+                type: string
+                x-go-name: SSID
+        title: SystemNetworkWirelessNetwork is one saved network. List order is priority, first is highest.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemNetworkWirelessState:
+        properties:
+            bssid:
+                type: string
+                x-go-name: BSSID
+            frequency:
+                format: int64
+                type: integer
+                x-go-name: Frequency
+            generation:
+                format: int64
+                type: integer
+                x-go-name: Generation
+            signal:
+                format: int64
+                type: integer
+                x-go-name: Signal
+            ssid:
+                type: string
+                x-go-name: SSID
+            width:
+                format: int64
+                type: integer
+                x-go-name: Width
+        title: SystemNetworkWirelessState holds the association of one Wi-Fi link.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemNextBootVersion:
