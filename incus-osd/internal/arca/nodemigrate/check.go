@@ -70,7 +70,7 @@ func preflight(ctx context.Context, version string, source string) (*plan, error
 		return nil, fmt.Errorf("reading the running UKI: %w", err)
 	}
 
-	say("running %s (%s)", p.ukis.CurrentVersion, p.ukis.CurrentFilepath)
+	sayf("running %s (%s)", p.ukis.CurrentVersion, p.ukis.CurrentFilepath)
 
 	if strings.Compare(version, p.ukis.CurrentVersion) <= 0 {
 		return nil, fmt.Errorf("version %s is not newer than the running %s", version, p.ukis.CurrentVersion)
@@ -93,7 +93,7 @@ func preflight(ctx context.Context, version string, source string) (*plan, error
 		return nil, err
 	}
 
-	say("source: %d OS files and applications %s for %s", len(p.osFiles), strings.Join(p.apps, ","), version)
+	sayf("source: %d OS files and applications %s for %s", len(p.osFiles), strings.Join(p.apps, ","), version)
 
 	p.oldKey, err = os.ReadFile(pcrPublicKeyPath)
 	if err != nil {
@@ -106,7 +106,7 @@ func preflight(ctx context.Context, version string, source string) (*plan, error
 	}
 
 	if !bytes.Equal(bytes.TrimSpace(p.oldKey), bytes.TrimSpace(p.newKey)) {
-		say("the new UKI signs PCR11 with a different key; the PCR11 policy will be bound to it")
+		sayf("the new UKI signs PCR11 with a different key; the PCR11 policy will be bound to it")
 	}
 
 	err = checkRecoveryKeys(ctx)
@@ -136,7 +136,7 @@ func preflight(ctx context.Context, version string, source string) (*plan, error
 
 	credentials, _ := os.ReadDir("/boot/loader/credentials")
 	if len(credentials) > 0 {
-		say("the ESP holds %d pcrlock credential files; they are removed before the re-seal", len(credentials))
+		sayf("the ESP holds %d pcrlock credential files; they are removed before the re-seal", len(credentials))
 	}
 
 	err = checkSpace(p)
@@ -160,7 +160,7 @@ func findOSFiles(version string, source string) (map[string]string, error) {
 	for _, e := range entries {
 		name := e.Name()
 
-		kind := ""
+		var kind string
 
 		switch {
 		case strings.HasSuffix(name, "_"+version+".efi"):
@@ -221,7 +221,7 @@ func checkRecoveryKeys(ctx context.Context) error {
 		names = append(names, name)
 	}
 
-	say("encrypted volumes %s each have a recovery key file", strings.Join(names, ","))
+	sayf("encrypted volumes %s each have a recovery key file", strings.Join(names, ","))
 
 	return nil
 }
@@ -293,38 +293,9 @@ func recomputePCR4(events []tcg.Event, in pcr4Inputs) ([]byte, []string, error) 
 			if peName != "" {
 				paths = append(paths, peName)
 
-				isUKI := strings.HasPrefix(peName, "/boot/EFI/Linux/")
-				if in.foldUKIPath {
-					isUKI = strings.HasPrefix(strings.ToLower(peName), "/boot/efi/linux/")
-				}
-
-				isLoader := false
-
-				for _, l := range loaders {
-					if strings.EqualFold(peName, l) {
-						isLoader = true
-					}
-				}
-
-				var h []byte
-
-				switch {
-				case isUKI && in.uki != "":
-					h, err = fileAuthenticode(in.uki)
-				case isLoader && in.loader != nil:
-					h, err = bytesAuthenticode(in.loader)
-				default:
-					h, err = fileAuthenticode(peName)
-				}
-
-				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				digest, err = bootApplicationDigest(peName, in, loaders, digest)
+				if err != nil {
 					return nil, nil, err
-				}
-
-				// A binary not on the ESP (an early firmware or BMC binary)
-				// keeps its logged digest, as incus-osd does.
-				if err == nil {
-					digest = h
 				}
 			}
 		}
@@ -333,6 +304,48 @@ func recomputePCR4(events []tcg.Event, in pcr4Inputs) ([]byte, []string, error) 
 	}
 
 	return pcr, paths, nil
+}
+
+// bootApplicationDigest returns the digest PCR4 extends for one boot application:
+// the binary the firmware loaded, rehashed, or the logged digest when the binary
+// is not on the ESP (an early firmware or BMC binary), as incus-osd does.
+func bootApplicationDigest(peName string, in pcr4Inputs, loaders []string, logged []byte) ([]byte, error) {
+	isUKI := strings.HasPrefix(peName, "/boot/EFI/Linux/")
+	if in.foldUKIPath {
+		isUKI = strings.HasPrefix(strings.ToLower(peName), "/boot/efi/linux/")
+	}
+
+	isLoader := false
+
+	for _, l := range loaders {
+		if strings.EqualFold(peName, l) {
+			isLoader = true
+		}
+	}
+
+	var (
+		h   []byte
+		err error
+	)
+
+	switch {
+	case isUKI && in.uki != "":
+		h, err = fileAuthenticode(in.uki)
+	case isLoader && in.loader != nil:
+		h, err = bytesAuthenticode(in.loader)
+	default:
+		h, err = fileAuthenticode(peName)
+	}
+
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return logged, nil
+		}
+
+		return nil, err
+	}
+
+	return h, nil
 }
 
 // eventFilePath returns the ESP path ("/boot/...") of a boot application
@@ -413,7 +426,7 @@ func checkPCR4(p *plan) error {
 		return fmt.Errorf("recomputing PCR4: %w", err)
 	}
 
-	say("event log: validated; PCR4 %s; boot applications %s", short(actual), strings.Join(paths, " "))
+	sayf("event log: validated; PCR4 %s; boot applications %s", short(actual), strings.Join(paths, " "))
 
 	if !bytes.Equal(again, actual) {
 		return fmt.Errorf("rehashing the ESP's boot binaries gives PCR4 %s, not the measured %s; the re-seal could not predict the next boot", short(again), short(actual))
@@ -448,7 +461,7 @@ func checkPCR4(p *plan) error {
 		}
 	}
 
-	say("PCR4 for the new boot loader and UKI: %s", short(predicted))
+	sayf("PCR4 for the new boot loader and UKI: %s", short(predicted))
 
 	return nil
 }
@@ -576,7 +589,7 @@ func checkSpace(p *plan) error {
 
 		free := int64(sfs.Bavail) * sfs.Bsize //nolint:gosec
 
-		say("space on %s for %s: needs %d MiB, %d MiB free (+%d MiB freed first)",
+		sayf("space on %s for %s: needs %d MiB, %d MiB free (+%d MiB freed first)",
 			t.path, strings.Join(t.what, " and "), t.need/mib, free/mib, t.reclaim/mib)
 
 		if free+t.reclaim < t.need {

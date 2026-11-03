@@ -310,5 +310,13 @@ func ApplyInputFilters(ctx context.Context, networkCfg *api.SystemNetworkConfig)
 		}
 	}
 
+	// The wireless firewall rules apply to every Wi-Fi link, whatever its udev name.
+	if networkCfg.Wireless != nil {
+		err = applyFirewall("\"wl*\"", networkCfg.Wireless.FirewallRules)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

@@ -9,6 +9,8 @@ import (
 )
 
 func TestRenderSupplicantVariants(t *testing.T) {
+	t.Parallel()
+
 	const wpa = api.SystemNetworkWirelessSecurityWPAPersonal
 
 	open := api.SystemNetworkWirelessSecurityOpen
@@ -28,6 +30,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	}
 
 	t.Run("globals", func(t *testing.T) {
+		t.Parallel()
+
 		got := render(nil)
 		for _, line := range globals {
 			if !strings.Contains(got, line) {
@@ -41,6 +45,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	})
 
 	t.Run("sae alone", func(t *testing.T) {
+		t.Parallel()
+
 		// Seven characters are outside 8-63 printable ASCII, so the network is SAE only.
 		got := render(&api.SystemNetworkWireless{Networks: []api.SystemNetworkWirelessNetwork{{SSID: "Solo", Security: wpa, Passphrase: "short7x"}}})
 		for _, want := range []string{"\tkey_mgmt=SAE\n\tieee80211w=1\n", "\tsae_password=" + hex.EncodeToString([]byte("short7x")) + "\n"} {
@@ -55,6 +61,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	})
 
 	t.Run("open", func(t *testing.T) {
+		t.Parallel()
+
 		got := render(&api.SystemNetworkWireless{Networks: []api.SystemNetworkWirelessNetwork{{SSID: "Aberta", Security: open}}})
 		if !strings.Contains(got, "\tkey_mgmt=NONE\n}\n") {
 			t.Error("the open network has no key_mgmt=NONE block")
@@ -68,6 +76,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	})
 
 	t.Run("hidden and pinned", func(t *testing.T) {
+		t.Parallel()
+
 		got := render(&api.SystemNetworkWireless{Networks: []api.SystemNetworkWirelessNetwork{
 			{SSID: "Oculta", Security: open, Hidden: true},
 			{SSID: "Fixa", Security: open, BSSID: "02:AA:BB:CC:DD:EE"},
@@ -82,6 +92,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	})
 
 	t.Run("country", func(t *testing.T) {
+		t.Parallel()
+
 		with := render(&api.SystemNetworkWireless{Country: "US"})
 		if !strings.Contains(with, "country=US\n") {
 			t.Error("a set country is not rendered")
@@ -93,6 +105,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	})
 
 	t.Run("priority", func(t *testing.T) {
+		t.Parallel()
+
 		got := render(&api.SystemNetworkWireless{Networks: []api.SystemNetworkWirelessNetwork{
 			{SSID: "Um", Security: open}, {SSID: "Dois", Security: open}, {SSID: "Tres", Security: open},
 		}})
@@ -110,6 +124,8 @@ func TestRenderSupplicantVariants(t *testing.T) {
 	})
 
 	t.Run("names as hex", func(t *testing.T) {
+		t.Parallel()
+
 		// Quotes, spaces and non-ASCII UTF-8 must reach the file only as hex.
 		ssid := "Café \"one\" two"
 

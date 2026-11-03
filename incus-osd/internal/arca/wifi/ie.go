@@ -76,7 +76,11 @@ func ParseIEs(ies []byte) Caps {
 				heW = heWidth(body)
 			case ieExtEHTOperation:
 				ehtW = ehtWidth(body)
+			default:
+				// An extension element this parser does not use.
 			}
+		default:
+			// An element this parser does not use.
 		}
 	}
 
@@ -89,6 +93,8 @@ func ParseIEs(ies []byte) Caps {
 		caps.Width = vhtW
 	case htW > 0:
 		caps.Width = htW
+	default:
+		// No operation element states a width; it stays 20 MHz.
 	}
 
 	return caps

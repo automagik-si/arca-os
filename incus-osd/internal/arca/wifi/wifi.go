@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -170,68 +169,6 @@ func PSKCompatible(p string) bool {
 	return true
 }
 
-// Validate checks the wireless object of a network configuration. No error carries
-// a passphrase. requireValidMAC and sysRoot say whether this machine's hardware is
-// looked at; this version checks none.
-func Validate(cfg *api.SystemNetworkConfig, requireValidMAC bool, sysRoot string, validateFirewall func([]api.SystemNetworkFirewallRule) error) error { //nolint:revive
-	_, _ = requireValidMAC, sysRoot
-
-	if cfg == nil || cfg.Wireless == nil {
-		return nil
-	}
-
-	w := cfg.Wireless
-
-	for i, address := range w.Addresses {
-		if !slices.Contains([]string{"dhcp4", "dhcp6", "slaac"}, address) {
-			return fmt.Errorf("wireless address %d: %q is not dhcp4, dhcp6 or slaac", i, address)
-		}
-	}
-
-	if w.Country != "" && (len(w.Country) != 2 || strings.ToUpper(w.Country) != w.Country || !isLetters(w.Country)) {
-		return fmt.Errorf("wireless country %q is not an ISO 3166 alpha-2 code", w.Country)
-	}
-
-	if validateFirewall != nil {
-		err := validateFirewall(w.FirewallRules)
-		if err != nil {
-			return fmt.Errorf("wireless %w", err)
-		}
-	}
-
-	for i, n := range w.Networks {
-		if !SSIDValid(n.SSID) {
-			return fmt.Errorf("wireless network %d: the SSID must be 1-32 bytes of UTF-8", i)
-		}
-
-		if n.BSSID != "" {
-			mac, err := net.ParseMAC(n.BSSID)
-			if err != nil || len(mac) != 6 || mac.String() != strings.ToLower(n.BSSID) {
-				return fmt.Errorf("wireless network %d: the BSSID is not a MAC address like 00:11:22:33:44:55", i)
-			}
-		}
-
-		switch n.Security {
-		case api.SystemNetworkWirelessSecurityWPAPersonal:
-			if !PassphraseValid(n.Passphrase) {
-				return fmt.Errorf("wireless network %d: the passphrase must be 1-%d bytes of UTF-8 with no control character", i, MaxPassphraseBytes)
-			}
-		case api.SystemNetworkWirelessSecurityOpen:
-			if n.Passphrase != "" {
-				return fmt.Errorf("wireless network %d: an open network takes no passphrase", i)
-			}
-		default:
-			return fmt.Errorf("wireless network %d: the security is not wpa-personal or open", i)
-		}
-	}
-
-	return nil
-}
-
-func isLetters(s string) bool {
-	return !strings.ContainsFunc(s, func(r rune) bool { return r < 'A' || r > 'Z' })
-}
-
 // RenderNetwork returns the .network of every Wi-Fi station.
 func RenderNetwork(cfg *api.SystemNetworkConfig) string {
 	w := Defaults()
@@ -287,6 +224,8 @@ func RenderNetwork(cfg *api.SystemNetworkConfig) string {
 		b.WriteString("DHCP=ipv4\n")
 	case dhcp6:
 		b.WriteString("DHCP=ipv6\n")
+	default:
+		// No DHCP address is requested; the link keeps the addresses it has.
 	}
 
 	b.WriteString("\n[DHCPv4]\nClientIdentifier=mac\nRouteMetric=600\nUseMTU=true\n")
@@ -377,7 +316,8 @@ func WriteFiles(root string, cfg *api.SystemNetworkConfig) error {
 		return err
 	}
 
-	err = os.Chmod(dir, 0o700)
+	// G302 asks for a file mode of 0600 or less; a directory needs the execute bit.
+	err = os.Chmod(dir, 0o700) //nolint:gosec // a directory is 0700, its files 0600
 	if err != nil {
 		return err
 	}
@@ -448,7 +388,7 @@ func Activate(ctx context.Context, sysRoot string, start func(ctx context.Contex
 		}
 
 		_, _ = conn.Request(ctx, "RECONFIGURE")
-		_ = conn.Close()
+		_ = conn.Close() //nolint:contextcheck // Close detaches with its own one-second deadline
 	}
 
 	return nil

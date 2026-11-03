@@ -71,12 +71,6 @@ type pickerRoot struct {
 	current tview.Primitive
 }
 
-func (r *pickerRoot) setCurrent(widget tview.Primitive) {
-	r.mu.Lock()
-	r.current = widget
-	r.mu.Unlock()
-}
-
 // Focus gives the focus to the widget in use.
 func (r *pickerRoot) Focus(delegate func(p tview.Primitive)) {
 	r.mu.Lock()
@@ -84,6 +78,12 @@ func (r *pickerRoot) Focus(delegate func(p tview.Primitive)) {
 	r.mu.Unlock()
 
 	delegate(widget)
+}
+
+func (r *pickerRoot) setCurrent(widget tview.Primitive) {
+	r.mu.Lock()
+	r.current = widget
+	r.mu.Unlock()
 }
 
 // passphraseAccept refuses passphrase input over 128 bytes, not UTF-8, or with a control character.
@@ -231,7 +231,7 @@ func scanDevice(ctx context.Context, device string) ([]wifi.BSS, error) {
 		return nil, err
 	}
 
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = conn.Close() }() //nolint:contextcheck // Close detaches with its own one-second deadline
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -258,6 +258,8 @@ func (p *picker) setEntries(entries []wifi.Entry, err error) {
 		p.setStatus("No Wi-Fi network found yet; scanning again", true)
 	case len(entries) > 0 && p.scanStatus:
 		p.setStatus("", false)
+	default:
+		// The status already says what the list shows.
 	}
 }
 
@@ -407,11 +409,13 @@ func (p *picker) choose(i int) {
 		return
 	}
 
-	switch p.step {
+	switch p.step { //nolint:exhaustive // only the list and security steps take a row key
 	case stepList:
 		p.chooseNetwork(i)
 	case stepSecurity:
 		p.chooseSecurity(i)
+	default:
+		// Another step takes its keys in its own field.
 	}
 }
 
@@ -457,6 +461,8 @@ func (p *picker) chooseSecurity(i int) {
 	case 1:
 		p.chosen.Security = api.SystemNetworkWirelessSecurityWPAPersonal
 		p.askPassphrase()
+	default:
+		// Only the two security rows are offered.
 	}
 }
 

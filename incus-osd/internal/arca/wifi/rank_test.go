@@ -41,6 +41,8 @@ func fixtureIEs(t *testing.T, name string) []byte {
 }
 
 func TestParseIEs(t *testing.T) {
+	t.Parallel()
+
 	body, err := os.ReadFile("testdata/ies.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +138,8 @@ func TestParseIEs(t *testing.T) {
 }
 
 func TestRank(t *testing.T) {
+	t.Parallel()
+
 	bss := []BSS{
 		{SSID: "Casa-6E", BSSID: "02:00:00:00:00:10", Freq: 6115, Level: -55, Flags: "[WPA2-SAE-CCMP][ESS]", IEs: fixtureIEs(t, "he160_6ghz")},
 		{SSID: "Casa", BSSID: "02:00:00:00:00:20", Freq: 5180, Level: -50, Flags: "[WPA2-SAE-CCMP][WPA2-PSK-CCMP][ESS]", IEs: fixtureIEs(t, "he80_5ghz")},
@@ -151,7 +155,7 @@ func TestRank(t *testing.T) {
 
 	got := Rank(bss)
 
-	var order []string
+	order := make([]string, 0, len(got))
 	for _, e := range got {
 		order = append(order, e.SSID)
 	}
@@ -183,6 +187,12 @@ func TestRank(t *testing.T) {
 			if e.Generation != 0 || e.Width != 20 || e.Band != "5" || !e.Selectable {
 				t.Errorf("a network with no information elements = %+v", e)
 			}
+		case "Irmao", "Vizinho":
+			if e.Band != "5" || !e.PSK || !e.Selectable {
+				t.Errorf("%s = %+v", e.SSID, e)
+			}
+		default:
+			t.Errorf("unexpected network %q", e.SSID)
 		}
 	}
 
@@ -193,6 +203,8 @@ func TestRank(t *testing.T) {
 	// Within one SSID the strongest security class wins before speed: an open BSS
 	// never stands for a network that has a secured one, nearer and faster though it is.
 	t.Run("security-first", func(t *testing.T) {
+		t.Parallel()
+
 		he80, ht20 := fixtureIEs(t, "he80_5ghz"), fixtureIEs(t, "ht20")
 		cases := []struct {
 			name  string
@@ -244,6 +256,8 @@ func TestRank(t *testing.T) {
 	// A key management that the supplicant configuration cannot express is listed,
 	// marked, and not selectable; it is never taken for an open network.
 	t.Run("key-management", func(t *testing.T) {
+		t.Parallel()
+
 		for flags, want := range map[string]struct {
 			sec      string
 			sae, psk bool
@@ -328,6 +342,8 @@ func drain(requests chan string) []string {
 }
 
 func TestScanWalkOverflow(t *testing.T) {
+	t.Parallel()
+
 	const (
 		small = "id=0\nbssid=02:00:00:00:00:01\nfreq=2437\nlevel=-40\nie=00\nflags=[WPA2-PSK-CCMP][ESS]\nssid=Velho\n"
 		// The IEs of this entry do not fit one 4096-byte reply, so the supplicant sends nothing for it.
@@ -336,6 +352,8 @@ func TestScanWalkOverflow(t *testing.T) {
 	)
 
 	t.Run("middle", func(t *testing.T) {
+		t.Parallel()
+
 		dir := t.TempDir()
 		requests := fakeWalk(t, dir, map[string]string{
 			"BSS FIRST MASK=0x1c87":  small,
@@ -384,6 +402,8 @@ func TestScanWalkOverflow(t *testing.T) {
 	})
 
 	t.Run("first", func(t *testing.T) {
+		t.Parallel()
+
 		dir := t.TempDir()
 		fakeWalk(t, dir, map[string]string{
 			"BSS FIRST MASK=0x1c87":  "",

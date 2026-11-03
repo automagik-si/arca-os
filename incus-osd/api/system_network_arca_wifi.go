@@ -35,60 +35,6 @@ type SystemNetworkWirelessNetwork struct {
 	Hidden     bool   `json:"hidden,omitempty"     yaml:"hidden,omitempty"`
 }
 
-// WithRedactedWirelessSecrets returns a copy of the network information with
-// every saved Wi-Fi passphrase cleared. Passphrases are write-only: a client
-// sets one through a PUT, but a read never returns it. Only the returned copy
-// is redacted; the stored configuration keeps its passphrases, so the layers
-// this clears (Config, Wireless and the Networks slice) are copied first.
-func (n SystemNetwork) WithRedactedWirelessSecrets() SystemNetwork {
-	if n.Config == nil || n.Config.Wireless == nil || len(n.Config.Wireless.Networks) == 0 {
-		return n
-	}
-
-	cfg := *n.Config
-	wifi := *cfg.Wireless
-	nets := make([]SystemNetworkWirelessNetwork, len(wifi.Networks))
-	copy(nets, wifi.Networks)
-
-	for i := range nets {
-		nets[i].Passphrase = ""
-	}
-
-	wifi.Networks = nets
-	cfg.Wireless = &wifi
-	n.Config = &cfg
-
-	return n
-}
-
-// FillMissingWirelessPassphrases copies a saved passphrase from old into the
-// matching network of n (matched by SSID and BSSID) whenever n leaves that
-// network's passphrase empty and the network is still WPA-Personal. A read
-// redacts passphrases, so a client that PUTs back a configuration it read
-// omits them; this keeps the stored passphrase for any network whose
-// passphrase is omitted, while a non-empty passphrase still replaces the
-// stored one. A network switched to open keeps no passphrase.
-func (n *SystemNetwork) FillMissingWirelessPassphrases(old SystemNetwork) {
-	if n.Config == nil || n.Config.Wireless == nil || old.Config == nil || old.Config.Wireless == nil {
-		return
-	}
-
-	for i := range n.Config.Wireless.Networks {
-		net := &n.Config.Wireless.Networks[i]
-		if net.Passphrase != "" || net.Security != SystemNetworkWirelessSecurityWPAPersonal {
-			continue
-		}
-
-		for _, o := range old.Config.Wireless.Networks {
-			if o.SSID == net.SSID && o.BSSID == net.BSSID && o.Passphrase != "" {
-				net.Passphrase = o.Passphrase
-
-				break
-			}
-		}
-	}
-}
-
 // SystemNetworkWirelessState holds the association of one Wi-Fi link.
 type SystemNetworkWirelessState struct {
 	SSID       string `json:"ssid"       yaml:"ssid"`
