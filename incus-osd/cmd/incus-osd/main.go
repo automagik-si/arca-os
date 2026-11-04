@@ -24,6 +24,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/certs"
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/console"
 	"github.com/lxc/incus-os/incus-osd/internal/arca/wifiui"
 	"github.com/lxc/incus-os/incus-osd/internal/install"
 	"github.com/lxc/incus-os/incus-osd/internal/kernel"
@@ -194,6 +195,7 @@ func main() {
 	logger := slog.New(tui.NewCustomTextHandler(tuiApp))
 	slog.SetDefault(logger)
 	wifiui.Start(ctx, s, tuiApp)
+	console.Start(ctx, s, tuiApp)
 
 	// Run the daemon.
 	err = run(ctx, s)
@@ -1200,9 +1202,9 @@ func configureConsoleDevices(ctx context.Context, s *state.State) error {
 	}
 
 	// Set any configured baud speeds.
-	for _, console := range s.System.Kernel.Config.Console {
-		if console.BaudRate != 0 {
-			_, err := subprocess.RunCommandContext(ctx, "/usr/bin/stty", "-F", console.Device, strconv.Itoa(console.BaudRate))
+	for _, dev := range s.System.Kernel.Config.Console {
+		if dev.BaudRate != 0 {
+			_, err := subprocess.RunCommandContext(ctx, "/usr/bin/stty", "-F", dev.Device, strconv.Itoa(dev.BaudRate))
 			if err != nil {
 				return err
 			}

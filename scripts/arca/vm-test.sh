@@ -5,12 +5,18 @@
 #   vm-test.sh --project arcaos-* --vm <name>
 #              (--from-builder <vm> | --artifacts <dir>)
 #              --seed-apps <a,b,...> --provider debug|images [--server-url <url>]
-#              --checks stock|tracer|none [--stop-builder] [--keep]
+#              --checks stock|tracer|console|none [--stop-builder] [--keep]
 #   vm-test.sh --project arcaos-* --vm <name> --from-builder <vm>
 #              --seed-apps <a,b,...> --provider images --server-url <url>
 #              --checks wifi [--stop-builder] [--keep]
 #   vm-test.sh --project arcaos-* --vm <name> --install-media <dir>
-#              --checks stock|tracer|none [--keep]
+#              --checks stock|tracer|console|none [--keep]
+#
+# The whole run holds the builder lock, a flock on $ARCA_BUILDER_LOCK (default
+# ${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock), so one builder or test VM run
+# goes at a time; while another run holds it, it prints "waiting for the
+# builder lock" and waits. A caller that holds the lock already sets
+# ARCA_BUILDER_LOCK_HELD=1, and the run does not take it again.
 #
 # Steps:
 #   1. Refuse to start the test VM when MemAvailable is below 12 GiB (checked
@@ -63,6 +69,8 @@
 #           zfs (modprobe zfs, with lockdown integrity or confidentiality),
 #           kernel-pkg (base.manifest has linux-image-<krel> at the BUILDINFO
 #           version and no Zabbly linux-image-*-zabbly+)
+#   console stock, plus scripts/arca/test/console/run.sh (its cases: header,
+#           instances, frame-replaced): the console on the VM's screen
 #   wifi    boot, then scripts/arca/test/wifi/run.sh (its cases: first-boot-gate,
 #           rank, rank-6ghz, sae, secret, regdb, firmware against the build's
 #           wifi-firmware.txt, debian-units).
@@ -112,7 +120,7 @@ stop_builder=0 keep=0
 # the VM still has the install media attached.
 serve_addr="" serve_port="" serve_pid="" install_attached=0
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'vm-test: %s\n' "$*" >&2; }
 die() { printf 'vm-test: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'vm-test: refused: %s\n' "$*" >&2; exit 2; }
@@ -181,13 +189,23 @@ images) [ -n "$server_url" ] || refuse "--provider images needs --server-url" ;;
 *) refuse "--provider must be debug or images" ;;
 esac
 case "$checks" in
-stock | tracer | wifi | none) ;;
-*) refuse "--checks must be stock, tracer, wifi or none" ;;
+stock | tracer | console | wifi | none) ;;
+*) refuse "--checks must be stock, tracer, console, wifi or none" ;;
 esac
 if [ "$checks" = wifi ]; then
 	[ -z "$media" ] || refuse "--checks wifi refuses --install-media"
 	[ -n "$builder" ] || refuse "--checks wifi needs --from-builder"
 	[ "$provider" = images ] || refuse "--checks wifi needs --provider images --server-url <url>"
+fi
+
+# The builder lock (see the header), before the first incus call.
+if [ "${ARCA_BUILDER_LOCK_HELD:-}" != 1 ]; then
+	exec 9>>"${ARCA_BUILDER_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock}"
+	if ! flock -n 9; then
+		log "waiting for the builder lock"
+		flock 9
+	fi
+	export ARCA_BUILDER_LOCK_HELD=1
 fi
 
 P=(--project "$project")
@@ -257,11 +275,12 @@ install_done() {
 # serve_updates: serve $media/updates at the seed's server_url with python3's
 # http.server, in isolated mode and from $work, logging each request to
 # $work/http.log. Its readiness probe is a HEAD, so every GET in the log is
-# the VM's.
+# the VM's. It does not inherit the builder lock, so a server left behind
+# cannot hold it.
 serve_updates() {
 	log "serving $media/updates at $server_url"
 	(cd "$work" && exec python3 -I -u -m http.server --bind "$serve_addr" --directory "$media/updates" "$serve_port") \
-		>"$work/http.log" 2>&1 &
+		9>&- >"$work/http.log" 2>&1 &
 	serve_pid=$!
 	for _ in $(seq 1 20); do
 		if curl -sfI --max-time 2 "$server_url/index.sjson" >/dev/null 2>&1; then return 0; fi
@@ -754,11 +773,18 @@ wifi_checks() {
 	[ ! -e "$leak" ] || result FAIL wifi-output "run.sh printed a secret-shaped line (withheld)"
 }
 
+console_checks() {
+	local rc=0
+	"$(dirname "$0")/test/console/run.sh" --project "$project" --vm "$vm" || rc=$?
+	[ "$rc" -eq 0 ] || result FAIL console "run.sh exited $rc"
+}
+
 if [ "$checks" = wifi ]; then
 	wifi_checks
 elif [ "$checks" != none ]; then
 	stock_checks
 	if [ "$checks" = tracer ]; then tracer_checks; fi
+	if [ "$checks" = console ]; then console_checks; fi
 	if [ -n "$media" ]; then install_checks; fi
 fi
 

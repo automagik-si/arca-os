@@ -31,6 +31,7 @@ owned() {
 	scripts/arca/* | kernel/* | mkosi.images/arca/* | incus-osd/internal/arca/* | NOTICE) return 0 ;;
 	incus-osd/api/images/update_file_component_arca_test.go) return 0 ;;
 	incus-osd/api/system_network_arca_wifi.go | incus-osd/internal/tui/arca_overlay.go | incus-osd/internal/tui/arca_overlay_test.go) return 0 ;;
+	incus-osd/internal/tui/arca_console.go | incus-osd/internal/tui/arca_console_test.go) return 0 ;;
 	esac
 	[[ $1 =~ ^\.github/workflows/arca-[^/]*\.yml$ ]] && return 0
 	[[ $1 =~ ^mkosi\.sandbox/etc/apt/[^/]+/arca[^/]*$ ]] && return 0
