@@ -82,10 +82,10 @@ func (v *view) Draw(screen tcell.Screen) {
 
 	content := rect{x, y + headerRows, w, h - headerRows}
 
-	switch {
-	case v.snap.Page == pageDetails:
+	switch v.snap.Page { //nolint:exhaustive // pageNone and any later page draw the dashboard
+	case pageDetails:
 		drawDetails(screen, v.snap, content)
-	case v.snap.Page == pageHelp:
+	case pageHelp:
 		drawHelp(screen, content)
 	default:
 		v.drawDashboard(screen, l, x, y)

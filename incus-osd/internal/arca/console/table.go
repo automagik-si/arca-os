@@ -387,6 +387,8 @@ func drawRow(screen tcell.Screen, s Snapshot, inst Instance, selected bool, y, x
 		stateTag = tagOK
 	case "STOPPED":
 		stateTag = tagDim
+	default:
+		stateTag = tagWarn
 	}
 
 	if inst.Stale {
@@ -428,6 +430,7 @@ func drawRow(screen tcell.Screen, s Snapshot, inst Instance, selected bool, y, x
 			tview.Print(screen, tag+safe(fit(ip, w))+tagReset, cx, y, w, tview.AlignLeft, tcell.ColorWhite)
 		case colUp:
 			tview.Print(screen, dimTag+upText(inst, s.Now)+tagReset, cx, y, w, tview.AlignLeft, tcell.ColorWhite)
+		default:
 		}
 
 		cx += w

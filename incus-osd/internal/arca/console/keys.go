@@ -9,7 +9,7 @@ import (
 // key handles one key press on the console and returns the event to pass on, or
 // nil when the console used it. It runs on the TUI's event loop.
 func (c *console) key(ev *tcell.EventKey) *tcell.EventKey {
-	switch ev.Key() {
+	switch ev.Key() { //nolint:exhaustive // tcell's key set is open; the default covers every other key
 	case tcell.KeyEsc:
 		if c.set(func(s *Snapshot) bool {
 			if s.Page == pageNone {
@@ -108,7 +108,7 @@ func (c *console) scrollLog(key tcell.Key) *tcell.EventKey {
 		row = top
 	}
 
-	switch key {
+	switch key { //nolint:exhaustive // tcell's key set is open; the default covers every other key
 	case tcell.KeyUp:
 		row--
 	case tcell.KeyDown:
@@ -146,7 +146,7 @@ func (c *console) moveKey(key tcell.Key) *tcell.EventKey {
 
 		was := s.Selected
 
-		switch key {
+		switch key { //nolint:exhaustive // tcell's key set is open; the default covers every other key
 		case tcell.KeyUp:
 			s.Selected = max(s.Selected-1, 0)
 		case tcell.KeyDown:

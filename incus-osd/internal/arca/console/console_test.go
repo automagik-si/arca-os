@@ -375,7 +375,7 @@ func staticSources() sources {
 }
 
 func TestPanicFallsBack(t *testing.T) { //nolint:paralleltest // points the default logger at the test's TUI
-	for _, where := range []string{"collector", "draw", "input"} {
+	for _, where := range []string{"collector", "draw", "input"} { //nolint:paralleltest // the subtests share the default logger
 		t.Run(where, func(t *testing.T) { //nolint:paralleltest // the subtests share the default logger
 			s := &state.State{}
 			s.OS.Name = "Example OS"

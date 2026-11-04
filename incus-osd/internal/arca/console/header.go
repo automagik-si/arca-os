@@ -126,10 +126,9 @@ func readIPs(ctx context.Context, s *state.State) []string {
 				continue
 			}
 
-			switch {
-			case ip.Is4() && !ip.IsLoopback() && !slices.Contains(v4, a):
+			if ip.Is4() && !ip.IsLoopback() && !slices.Contains(v4, a) {
 				v4 = append(v4, a)
-			case ip.Is6() && v6 == "" && ip.IsGlobalUnicast():
+			} else if ip.Is6() && v6 == "" && ip.IsGlobalUnicast() {
 				v6 = a
 			}
 		}
