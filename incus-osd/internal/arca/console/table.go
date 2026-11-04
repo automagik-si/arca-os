@@ -380,7 +380,9 @@ func drawTable(screen tcell.Screen, s Snapshot, r rect, kind layoutKind) int {
 func drawRow(screen tcell.Screen, s Snapshot, inst Instance, selected bool, y, x int, cols []column, bars bool) {
 	status := strings.ToUpper(printable(inst.Status))
 
-	nameTag, typeTag, stateTag, dimTag := tagBold, typeTags[printable(inst.Type)], tagWarn, tagDim
+	nameTag, typeTag, dimTag := tagBold, typeTags[printable(inst.Type)], tagDim
+
+	var stateTag string
 
 	switch status {
 	case "RUNNING":
