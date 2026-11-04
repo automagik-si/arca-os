@@ -2,6 +2,7 @@ package console
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,7 +41,7 @@ func detailsLines(d InstanceDetails) []string {
 	}
 
 	if d.Processes > 0 {
-		lines = append(lines, field("Processes", fmt.Sprintf("%d", d.Processes)))
+		lines = append(lines, field("Processes", strconv.Itoa(d.Processes)))
 	}
 
 	if d.CPUTime > 0 {
@@ -67,6 +68,7 @@ func detailsLines(d InstanceDetails) []string {
 
 	for _, nic := range d.NICs {
 		addrs := "—"
+
 		if len(nic.Addresses) > 0 {
 			quoted := make([]string, 0, len(nic.Addresses))
 			for _, a := range nic.Addresses {
@@ -81,11 +83,11 @@ func detailsLines(d InstanceDetails) []string {
 	}
 
 	if !d.CreatedAt.IsZero() {
-		lines = append(lines, field("Created", d.CreatedAt.Local().Format("2006-01-02 15:04")))
+		lines = append(lines, field("Created", d.CreatedAt.Format("2006-01-02 15:04")))
 	}
 
 	if !d.StartedAt.IsZero() {
-		lines = append(lines, field("Started", d.StartedAt.Local().Format("2006-01-02 15:04")))
+		lines = append(lines, field("Started", d.StartedAt.Format("2006-01-02 15:04")))
 	}
 
 	return lines

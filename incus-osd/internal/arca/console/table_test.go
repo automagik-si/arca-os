@@ -46,8 +46,9 @@ func TestCPUPercentDelta(t *testing.T) {
 	}
 }
 
-func TestMiniBarLimits(t *testing.T) {
+func TestMiniBarLimits(t *testing.T) { //nolint:paralleltest // points the package's host limits at fixtures
 	savedThreads, savedMem := hostThreads, hostMemoryBytes
+
 	t.Cleanup(func() { hostThreads, hostMemoryBytes = savedThreads, savedMem })
 
 	hostThreads = func() int { return 4 }

@@ -239,8 +239,10 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 	fixed := width(brand) + 1 + 2 + width(osName) + 1 + width(release)
 	node = fit(node, max(room-fixed, 1))
 
-	left := tagBrand + brand + tagReset + " " + tagBold + tview.Escape(node) + tagReset +
-		"  " + osName + " " + tview.Escape(release)
+	var left strings.Builder
+
+	left.WriteString(tagBrand + brand + tagReset + " " + tagBold + tview.Escape(node) + tagReset +
+		"  " + osName + " " + tview.Escape(release))
 	used := fixed + width(node)
 
 	for _, a := range s.Apps {
@@ -249,11 +251,11 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 			break
 		}
 
-		left += "  " + tagDim + tview.Escape(item) + tagReset
+		left.WriteString("  " + tagDim + tview.Escape(item) + tagReset)
 		used += 2 + width(item)
 	}
 
-	tview.Print(screen, left, x, y, w, tview.AlignLeft, tcell.ColorWhite)
+	tview.Print(screen, left.String(), x, y, w, tview.AlignLeft, tcell.ColorWhite)
 	tview.Print(screen, right, x, y, w, tview.AlignRight, tcell.ColorWhite)
 
 	if h < 2 {
@@ -268,6 +270,8 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 	case len(s.IPs) == 0:
 		line = tagBad + "no address" + tagReset
 	default:
+		var b strings.Builder
+
 		used := 0
 
 		for i, ip := range s.IPs {
@@ -283,12 +287,14 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 			}
 
 			if i > 0 {
-				line += "  "
+				b.WriteString("  ")
 			}
 
-			line += tagBold + tview.Escape(item) + tagReset
+			b.WriteString(tagBold + tview.Escape(item) + tagReset)
 			used += gap + width(item)
 		}
+
+		line = b.String()
 	}
 
 	tview.Print(screen, " "+line, x, y+1, w, tview.AlignLeft, tcell.ColorWhite)

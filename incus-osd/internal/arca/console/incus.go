@@ -266,6 +266,7 @@ func cpuLimit(cfg map[string]string) float64 {
 	// "2" is two threads; "0-3" and "0,2" are as many as they name.
 	if a, b, ok := strings.Cut(v, "-"); ok {
 		lo, err1 := strconv.Atoi(strings.TrimSpace(a))
+
 		hi, err2 := strconv.Atoi(strings.TrimSpace(b))
 		if err1 != nil || err2 != nil || hi < lo {
 			return 0
@@ -313,9 +314,18 @@ func parseSize(v string) int64 {
 		suffix string
 		scale  float64
 	}{
-		{"kib", 1 << 10}, {"mib", 1 << 20}, {"gib", 1 << 30}, {"tib", 1 << 40},
-		{"kb", 1e3}, {"mb", 1e6}, {"gb", 1e9}, {"tb", 1e12},
-		{"k", 1 << 10}, {"m", 1 << 20}, {"g", 1 << 30}, {"t", 1 << 40},
+		{"kib", 1 << 10},
+		{"mib", 1 << 20},
+		{"gib", 1 << 30},
+		{"tib", 1 << 40},
+		{"kb", 1e3},
+		{"mb", 1e6},
+		{"gb", 1e9},
+		{"tb", 1e12},
+		{"k", 1 << 10},
+		{"m", 1 << 20},
+		{"g", 1 << 30},
+		{"t", 1 << 40},
 	}
 
 	lower := strings.ToLower(strings.TrimSpace(v))
@@ -323,8 +333,8 @@ func parseSize(v string) int64 {
 	scale := float64(1)
 
 	for _, u := range units {
-		if strings.HasSuffix(lower, u.suffix) {
-			lower = strings.TrimSuffix(lower, u.suffix)
+		if rest, ok := strings.CutSuffix(lower, u.suffix); ok {
+			lower = rest
 			scale = u.scale
 
 			break

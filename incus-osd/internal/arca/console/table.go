@@ -306,6 +306,7 @@ func drawTable(screen tcell.Screen, s Snapshot, r rect, kind layoutKind) int {
 	read := !s.InstancesAt.IsZero()
 
 	title := "─ Instances "
+
 	if read {
 		running := 0
 
@@ -436,13 +437,13 @@ func drawRow(screen tcell.Screen, s Snapshot, inst Instance, selected bool, y, x
 // cpuUse is an instance's CPU share against its own limit, as a percentage of the
 // host: limits.cpu names threads, so a two-thread limit on an eight-thread host is
 // 25%. Without a limit the instance is measured against the whole host.
-func cpuUse(inst Instance) (use, limit float64) {
+func cpuUse(inst Instance) (float64, float64) {
 	threads := float64(hostThreads())
 	if threads <= 0 {
 		threads = 1
 	}
 
-	limit = 100
+	limit := 100.0
 	if inst.CPULimit > 0 {
 		limit = inst.CPULimit / threads * 100
 	}
@@ -451,8 +452,8 @@ func cpuUse(inst Instance) (use, limit float64) {
 }
 
 // memUse is an instance's memory use against its own limit, or the host's memory.
-func memUse(inst Instance, hostMem int64) (use, limit int64) {
-	limit = inst.MemLimit
+func memUse(inst Instance, hostMem int64) (int64, int64) {
+	limit := inst.MemLimit
 	if limit <= 0 {
 		limit = hostMem
 	}
@@ -485,11 +486,6 @@ func cpuCell(screen tcell.Screen, inst Instance, x, y, w int, bars bool, dimTag 
 func ramCell(inst Instance, bars bool, dimTag string) string {
 	if inst.Status != "Running" || inst.MemUsage <= 0 {
 		return dimTag + "—" + tagReset
-	}
-
-	limit := inst.MemLimit
-	if limit <= 0 {
-		limit = hostMemoryBytes()
 	}
 
 	if !bars {

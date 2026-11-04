@@ -2,6 +2,7 @@ package tui
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 
@@ -34,12 +35,19 @@ var arcaConsoles sync.Map
 
 func (t *TUI) arcaConsole() *arcaConsole {
 	if c, ok := arcaConsoles.Load(t); ok {
-		return c.(*arcaConsole) //nolint:forcetypeassert
+		if ac, ok := c.(*arcaConsole); ok {
+			return ac
+		}
 	}
 
-	c, _ := arcaConsoles.LoadOrStore(t, &arcaConsole{})
+	c := &arcaConsole{}
 
-	return c.(*arcaConsole) //nolint:forcetypeassert
+	stored, _ := arcaConsoles.LoadOrStore(t, c)
+	if ac, ok := stored.(*arcaConsole); ok {
+		return ac
+	}
+
+	return c
 }
 
 // SetArcaConsole makes root the content of the frame page in place of upstream's
@@ -194,8 +202,9 @@ func (t *TUI) ArcaLastLog() string {
 
 	lines := strings.Split(strings.TrimRight(t.textView.GetText(true), "\n"), "\n")
 
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); line != "" {
+	for _, raw := range slices.Backward(lines) {
+		line := strings.TrimSpace(raw)
+		if line != "" {
 			return line
 		}
 	}
@@ -301,8 +310,8 @@ func (t *TUI) arcaConsoleToggle() bool {
 // no console device and reads no hardware: its machine is one "Example CPU". Its
 // event loop runs until stop is called. Run is not called, so nothing clears a
 // console device and no periodic redraw runs; redraw runs one pass of it.
-func NewArcaTestTUI(s *state.State, screen tcell.Screen) (t *TUI, redraw func(), stop func()) {
-	t = &TUI{
+func NewArcaTestTUI(s *state.State, screen tcell.Screen) (*TUI, func(), func()) {
+	t := &TUI{
 		state:  s,
 		screen: screen,
 		systemResources: &api.Resources{
@@ -324,9 +333,10 @@ func NewArcaTestTUI(s *state.State, screen tcell.Screen) (t *TUI, redraw func(),
 	t.app = tview.NewApplication().SetScreen(screen).SetRoot(t.pages, true)
 
 	done := make(chan struct{})
+	app := t.app
 
 	go func() {
-		_ = t.app.Run()
+		_ = app.Run()
 
 		close(done)
 	}()

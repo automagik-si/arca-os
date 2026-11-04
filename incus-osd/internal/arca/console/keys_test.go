@@ -16,15 +16,17 @@ import (
 // fakeHost is a console host whose redraws run at once.
 type fakeHost struct {
 	enabled bool
+	log     *tview.TextView
 }
 
-func (f *fakeHost) EnableArcaOverlay()                                         {}
-func (f *fakeHost) SetArcaConsole(root tview.Primitive, focus tview.Primitive) { f.enabled = true }
-func (f *fakeHost) DisableArcaConsole()                                        { f.enabled = false }
-func (f *fakeHost) ArcaConsoleEnabled() bool                                   { return f.enabled }
-func (f *fakeHost) QueueArcaUpdate(fn func())                                  { fn() }
-func (f *fakeHost) ArcaLogView() *tview.TextView                               { return nil }
-func (f *fakeHost) ArcaLastLog() string                                        { return "" }
+func (*fakeHost) EnableArcaOverlay() {}
+
+func (f *fakeHost) SetArcaConsole(_, _ tview.Primitive) { f.enabled = true }
+func (f *fakeHost) DisableArcaConsole()                 { f.enabled = false }
+func (f *fakeHost) ArcaConsoleEnabled() bool            { return f.enabled }
+func (*fakeHost) QueueArcaUpdate(fn func())             { fn() }
+func (f *fakeHost) ArcaLogView() *tview.TextView        { return f.log }
+func (*fakeHost) ArcaLastLog() string                   { return "" }
 
 // keyOf types one key on the console.
 func keyOf(c *console, key tcell.Key, r rune) *tcell.EventKey {
@@ -56,7 +58,10 @@ func focusOf(c *console) panel {
 }
 
 func TestKeysNavigate(t *testing.T) {
+	t.Parallel()
+
 	c := newConsole(&fakeHost{}, staticSources())
+	c.view.kind = layoutWide
 	c.snap.Instances = testRows()
 	c.snap.Selected = 0
 
@@ -157,6 +162,81 @@ func TestKeysNavigate(t *testing.T) {
 	golden(t, "help-80x25.txt", draw(t, snap, 80, 25))
 }
 
+// TestKeysScrollEvents checks that the movement keys scroll a focused events log.
+func TestKeysScrollEvents(t *testing.T) {
+	t.Parallel()
+
+	log := tview.NewTextView()
+	log.SetText(strings.Repeat("line\n", 40))
+	log.SetRect(0, 0, 80, 10)
+
+	c := newConsole(&fakeHost{log: log}, staticSources())
+	c.snap.Instances = testRows()
+	c.view.kind = layoutWide
+
+	keyOf(c, tcell.KeyTab, 0)
+	c.publish()
+
+	if got := focusOf(c); got != panelEvents {
+		t.Fatalf("Tab focused panel %v, want events", got)
+	}
+
+	offset := func() int {
+		row, _ := log.GetScrollOffset()
+
+		return row
+	}
+
+	keyOf(c, tcell.KeyUp, 0)
+
+	if got := offset(); got != 29 {
+		t.Errorf("Up left the log at row %d, want 29", got)
+	}
+
+	keyOf(c, tcell.KeyPgUp, 0)
+
+	if got := offset(); got != 19 {
+		t.Errorf("PgUp left the log at row %d, want 19", got)
+	}
+
+	if got := selected(c); got != 0 {
+		t.Errorf("scrolling moved the selection to %d", got)
+	}
+
+	keyOf(c, tcell.KeyHome, 0)
+
+	if got := offset(); got != 0 {
+		t.Errorf("Home left the log at row %d, want 0", got)
+	}
+
+	keyOf(c, tcell.KeyEnd, 0)
+
+	if c.view.logRow != 30 || c.view.logScrolled {
+		t.Errorf("End left the log at row %d, scrolled %t, want the tail", c.view.logRow, c.view.logScrolled)
+	}
+
+	// From the tail, one Up lands on the line before the last visible one.
+	keyOf(c, tcell.KeyUp, 0)
+
+	if got := offset(); got != 29 {
+		t.Errorf("Up after End left the log at row %d, want 29", got)
+	}
+
+	keyOf(c, tcell.KeyTab, 0)
+	c.publish()
+
+	if got := focusOf(c); got != panelInstances {
+		t.Errorf("a second Tab focused panel %v, want instances", got)
+	}
+
+	keyOf(c, tcell.KeyDown, 0)
+	c.publish()
+
+	if got := selected(c); got != 1 {
+		t.Errorf("after Tab back, Down selected %d, want 1", got)
+	}
+}
+
 // waitFor fails after five seconds unless cond holds.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
@@ -174,6 +254,8 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func TestToggleUpstream(t *testing.T) {
+	t.Parallel()
+
 	s := &state.State{}
 	s.OS.Name = "Example OS"
 	s.OS.RunningRelease = "202611030000"

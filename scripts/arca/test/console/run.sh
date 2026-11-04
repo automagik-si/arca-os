@@ -25,15 +25,16 @@
 #                   repaint, upstream's footer label "Network configuration:" is
 #                   neither on the rebuilt screen nor anywhere in the capture's
 #                   text, and the journal has no "Console: disabled"
-#   keys            home and down select probe-1, Enter shows its details page
-#                   (project default), and Esc returns to the instances; the
-#                   screen is read after a whole-screen repaint each time
+#   keys            Home, then Down until probe-1's row is selected, Enter
+#                   shows its details page (project default), and Esc returns
+#                   to the instances; the screen is read after a whole-screen
+#                   repaint each time
 #   upstream-toggle L shows upstream's footer "Network configuration:", and L
 #                   again removes it from a freshly repainted screen
 #   privacy         with the details page open, the rebuilt screen and the
 #                   capture hold none of two canaries set in probe-1's
 #                   configuration and none of an Incus trust token, all
-#                   generated and searched inside the VM
+#                   generated, searched and then removed inside the VM
 # Each case prints "PASS|FAIL|SKIP <case> <detail>"; no detail holds an
 # address, a name or another value read from the VM.
 #
@@ -60,13 +61,31 @@ printf '%s' "$vm" | grep -Eqx '[a-z0-9][a-z0-9-]*' || usage
 
 P=(--project "$project")
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
 fails=0
 result() { # <PASS|FAIL|SKIP> <case> <detail>
 	printf '%s %s %s\n' "$1" "$2" "$3"
 	[ "$1" != FAIL ] || fails=$((fails + 1))
 }
 vexec() { incus exec "${P[@]}" "$vm" -- "$@"; }
+# privacy_done keeps the EXIT trap from cleaning up twice.
+privacy_done=0
+# privacy_cleanup removes probe-1's canaries and the console-probe trust token
+# from the VM. Every step is best-effort and silent: the VM may be gone by the
+# time the EXIT trap runs.
+privacy_cleanup() {
+	[ "$privacy_done" -eq 0 ] || return 0
+	privacy_done=1
+	vexec sh -c 'incus config unset probe-1 user.secret-probe' >/dev/null 2>&1 || true
+	vexec sh -c 'incus config unset probe-1 user.droid.owner' >/dev/null 2>&1 || true
+	# shellcheck disable=SC2016  # expanded by the shell in the VM
+	vexec sh -c 'if [ -s /run/console-test/token.txt ]; then incus config trust revoke-token "$(cat /run/console-test/token.txt)"; fi' >/dev/null 2>&1 || true
+}
+# shellcheck disable=SC2317,SC2329  # called from the EXIT trap
+cleanup() {
+	privacy_cleanup || true
+	rm -rf "$tmp"
+}
+trap cleanup EXIT
 # grep reads to the end: an early exit would fail the pipeline (pipefail) on SIGPIPE.
 journal_has() { vexec journalctl -b0 _SYSTEMD_UNIT=incus-osd.service -o cat --no-pager 2>/dev/null | grep -F -- "$1" >/dev/null; }
 # until_s <deadline, in $SECONDS> <command...>: 0 once the command succeeds, trying
@@ -375,6 +394,22 @@ kbd_dashboard_back() { screen && [ "$(repaints)" -gt "$1" ] && grep -q 'Instance
 kbd_upstream_shown() { screen && grep -qF -- "$FOOTER" "$tmp/screen.txt"; }
 # shellcheck disable=SC2317,SC2329
 kbd_console_back() { screen && [ "$(repaints)" -gt "$1" ] && grep -q 'Instances' "$tmp/screen.txt" && ! grep -qF -- "$FOOTER" "$tmp/screen.txt"; }
+# kbd_probe_selected <base>: a whole-screen repaint after base marks probe-1's row.
+# shellcheck disable=SC2317,SC2329  # called through until_s
+kbd_probe_selected() { screen && [ "$(repaints)" -gt "$1" ] && grep -qF "▶ $PROBE" "$tmp/screen.txt"; }
+# select_probe: Home, then Down until a repainted screen marks probe-1's row, at
+# most 10 times. 1 when probe-1 was never selected.
+select_probe() {
+	local base try
+	type_keys "/run/console-test/home.events"
+	sleep 1
+	for ((try = 0; try < 10; try++)); do
+		base=$(repaints)
+		type_keys "/run/console-test/down.events"
+		if until_s $((SECONDS + 90)) kbd_probe_selected "$base"; then return 0; fi
+	done
+	return 1
+}
 
 # The virtual keyboard, once, inside the VM. Its setup prints nothing.
 vexec bash -c "$(declare -f kbd_setup); kbd_setup /run/console-test" >/dev/null 2>&1 || true
@@ -384,21 +419,23 @@ if ! until_s $((SECONDS + 60)) kbd_ready; then
 		result FAIL "$c" "the virtual keyboard did not appear within 60 s"
 	done
 else
-	# keys: home and down select probe-1, Enter opens its details, Esc closes it.
-	base=$(repaints)
-	type_keys "/run/console-test/home.events"; sleep 1
-	type_keys "/run/console-test/down.events"; sleep 1
-	type_keys "/run/console-test/enter.events"
-	if until_s $((SECONDS + 90)) kbd_details_open "$base"; then
+	# keys: Home and Down select probe-1, Enter opens its details, Esc closes it.
+	if select_probe; then
 		base=$(repaints)
-		type_keys "/run/console-test/esc.events"
-		if until_s $((SECONDS + 90)) kbd_dashboard_back "$base"; then
-			result PASS keys "home and down selected probe-1; Enter showed its details page with project default; Esc returned to the instances"
+		type_keys "/run/console-test/enter.events"
+		if until_s $((SECONDS + 90)) kbd_details_open "$base"; then
+			base=$(repaints)
+			type_keys "/run/console-test/esc.events"
+			if until_s $((SECONDS + 90)) kbd_dashboard_back "$base"; then
+				result PASS keys "home and down selected probe-1; Enter showed its details page with project default; Esc returned to the instances"
+			else
+				result FAIL keys "the details page did not close within 90 s after Esc ($(why_screen))"
+			fi
 		else
-			result FAIL keys "the details page did not close within 90 s after Esc ($(why_screen))"
+			result FAIL keys "the details page with project default did not show within 90 s after Enter ($(why_screen))"
 		fi
 	else
-		result FAIL keys "the details page with project default did not show within 90 s after Enter ($(why_screen))"
+		result FAIL keys "home and down never selected probe-1 on a repainted screen ($(why_screen))"
 	fi
 
 	# upstream-toggle: L shows upstream's screen, and L brings the console back.
@@ -424,42 +461,47 @@ else
 	vexec bash -uc 'd=/run/console-test
 		c1=CANARY-$(od -An -N6 -tx1 /dev/urandom | tr -d " \n")
 		c2=CANARY-$(od -An -N6 -tx1 /dev/urandom | tr -d " \n")
+		tok=console-probe-$(od -An -N4 -tx1 /dev/urandom | tr -d " \n")
 		incus config set probe-1 user.secret-probe "$c1" || exit 1
 		incus config set probe-1 user.droid.owner "$c2" || exit 1
 		printf "%s\n%s\n" "$c1" "$c2" > "$d/canaries.txt"
-		t=$(incus config trust add console-probe 2>/dev/null | head -n 1)
-		[ -n "$t" ] || t=$(incus config trust add --name console-probe 2>/dev/null | head -n 1)
+		t=$(incus config trust add "$tok" 2>/dev/null | head -n 1)
+		[ -n "$t" ] || t=$(incus config trust add --name "$tok" 2>/dev/null | head -n 1)
+		[ -z "$t" ] || printf "%s\n" "$t" > "$d/token.txt"
 		[ -z "$t" ] || printf "%s\n" "$t" >> "$d/canaries.txt"' 2>/dev/null
 
-	base=$(repaints)
-	type_keys "/run/console-test/home.events"; sleep 1
-	type_keys "/run/console-test/down.events"; sleep 1
-	type_keys "/run/console-test/enter.events"
-	if until_s $((SECONDS + 90)) kbd_details_open "$base"; then
-		incus file push -q -p "${P[@]}" "$tmp/screen.txt" "$vm/run/console-test/screen.txt" 2>/dev/null || true
-		incus file push -q -p "${P[@]}" "$tmp/text.txt" "$vm/run/console-test/text.txt" 2>/dev/null || true
-		# shellcheck disable=SC2016  # expanded by the shell in the VM
-		scan=$(vexec bash -euc 'n=0; bad=0
-			while IFS= read -r s; do
-				[ -n "$s" ] || continue
-				n=$((n + 1))
-				if grep -qF -- "$s" /run/console-test/screen.txt /run/console-test/text.txt; then bad=$((bad + 1)); fi
-			done < /run/console-test/canaries.txt
-			echo "$n $bad"' 2>/dev/null || echo "0 0")
-		n=${scan%% *}
-		bad=${scan##* }
-		if [ "$n" -ge 3 ] && [ "$bad" -eq 0 ]; then
-			result PASS privacy "with the details page open, the screen and the capture hold none of the $n canaries or the trust token"
-		elif [ "$n" -lt 3 ]; then
-			result FAIL privacy "the canaries or the trust token could not be set inside the VM"
+	if select_probe; then
+		base=$(repaints)
+		type_keys "/run/console-test/enter.events"
+		if until_s $((SECONDS + 90)) kbd_details_open "$base"; then
+			incus file push -q -p "${P[@]}" "$tmp/screen.txt" "$vm/run/console-test/screen.txt" 2>/dev/null || true
+			incus file push -q -p "${P[@]}" "$tmp/text.txt" "$vm/run/console-test/text.txt" 2>/dev/null || true
+			# shellcheck disable=SC2016  # expanded by the shell in the VM
+			scan=$(vexec bash -euc 'n=0; bad=0
+				while IFS= read -r s; do
+					[ -n "$s" ] || continue
+					n=$((n + 1))
+					if grep -qF -- "$s" /run/console-test/screen.txt /run/console-test/text.txt; then bad=$((bad + 1)); fi
+				done < /run/console-test/canaries.txt
+				echo "$n $bad"' 2>/dev/null || echo "0 0")
+			n=${scan%% *}
+			bad=${scan##* }
+			if [ "$n" -ge 3 ] && [ "$bad" -eq 0 ]; then
+				result PASS privacy "with the details page open, the screen and the capture hold none of the $n canaries or the trust token"
+			elif [ "$n" -lt 3 ]; then
+				result FAIL privacy "the canaries or the trust token could not be set inside the VM"
+			else
+				result FAIL privacy "$bad of the $n canaries or the trust token reached the screen or the capture"
+			fi
+			type_keys "/run/console-test/esc.events"; sleep 2
 		else
-			result FAIL privacy "$bad of the $n canaries or the trust token reached the screen or the capture"
+			result FAIL privacy "the details page did not show, so the search proves nothing ($(why_screen))"
 		fi
-		type_keys "/run/console-test/esc.events"; sleep 2
 	else
-		result FAIL privacy "the details page did not show, so the search proves nothing ($(why_screen))"
+		result FAIL privacy "home and down never selected probe-1, so the search proves nothing ($(why_screen))"
 	fi
 fi
+privacy_cleanup || true
 
 [ "$fails" -eq 0 ] || exit 1
 exit 0

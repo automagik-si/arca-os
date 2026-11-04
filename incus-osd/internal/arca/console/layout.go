@@ -30,7 +30,7 @@ const (
 	headerRows   = 2
 	hardwareWide = 5
 	hardwareRows = 2 // the compact strip
-	rightWidth   = 48
+	rightWidth   = 24
 	alertRows    = 1
 	keyRows      = 1
 	summaryRows  = 1
@@ -78,7 +78,7 @@ func chooseLayout(w, h int) layout {
 }
 
 // chooseWide fills the wide layout: a five-row hardware box, then the instances
-// beside a 48-wide right column, the events under the instances, the alert line
+// beside a 24-wide right column, the events under the instances, the alert line
 // and the key line. Extra rows go to the instances and the events.
 func chooseWide(l *layout) {
 	y := headerRows
@@ -86,15 +86,8 @@ func chooseWide(l *layout) {
 	l.Hardware = rect{0, y, l.W, hardwareWide}
 	y += hardwareWide
 
-	body := l.H - y - alertRows - keyRows
-	if body < minTable+minEvents {
-		body = minTable + minEvents
-	}
-
-	events := body / 3
-	if events < minEvents {
-		events = minEvents
-	}
+	body := max(l.H-y-alertRows-keyRows, minTable+minEvents)
+	events := max(body/3, minEvents)
 
 	if body-events < minTable {
 		events = max(body-minTable, minEvents)
@@ -123,10 +116,7 @@ func chooseCompact(l *layout) {
 	y += hardwareRows
 
 	tail := summaryRows + alertRows + logRows + keyRows
-	table := l.H - y - tail
-	if table < minTable {
-		table = minTable
-	}
+	table := max(l.H-y-tail, minTable)
 
 	l.Instances = rect{0, y, l.W, table}
 	y += table

@@ -109,6 +109,7 @@ func newConsole(h host, src sources) *console {
 	c.view.key = c.key
 	c.view.log = h.ArcaLogView()
 	c.view.lastLog = h.ArcaLastLog
+	c.view.followLog()
 	c.view.update(c.snap.clone())
 
 	return c
@@ -249,7 +250,11 @@ func (g *guard) Draw(screen tcell.Screen) {
 		return
 	}
 
-	defer g.recoverPanic("draw")
+	defer func() {
+		if r := recover(); r != nil {
+			g.fail(fmt.Errorf("draw: %v", r))
+		}
+	}()
 
 	g.Primitive.Draw(screen)
 }
@@ -260,7 +265,11 @@ func (g *guard) InputHandler() func(event *tcell.EventKey, setFocus func(p tview
 			return
 		}
 
-		defer g.recoverPanic("input")
+		defer func() {
+			if r := recover(); r != nil {
+				g.fail(fmt.Errorf("input: %v", r))
+			}
+		}()
 
 		if handler := g.Primitive.InputHandler(); handler != nil {
 			handler(event, setFocus)
@@ -274,13 +283,6 @@ func (g *guard) Focus(delegate func(p tview.Primitive)) {
 
 func (g *guard) HasFocus() bool {
 	return g.Primitive.HasFocus()
-}
-
-// recoverPanic is deferred by Draw and InputHandler.
-func (g *guard) recoverPanic(where string) {
-	if r := recover(); r != nil {
-		g.fail(fmt.Errorf("%s: %v", where, r))
-	}
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

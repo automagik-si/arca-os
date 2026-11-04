@@ -39,20 +39,17 @@ var typeTags = map[string]string{
 type view struct {
 	*tview.Box
 
-	snap    Snapshot
-	log     *tview.TextView
-	lastLog func() string
-	key     func(*tcell.EventKey) *tcell.EventKey
+	snap        Snapshot
+	kind        layoutKind
+	log         *tview.TextView
+	logRow      int
+	logScrolled bool
+	lastLog     func() string
+	key         func(*tcell.EventKey) *tcell.EventKey
 }
 
 func newView() *view {
 	return &view{Box: tview.NewBox()}
-}
-
-// update replaces the snapshot the view draws. It runs on the event loop.
-func (v *view) update(s Snapshot) {
-	v.snap = s
-	v.snap.Selected = min(max(s.Selected, 0), max(len(s.Instances)-1, 0))
 }
 
 // Draw draws the view in its rectangle.
@@ -71,6 +68,11 @@ func (v *view) Draw(screen tcell.Screen) {
 	}
 
 	l := chooseLayout(w, h)
+	if l.kind != v.kind {
+		v.kind = l.kind
+		v.followLog()
+	}
+
 	if l.kind == layoutTooSmall {
 		tview.Print(screen, fmt.Sprintf(" %sScreen too small (%d×%d)%s", tagWarn, w, h, tagReset),
 			x, y+headerRows, w, tview.AlignLeft, tcell.ColorWhite)
@@ -80,14 +82,63 @@ func (v *view) Draw(screen tcell.Screen) {
 
 	content := rect{x, y + headerRows, w, h - headerRows}
 
-	switch v.snap.Page {
-	case pageDetails:
+	switch {
+	case v.snap.Page == pageDetails:
 		drawDetails(screen, v.snap, content)
-	case pageHelp:
+	case v.snap.Page == pageHelp:
 		drawHelp(screen, content)
 	default:
 		v.drawDashboard(screen, l, x, y)
 	}
+}
+
+// InputHandler routes the console's keys to the key handler.
+func (v *view) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		if v.key == nil {
+			return
+		}
+
+		if ev := v.key(event); ev != nil {
+			if h := v.Box.InputHandler(); h != nil {
+				h(ev, setFocus)
+			}
+		}
+	}
+}
+
+// update replaces the snapshot the view draws. It runs on the event loop.
+func (v *view) update(s Snapshot) {
+	focus := v.snap.Focus
+
+	v.snap = s
+	v.snap.Selected = min(max(s.Selected, 0), max(len(s.Instances)-1, 0))
+
+	if v.snap.Focus != focus {
+		v.followLog()
+	}
+}
+
+// eventsFocused reports whether the events panel has the focus and can be scrolled.
+func (v *view) eventsFocused() bool {
+	return v.log != nil && v.kind == layoutWide && v.snap.Focus == panelEvents
+}
+
+// followLog keeps the log on its tail unless the events panel has the focus.
+func (v *view) followLog() {
+	if v.log == nil {
+		return
+	}
+
+	if !v.eventsFocused() {
+		v.log.SetScrollable(false)
+
+		return
+	}
+
+	v.log.SetScrollable(true)
+	v.log.ScrollToEnd()
+	v.logScrolled = false
 }
 
 // drawDashboard draws the layout's boxes.
@@ -238,19 +289,4 @@ func drawKeys(screen tcell.Screen, r rect) {
 	}
 
 	tview.Print(screen, " "+strings.Join(parts, "  "), r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
-}
-
-// InputHandler routes the console's keys to the key handler.
-func (v *view) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
-	return func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
-		if v.key == nil {
-			return
-		}
-
-		if ev := v.key(event); ev != nil {
-			if h := v.Box.InputHandler(); h != nil {
-				h(ev, setFocus)
-			}
-		}
-	}
 }

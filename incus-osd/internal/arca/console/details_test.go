@@ -48,7 +48,7 @@ func secretInstance() api.InstanceFull {
 			Disk:      map[string]api.InstanceStateDisk{"root": {Usage: 3 << 30}},
 			Network: map[string]api.InstanceStateNetwork{
 				"lo":   {Addresses: []api.InstanceStateNetworkAddress{{Family: "inet", Address: "127.0.0.1", Scope: "local"}}},
-				"eth0": {Addresses: []api.InstanceStateNetworkAddress{{Family: "inet", Address: "10.42.0.2", Scope: "global"}}, Counters: api.InstanceStateNetworkCounters{BytesReceived: 1200, BytesSent: 400}},
+				"eth0": {Addresses: []api.InstanceStateNetworkAddress{{Family: "inet", Address: "192.0.2.2", Scope: "global"}}, Counters: api.InstanceStateNetworkCounters{BytesReceived: 1200, BytesSent: 400}},
 			},
 		},
 	}
@@ -60,7 +60,7 @@ func TestDetailsAllowlist(t *testing.T) {
 	d := toDetails(secretInstance(), 4<<30)
 	text := strings.Join(detailsLines(d), "\n")
 
-	for _, want := range []string{"web", "CT", "default", "debian/13", "Running", "31", "12s", "212M", "1G", "eth0", "10.42.0.2"} {
+	for _, want := range []string{"web", "CT", "default", "debian/13", "Running", "31", "12s", "212M", "1G", "eth0", "192.0.2.2"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the details lack %q:\n%s", want, text)
 		}

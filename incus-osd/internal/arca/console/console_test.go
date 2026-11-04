@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,7 +31,9 @@ func draw(t *testing.T, snap Snapshot, w, h int) tcell.SimulationScreen {
 	t.Helper()
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
+
+	err := screen.Init()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,8 +54,8 @@ func screenLine(screen tcell.SimulationScreen, y int) string {
 	var b strings.Builder
 
 	for x := 0; x < w; x++ {
-		r, _, _, cw := screen.GetContent(x, y)
-		b.WriteRune(r)
+		str, _, cw := screen.Get(x, y)
+		b.WriteString(str)
 
 		if cw > 1 {
 			x += cw - 1
@@ -84,7 +87,8 @@ func golden(t *testing.T, name string, screen tcell.SimulationScreen) {
 	path := filepath.Join("testdata", name)
 
 	if *update {
-		if err := os.WriteFile(path, []byte(got), 0o644); err != nil { //nolint:gosec
+		err := os.WriteFile(path, []byte(got), 0o644) //nolint:gosec
+		if err != nil {
 			t.Fatal(err)
 		}
 
@@ -102,7 +106,7 @@ func golden(t *testing.T, name string, screen tcell.SimulationScreen) {
 }
 
 // cellStyle returns the style of the first cell of sub on row y.
-func cellStyle(t *testing.T, screen tcell.SimulationScreen, y int, sub string) (fg, bg tcell.Color, attr tcell.AttrMask) {
+func cellStyle(t *testing.T, screen tcell.SimulationScreen, y int, sub string) (tcell.Color, tcell.Color, tcell.AttrMask) {
 	t.Helper()
 
 	line := screenLine(screen, y)
@@ -112,7 +116,7 @@ func cellStyle(t *testing.T, screen tcell.SimulationScreen, y int, sub string) (
 		t.Fatalf("row %d has no %q: %q", y+1, sub, line)
 	}
 
-	_, _, style, _ := screen.GetContent(utf8.RuneCountInString(line[:i]), y)
+	_, style, _ := screen.Get(utf8.RuneCountInString(line[:i]), y)
 
 	return style.Decompose()
 }
@@ -128,7 +132,7 @@ func lastCellStyle(t *testing.T, screen tcell.SimulationScreen, y int, sub strin
 		t.Fatalf("row %d has no %q: %q", y+1, sub, line)
 	}
 
-	_, _, style, _ := screen.GetContent(utf8.RuneCountInString(line[:i]), y)
+	_, style, _ := screen.Get(utf8.RuneCountInString(line[:i]), y)
 	fg, _, _ := style.Decompose()
 
 	return fg
@@ -167,7 +171,7 @@ func tracerSnapshot() Snapshot {
 		OSRelease:   "202611030000",
 		Apps:        []App{{Name: "arca", Version: "0.1.0"}, {Name: "incus", Version: "6.0.0"}},
 		Online:      Online{Known: true, Up: true},
-		IPs:         []string{"10.42.0.10", "fd42::10"},
+		IPs:         []string{"192.0.2.10", "2001:db8::10"},
 		Instances:   rows,
 		Details:     []InstanceDetails{{Name: "phone-1", Project: "other", Type: "PHONE", Description: "example/phone", Status: "Running", Disks: []DiskUse{{Name: "root", Usage: rows[0].DiskUsage}}}},
 		InstancesAt: testNow.Add(-5 * time.Second),
@@ -181,10 +185,12 @@ func TestMain(m *testing.M) {
 	hostThreads = func() int { return 8 }
 	hostMemoryBytes = func() int64 { return 8 << 30 }
 
-	os.Exit(m.Run())
+	m.Run()
 }
 
 func TestGoldenTracer(t *testing.T) {
+	t.Parallel()
+
 	for _, size := range []struct{ w, h int }{{80, 25}, {160, 45}} {
 		screen := draw(t, tracerSnapshot(), size.w, size.h)
 
@@ -228,6 +234,8 @@ func TestGoldenTracer(t *testing.T) {
 }
 
 func TestHostileNames(t *testing.T) {
+	t.Parallel()
+
 	snap := tracerSnapshot()
 	snap.Node = "node-1\x1b]0;x\a"
 	snap.Instances = []Instance{
@@ -300,6 +308,7 @@ func logToTUI(t *testing.T, tt *tui.TUI) func(msg string) bool {
 	msgs := []string{}
 
 	prev := slog.Default()
+
 	slog.SetDefault(slog.New(logRecorder{next: tui.NewCustomTextHandler(tt), mu: &mu, msgs: &msgs}))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
@@ -307,14 +316,12 @@ func logToTUI(t *testing.T, tt *tui.TUI) func(msg string) bool {
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			mu.Lock()
-			for _, m := range msgs {
-				if m == msg {
-					mu.Unlock()
-
-					return true
-				}
-			}
+			found := slices.Contains(msgs, msg)
 			mu.Unlock()
+
+			if found {
+				return true
+			}
 
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -367,9 +374,9 @@ func staticSources() sources {
 	}
 }
 
-func TestPanicFallsBack(t *testing.T) {
+func TestPanicFallsBack(t *testing.T) { //nolint:paralleltest // points the default logger at the test's TUI
 	for _, where := range []string{"collector", "draw", "input"} {
-		t.Run(where, func(t *testing.T) {
+		t.Run(where, func(t *testing.T) { //nolint:paralleltest // the subtests share the default logger
 			s := &state.State{}
 			s.OS.Name = "Example OS"
 			s.OS.RunningRelease = "202611030000"
@@ -422,6 +429,8 @@ func TestPanicFallsBack(t *testing.T) {
 			case "input":
 				p.input.Store(true)
 				screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+			default:
+				t.Fatalf("unknown panic site %q", where)
 			}
 
 			if !logged("Console: disabled after an error") {

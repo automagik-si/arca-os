@@ -56,6 +56,7 @@ func TestLayoutChoice(t *testing.T) {
 func columnIDs(w int, kind layoutKind) []colID {
 	cols, _ := tableColumns(w, kind)
 	ids := make([]colID, 0, len(cols))
+
 	for _, c := range cols {
 		ids = append(ids, c.id)
 	}
@@ -96,6 +97,28 @@ func TestColumnDrop(t *testing.T) {
 	cols, _ := tableColumns(160, layoutWide)
 	if cols[0].w < nameMinWidth || cols[0].w > nameMaxWidth {
 		t.Errorf("the name column is %d wide", cols[0].w)
+	}
+}
+
+// TestWide120ShowsAllColumns checks that the smallest wide layout keeps every column and the bars.
+func TestWide120ShowsAllColumns(t *testing.T) {
+	t.Parallel()
+
+	wide := chooseLayout(120, 36)
+	table := wide.Instances.W - gutter
+	all := []colID{colName, colType, colState, colCPU, colRAM, colDisk, colIP, colUp}
+
+	if got := columnIDs(table, layoutWide); !slices.Equal(got, all) {
+		t.Errorf("a 120-wide layout shows %v, want %v", got, all)
+	}
+
+	cols, bars := tableColumns(table, layoutWide)
+	if !bars {
+		t.Error("the 120-wide table has no mini-bars")
+	}
+
+	if cols[0].w < nameMinWidth {
+		t.Errorf("the name column is %d wide, want at least %d", cols[0].w, nameMinWidth)
 	}
 }
 

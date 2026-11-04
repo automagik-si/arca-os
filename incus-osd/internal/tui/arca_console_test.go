@@ -43,8 +43,8 @@ func rows(t *TUI, screen tcell.SimulationScreen) []string {
 			var b strings.Builder
 
 			for x := range consoleWidth {
-				r, _, _, _ := screen.GetContent(x, y)
-				b.WriteRune(r)
+				str, _, _ := screen.Get(x, y)
+				b.WriteString(str)
 			}
 
 			out[y] = strings.TrimRight(b.String(), " ")
@@ -66,6 +66,7 @@ func onLoop[T any](t *TUI, f func() T) T {
 // markBox draws top on its first row and bottom on its last row.
 type markBox struct {
 	*tview.Box
+
 	top, bottom string
 }
 
@@ -78,6 +79,7 @@ func (m *markBox) Draw(screen tcell.Screen) {
 // keyBox records the runes of the keys it receives.
 type keyBox struct {
 	*tview.Box
+
 	keys chan rune
 }
 
@@ -108,6 +110,8 @@ func expectKey(t *testing.T, screen tcell.SimulationScreen, r rune, want *keyBox
 }
 
 func TestArcaConsoleFrame(t *testing.T) {
+	t.Parallel()
+
 	tt, screen, redraw := newConsoleTUI(t)
 
 	root := &markBox{Box: tview.NewBox(), top: "CONSOLE TOP", bottom: "CONSOLE BOTTOM"}
@@ -139,6 +143,8 @@ func TestArcaConsoleFrame(t *testing.T) {
 }
 
 func TestArcaConsoleDisable(t *testing.T) {
+	t.Parallel()
+
 	tt, screen, redraw := newConsoleTUI(t)
 
 	root := &markBox{Box: tview.NewBox(), top: "CONSOLE TOP", bottom: "CONSOLE BOTTOM"}
@@ -208,6 +214,8 @@ func TestArcaConsoleDisable(t *testing.T) {
 }
 
 func TestFocusAfterModal(t *testing.T) {
+	t.Parallel()
+
 	tt, screen, redraw := newConsoleTUI(t)
 
 	// As at boot: upstream's frame is drawn, then a modal shows before the console starts.
@@ -237,6 +245,8 @@ func TestFocusAfterModal(t *testing.T) {
 }
 
 func TestFocusNotStolenFromPicker(t *testing.T) {
+	t.Parallel()
+
 	tt, screen, redraw := newConsoleTUI(t)
 
 	picker := newKeyBox()
