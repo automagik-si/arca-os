@@ -2,6 +2,8 @@ package tui
 
 import (
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -33,12 +35,19 @@ var arcaConsoles sync.Map
 
 func (t *TUI) arcaConsole() *arcaConsole {
 	if c, ok := arcaConsoles.Load(t); ok {
-		return c.(*arcaConsole) //nolint:forcetypeassert
+		if ac, ok := c.(*arcaConsole); ok {
+			return ac
+		}
 	}
 
-	c, _ := arcaConsoles.LoadOrStore(t, &arcaConsole{})
+	c := &arcaConsole{}
 
-	return c.(*arcaConsole) //nolint:forcetypeassert
+	stored, _ := arcaConsoles.LoadOrStore(t, c)
+	if ac, ok := stored.(*arcaConsole); ok {
+		return ac
+	}
+
+	return c
 }
 
 // SetArcaConsole makes root the content of the frame page in place of upstream's
@@ -83,6 +92,10 @@ func (t *TUI) DisableArcaConsole() {
 
 	go t.app.QueueUpdateDraw(func() {
 		if !t.ArcaConsoleEnabled() {
+			if t.textView != nil {
+				t.textView.SetBorder(true)
+			}
+
 			t.frame.SetPrimitive(t.textView)
 		}
 	})
@@ -174,8 +187,38 @@ func (t *TUI) arcaConsoleFrame() bool {
 	return true
 }
 
+// ArcaLogView returns upstream's log view, which the console's wide events panel
+// draws in its own box.
+func (t *TUI) ArcaLogView() *tview.TextView {
+	return t.textView
+}
+
+// ArcaLastLog returns the last non-empty line of upstream's log view, without its
+// colour tags, for the compact layout's last-log line.
+func (t *TUI) ArcaLastLog() string {
+	if t.textView == nil {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimRight(t.textView.GetText(true), "\n"), "\n")
+
+	for _, raw := range slices.Backward(lines) {
+		line := strings.TrimSpace(raw)
+		if line != "" {
+			return line
+		}
+	}
+
+	return ""
+}
+
 // arcaConsoleShow makes root the frame's only content. It runs on the event loop.
 func (t *TUI) arcaConsoleShow(root tview.Primitive) {
+	// The console's own events panel draws the log view's border.
+	if t.textView != nil {
+		t.textView.SetBorder(false)
+	}
+
 	t.frame.Clear()
 	t.frame.SetPrimitive(root)
 }
@@ -196,7 +239,7 @@ func (t *TUI) arcaConsoleHooks() {
 	arcaOverlay.mu.Lock()
 	prev := t.app.GetInputCapture()
 	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyRune && event.Rune() == 'L' && !t.pages.HasPage(arcaPage) && t.arcaConsoleToggle() {
+		if event.Key() == tcell.KeyRune && (event.Rune() == 'L' || event.Rune() == 'l') && !t.pages.HasPage(arcaPage) && t.arcaConsoleToggle() {
 			return nil
 		}
 
@@ -250,6 +293,10 @@ func (t *TUI) arcaConsoleToggle() bool {
 
 		go slog.Info("Console: enabled by key")
 	} else {
+		if t.textView != nil {
+			t.textView.SetBorder(true)
+		}
+
 		t.frame.SetPrimitive(t.textView)
 
 		go slog.Info("Console: disabled by key")
@@ -263,8 +310,8 @@ func (t *TUI) arcaConsoleToggle() bool {
 // no console device and reads no hardware: its machine is one "Example CPU". Its
 // event loop runs until stop is called. Run is not called, so nothing clears a
 // console device and no periodic redraw runs; redraw runs one pass of it.
-func NewArcaTestTUI(s *state.State, screen tcell.Screen) (t *TUI, redraw func(), stop func()) {
-	t = &TUI{
+func NewArcaTestTUI(s *state.State, screen tcell.Screen) (*TUI, func(), func()) {
+	t := &TUI{
 		state:  s,
 		screen: screen,
 		systemResources: &api.Resources{
@@ -286,9 +333,10 @@ func NewArcaTestTUI(s *state.State, screen tcell.Screen) (t *TUI, redraw func(),
 	t.app = tview.NewApplication().SetScreen(screen).SetRoot(t.pages, true)
 
 	done := make(chan struct{})
+	app := t.app
 
 	go func() {
-		_ = t.app.Run()
+		_ = app.Run()
 
 		close(done)
 	}()

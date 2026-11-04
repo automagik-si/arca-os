@@ -43,14 +43,14 @@ func testInstances() []api.InstanceFull {
 			Status: "Running", StatusCode: api.Running,
 			Network: nic(
 				api.InstanceStateNetworkAddress{Family: "inet6", Address: "fe80::2", Netmask: "64", Scope: "link"},
-				api.InstanceStateNetworkAddress{Family: "inet6", Address: "fd42::2", Netmask: "64", Scope: "global"},
-				api.InstanceStateNetworkAddress{Family: "inet", Address: "10.42.0.2", Netmask: "24", Scope: "global"},
+				api.InstanceStateNetworkAddress{Family: "inet6", Address: "2001:db8::2", Netmask: "64", Scope: "global"},
+				api.InstanceStateNetworkAddress{Family: "inet", Address: "192.0.2.2", Netmask: "24", Scope: "global"},
 			),
 		}),
 		running("vm-1", "default", "virtual-machine", map[string]string{}, &api.InstanceState{Status: "Running", StatusCode: api.Running}),
 		running("phone-1", "other", "container", map[string]string{phoneKey: "example"}, &api.InstanceState{
 			Status: "Running", StatusCode: api.Running,
-			Network: nic(api.InstanceStateNetworkAddress{Family: "inet", Address: "10.42.0.3", Netmask: "24", Scope: "global"}),
+			Network: nic(api.InstanceStateNetworkAddress{Family: "inet", Address: "192.0.2.3", Netmask: "24", Scope: "global"}),
 		}),
 		{
 			Instance: api.Instance{Name: "probe-1", Project: "default", Type: "container", Status: "Stopped", StatusCode: api.Stopped},
@@ -61,9 +61,9 @@ func testInstances() []api.InstanceFull {
 
 // testRows is testInstances as the table shows them.
 func testRows() []Instance {
-	rows := []Instance{}
+	rows := make([]Instance, 0, len(testInstances()))
 	for _, inst := range testInstances() {
-		rows = append(rows, toInstance(inst))
+		rows = append(rows, toInstance(inst, -1, 0))
 	}
 
 	slices.SortFunc(rows, func(a, b Instance) int { return strings.Compare(a.Name, b.Name) })
@@ -78,14 +78,18 @@ func fakeIncus(t *testing.T, instances []api.InstanceFull) (string, func()) {
 
 	sock := filepath.Join(t.TempDir(), "incus.sock")
 
-	l, err := net.Listen("unix", sock)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	reply := func(w http.ResponseWriter, metadata any) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(api.ResponseRaw{Type: api.SyncResponse, Status: "Success", StatusCode: http.StatusOK, Metadata: metadata})
+
+		encodeErr := json.NewEncoder(w).Encode(api.ResponseRaw{Type: api.SyncResponse, Status: "Success", StatusCode: http.StatusOK, Metadata: metadata})
+		if encodeErr != nil {
+			t.Errorf("encoding a reply: %v", encodeErr)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -122,18 +126,22 @@ func fakeIncus(t *testing.T, instances []api.InstanceFull) (string, func()) {
 }
 
 func TestIncusCollect(t *testing.T) {
+	t.Parallel()
+
 	sock, _ := fakeIncus(t, testInstances())
 
-	rows, err := (&incusReader{sock: sock}).read()
+	res, err := (&incusReader{sock: sock}).read()
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	rows := res.Rows
+
 	want := []Instance{
-		{Name: "phone-1", Project: "other", Type: "PHONE", Status: "Running", IPv4: "10.42.0.3"},
-		{Name: "probe-1", Project: "default", Type: "CT", Status: "Stopped"},
-		{Name: "vm-1", Project: "default", Type: "VM", Status: "Running"},
-		{Name: "web", Project: "default", Type: "CT", Status: "Running", IPv4: "10.42.0.2"},
+		{Name: "phone-1", Project: "other", Type: "PHONE", Status: "Running", IPv4: "192.0.2.3", CPUPercent: -1},
+		{Name: "probe-1", Project: "default", Type: "CT", Status: "Stopped", CPUPercent: -1},
+		{Name: "vm-1", Project: "default", Type: "VM", Status: "Running", CPUPercent: -1},
+		{Name: "web", Project: "default", Type: "CT", Status: "Running", IPv4: "192.0.2.2", CPUPercent: -1},
 	}
 
 	if !slices.Equal(rows, want) {
@@ -158,6 +166,8 @@ func TestIncusCollect(t *testing.T) {
 }
 
 func TestIncusDown(t *testing.T) {
+	t.Parallel()
+
 	sock, stop := fakeIncus(t, testInstances())
 
 	r := &incusReader{sock: sock}
@@ -165,8 +175,8 @@ func TestIncusDown(t *testing.T) {
 	snap := tracerSnapshot()
 	snap.Instances, snap.InstancesAt = nil, time.Time{}
 
-	rows, err := r.read()
-	table.apply(&snap, rows, err, testNow.Add(-20*time.Minute))
+	res, err := r.read()
+	table.apply(&snap, res, err, testNow.Add(-20*time.Minute))
 
 	if err != nil || len(snap.Instances) != 4 || snap.InstancesErr != "" {
 		t.Fatalf("the first read: %v, %d rows, %q", err, len(snap.Instances), snap.InstancesErr)
@@ -178,12 +188,12 @@ func TestIncusDown(t *testing.T) {
 	first := time.Date(2026, 11, 3, 14, 2, 30, 0, time.UTC)
 
 	for _, at := range []time.Time{first, testNow} {
-		rows, err = r.read()
+		res, err := r.read()
 		if err == nil {
 			t.Fatal("a read without the socket worked")
 		}
 
-		table.apply(&snap, rows, err, at)
+		table.apply(&snap, res, err, at)
 	}
 
 	if snap.InstancesErr != "Incus is not running since 14:02" {
@@ -208,22 +218,24 @@ func TestIncusDown(t *testing.T) {
 }
 
 // TestHeaderSources reads the header's addresses and online state from fixtures.
-func TestHeaderSources(t *testing.T) {
+func TestHeaderSources(t *testing.T) { //nolint:paralleltest // points the package sysfs at a fixture tree
 	root := t.TempDir()
 	for _, d := range []string{"sys/class/net/enp5s0", "sys/class/net/wlan0/phy80211", "proc/net"} {
-		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+		err := os.MkdirAll(filepath.Join(root, d), 0o755)
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	oldSys, oldProc, oldAddrs := sysRoot, procRoot, ipAddresses
+
 	t.Cleanup(func() { sysRoot, procRoot, ipAddresses = oldSys, oldProc, oldAddrs })
 
 	sysRoot, procRoot = filepath.Join(root, "sys"), filepath.Join(root, "proc")
 	ipAddresses = func(_ context.Context, name string) ([]string, error) {
 		return map[string][]string{
-			"enp5s0": {"fd42::10", "10.42.0.10", "fd42::11"},
-			"wlan0":  {"10.42.1.10", "10.42.0.10"},
+			"enp5s0": {"2001:db8::10", "192.0.2.10", "2001:db8::11"},
+			"wlan0":  {"192.0.2.110", "192.0.2.10"},
 		}[name], nil
 	}
 
@@ -232,7 +244,7 @@ func TestHeaderSources(t *testing.T) {
 		Interfaces: []osapi.SystemNetworkInterface{{Name: "enp5s0", Addresses: []string{"dhcp4"}}, {Name: "missing0", Addresses: []string{"dhcp4"}}},
 	}
 
-	if got, want := readIPs(context.Background(), s), []string{"10.42.0.10", "10.42.1.10", "fd42::10"}; !slices.Equal(got, want) {
+	if got, want := readIPs(context.Background(), s), []string{"192.0.2.10", "192.0.2.110", "2001:db8::10"}; !slices.Equal(got, want) {
 		t.Errorf("readIPs = %v, want %v", got, want)
 	}
 
@@ -246,7 +258,9 @@ func TestHeaderSources(t *testing.T) {
 	}
 
 	route := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\nenp5s0\t00000000\t01002A0A\t0003\t0\t0\t0\t00000000\n"
-	if err := os.WriteFile(filepath.Join(root, "proc/net/route"), []byte(route), 0o644); err != nil { //nolint:gosec
+
+	err := os.WriteFile(filepath.Join(root, "proc/net/route"), []byte(route), 0o644) //nolint:gosec
+	if err != nil {
 		t.Fatal(err)
 	}
 

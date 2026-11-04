@@ -1,0 +1,25 @@
+ ARCA  node-1  Arca OS 202611030000  arca 0.1.0  incus 6.0.0    ● online  14:22
+ 192.0.2.10  2001:db8::10
+ Hardware —
+
+─ Instances 4 · 3 running ──────────────────────────────────────────────────────
+  NAME            TYPE   STATE     CPU     RAM          IP
+▶ phone-1         PHONE  RUNNING   3.9%    2G / 4G      192.0.2.3
+  probe-1         CT     STOPPED   —       —            —
+  vm-1            VM     RUNNING   12.1%   3.8G / 4G    —
+  web             CT     RUNNING   1.1%    480M / 2G    192.0.2.2
+
+
+
+
+
+
+
+
+
+
+
+ ▶ phone-1 · PHONE · example/phone · disk 9.6G · up 19h 12m
+ ✓ No alerts
+ —
+ ↑↓ select  Tab next panel  Enter details  ? help  L upstream

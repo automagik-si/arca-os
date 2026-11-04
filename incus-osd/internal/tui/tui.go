@@ -287,6 +287,7 @@ func (t *TUI) redrawScreen() {
 	if t.arcaConsoleFrame() {
 		return
 	}
+
 	if t.frame == nil {
 		return
 	}

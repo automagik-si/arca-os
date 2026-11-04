@@ -1202,9 +1202,9 @@ func configureConsoleDevices(ctx context.Context, s *state.State) error {
 	}
 
 	// Set any configured baud speeds.
-	for _, console := range s.System.Kernel.Config.Console {
-		if console.BaudRate != 0 {
-			_, err := subprocess.RunCommandContext(ctx, "/usr/bin/stty", "-F", console.Device, strconv.Itoa(console.BaudRate))
+	for _, dev := range s.System.Kernel.Config.Console {
+		if dev.BaudRate != 0 {
+			_, err := subprocess.RunCommandContext(ctx, "/usr/bin/stty", "-F", dev.Device, strconv.Itoa(dev.BaudRate))
 			if err != nil {
 				return err
 			}
