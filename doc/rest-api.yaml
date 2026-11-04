@@ -1331,6 +1331,14 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: AvailableSpare
+            available_spare_threshold:
+                format: int64
+                type: integer
+                x-go-name: AvailableSpareThreshold
+            critical_temp_c:
+                format: int64
+                type: integer
+                x-go-name: CriticalTempC
             data_units_read:
                 format: int64
                 type: integer
@@ -1345,6 +1353,14 @@ definitions:
             error:
                 type: string
                 x-go-name: Error
+            media_errors:
+                description: |-
+                    NVMe health detail, as smartctl's JSON log reports it. Each field is nil
+                    when the drive does not report it, so a SATA drive carries none of them
+                    and a healthy NVMe reports zero rather than nothing.
+                format: int64
+                type: integer
+                x-go-name: MediaErrors
             passed:
                 type: boolean
                 x-go-name: Passed
@@ -1372,6 +1388,14 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: TemperatureCelsius
+            unsafe_shutdowns:
+                format: int64
+                type: integer
+                x-go-name: UnsafeShutdowns
+            warning_temp_c:
+                format: int64
+                type: integer
+                x-go-name: WarningTempC
         title: SystemStorageDriveSMART defines a struct to return basic SMART information about a specific device.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api

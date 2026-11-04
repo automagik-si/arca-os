@@ -1,0 +1,59 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 5],
+    "svn_revision": "5714",
+    "platform_info": "x86_64-linux",
+    "build_info": "(local build)",
+    "argv": ["smartctl", "-aj", "/dev/sda"],
+    "exit_status": 0
+  },
+  "device": {
+    "name": "/dev/sda",
+    "info_name": "/dev/sda",
+    "type": "sat",
+    "protocol": "ATA"
+  },
+  "model_name": "Example SATA SSD",
+  "firmware_version": "2.1",
+  "smart_support": {
+    "available": true,
+    "enabled": true
+  },
+  "smart_status": {
+    "passed": true
+  },
+  "temperature": {
+    "current": 30
+  },
+  "power_on_time": {
+    "hours": 500
+  },
+  "ata_smart_attributes": {
+    "revision": 1,
+    "table": [
+      {
+        "id": 5,
+        "name": "Reallocated_Sector_Ct",
+        "value": 100,
+        "worst": 100,
+        "thresh": 10,
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 194,
+        "name": "Temperature_Celsius",
+        "value": 70,
+        "worst": 45,
+        "thresh": 0,
+        "raw": {
+          "value": 30,
+          "string": "30"
+        }
+      }
+    ]
+  }
+}

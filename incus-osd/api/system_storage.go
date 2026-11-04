@@ -164,6 +164,15 @@ type SystemStorageDriveSMART struct {
 	RawReadErrorRate   int `json:"raw_read_error_rate,omitempty" yaml:"raw_read_error_rate,omitempty"`
 	SeekErrorRate      int `json:"seek_error_rate,omitempty"     yaml:"seek_error_rate,omitempty"`
 	ReallocatedSectors int `json:"reallocated_sectors,omitempty" yaml:"reallocated_sectors,omitempty"`
+
+	// NVMe health detail, as smartctl's JSON log reports it. Each field is nil
+	// when the drive does not report it, so a SATA drive carries none of them
+	// and a healthy NVMe reports zero rather than nothing.
+	MediaErrors             *int `json:"media_errors,omitempty"              yaml:"media_errors,omitempty"`
+	AvailableSpareThreshold *int `json:"available_spare_threshold,omitempty" yaml:"available_spare_threshold,omitempty"`
+	WarningTempC            *int `json:"warning_temp_c,omitempty"            yaml:"warning_temp_c,omitempty"`
+	CriticalTempC           *int `json:"critical_temp_c,omitempty"           yaml:"critical_temp_c,omitempty"`
+	UnsafeShutdowns         *int `json:"unsafe_shutdowns,omitempty"          yaml:"unsafe_shutdowns,omitempty"`
 }
 
 // SystemStorageWipe defines a struct with information about what drive to wipe.

@@ -20,3 +20,6 @@ incus-osd/cmd/incus-osd/main.go
 doc/rest-api.yaml
 # The always-on power profile: the console never blanks on a timer.
 mkosi.conf
+# NVMe health in the storage document.
+incus-osd/api/system_storage.go
+incus-osd/internal/storage/storage.go

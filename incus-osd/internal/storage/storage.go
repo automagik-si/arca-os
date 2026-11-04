@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/lxc/incus-os/incus-osd/api"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/storagehealth"
 )
 
 // BlockDevices stores specific fields for each device reported by `lsblk`.
@@ -880,6 +881,9 @@ func GetStorageInfo(ctx context.Context) (api.SystemStorageState, []api.SystemSt
 			if smart.NVMESmartHealthInformationLog.AvailableSpare > 0 {
 				smartStatus.AvailableSpare = smart.NVMESmartHealthInformationLog.AvailableSpare
 			}
+
+			// NVMe health detail the drive reports beyond the counters above.
+			storagehealth.Apply(smartStatus, []byte(output))
 
 			// ATA handling.
 			ataAttributes := map[string]int{}
