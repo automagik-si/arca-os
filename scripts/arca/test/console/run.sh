@@ -398,11 +398,13 @@ kbd_console_back() { screen && [ "$(repaints)" -gt "$1" ] && grep -q 'Instances'
 # shellcheck disable=SC2317,SC2329  # called through until_s
 kbd_probe_selected() { screen && [ "$(repaints)" -gt "$1" ] && grep -qF "▶ $PROBE" "$tmp/screen.txt"; }
 # select_probe: Home, then Down until a repainted screen marks probe-1's row, at
-# most 10 times. 1 when probe-1 was never selected.
+# most 10 Down presses. 1 when probe-1 was never selected.
 select_probe() {
 	local base try
+	base=$(repaints)
 	type_keys "/run/console-test/home.events"
 	sleep 1
+	if until_s $((SECONDS + 30)) kbd_probe_selected "$base"; then return 0; fi
 	for ((try = 0; try < 10; try++)); do
 		base=$(repaints)
 		type_keys "/run/console-test/down.events"
