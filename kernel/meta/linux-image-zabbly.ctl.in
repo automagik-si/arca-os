@@ -1,0 +1,17 @@
+### equivs control template, filled in by kernel/build-kernel.sh.
+### @KREL@ is the kernel release, @PKGVERSION@ the kernel packages' version,
+### @METAVERSION@ this package's version, @MAINTAINER@ the build's maintainer.
+Source: linux-zabbly-arca
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/weunfold/arca-os
+Standards-Version: 4.7.0
+
+Package: linux-image-zabbly
+Version: @METAVERSION@
+Maintainer: @MAINTAINER@
+Architecture: amd64
+Depends: linux-image-@KREL@ (= @PKGVERSION@)
+Description: Linux kernel image with Android binder, for Arca OS
+ This package brings in Zabbly's stable mainline kernel, rebuilt by
+ Arca OS with Android binder and binderfs built in.

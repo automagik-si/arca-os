@@ -1,0 +1,39 @@
+A small WHENCE for scripts/arca/test/wifi-fw.sh, in linux-firmware's format.
+
+--------------------------------------------------------------------------
+
+Driver: fakewifi - A fixture Wi-Fi driver
+
+File: fakewifi/fw-2.bin
+File: fakewifi/fw-1.bin
+Link: fakewifi/fw.bin -> fw-2.bin
+RawFile: "fakewifi/board name.txt"
+Link: fakewifi/board.txt -> "board name.txt"
+Link: fakewifi/up.bin -> ../fakewifi/fw-1.bin
+
+Licence: fixture
+
+--------------------------------------------------------------------------
+
+Driver: iwlwifi - Intel Wireless Wifi
+
+File: intel/iwlwifi/iwlwifi-so-a0-gf-a0-88.ucode
+Link: iwlwifi-so-a0-gf-a0-88.ucode -> intel/iwlwifi/iwlwifi-so-a0-gf-a0-88.ucode
+File: intel/iwlwifi/iwlwifi-so-a0-gf-a0-89.ucode
+Link: iwlwifi-so-a0-gf-a0-89.ucode -> intel/iwlwifi/iwlwifi-so-a0-gf-a0-89.ucode
+File: intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm
+Link: iwlwifi-so-a0-gf-a0.pnvm -> intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm
+File: intel/iwlwifi/iwlwifi-bz-b0-fm-c0-c102.ucode
+Link: iwlwifi-bz-b0-fm-c0-c102.ucode -> intel/iwlwifi/iwlwifi-bz-b0-fm-c0-c102.ucode
+File: intel/iwlwifi/iwlwifi-bz-b0-fm-c0-c107.ucode
+Link: iwlwifi-bz-b0-fm-c0-c107.ucode -> intel/iwlwifi/iwlwifi-bz-b0-fm-c0-c107.ucode
+
+Licence: fixture
+
+--------------------------------------------------------------------------
+
+Driver: otherdrv - A fixture driver that is not Wi-Fi
+
+File: other/blob.bin
+
+Licence: fixture

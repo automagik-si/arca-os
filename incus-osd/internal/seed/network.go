@@ -6,6 +6,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
 )
 
 // GetNetwork extracts the network configuration from the seed data.
@@ -37,6 +38,7 @@ func GetNetwork(_ context.Context) (*api.SystemNetworkConfig, error) {
 		}
 
 		config.Interfaces = defaultNetwork.Interfaces
+		wifi.MergeSeedDefaults(&config.SystemNetworkConfig, defaultNetwork)
 	}
 
 	// If no timezone was provided, default to UTC.
@@ -51,9 +53,10 @@ func GetNetwork(_ context.Context) (*api.SystemNetworkConfig, error) {
 	return &config.SystemNetworkConfig, nil
 }
 
-// NetworkConfigHasEmptyDevices checks if any device (interface, bond, or vlan) is defined in the given config.
+// NetworkConfigHasEmptyDevices checks if no device (interface, bond, or vlan) is defined in the given config,
+// and no Wi-Fi network is saved: a config with a saved Wi-Fi network has a device.
 func NetworkConfigHasEmptyDevices(networkCfg api.SystemNetworkConfig) bool {
-	return len(networkCfg.Interfaces) == 0 && len(networkCfg.Bonds) == 0 && len(networkCfg.VLANs) == 0
+	return len(networkCfg.Interfaces) == 0 && len(networkCfg.Bonds) == 0 && len(networkCfg.VLANs) == 0 && !networkCfg.Wireless.HasNetworks()
 }
 
 // getDefaultNetworkConfig returns a minimal network configuration, with every interface
@@ -68,10 +71,11 @@ func getDefaultNetworkConfig() (*api.SystemNetworkConfig, error) {
 		Time: &api.SystemNetworkTime{
 			Timezone: "UTC",
 		},
+		Wireless: wifi.Defaults(),
 	}
 
 	for _, i := range interfaces {
-		if i.Name == "lo" {
+		if i.Name == "lo" || wifi.IsDevice("/sys", i.Name) {
 			continue
 		}
 

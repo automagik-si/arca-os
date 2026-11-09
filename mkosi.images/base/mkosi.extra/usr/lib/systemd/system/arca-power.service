@@ -1,0 +1,19 @@
+# The always-on server profile at boot: maximum performance and the battery
+# charge limit. incus-osd starts after it, so a CPU governor set in its kernel
+# configuration still wins.
+[Unit]
+Description=Always-on power profile
+After=systemd-modules-load.service systemd-udev-trigger.service
+Before=incus-osd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/arca-power apply
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

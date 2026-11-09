@@ -1,0 +1,71 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 5],
+    "svn_revision": "5714",
+    "platform_info": "x86_64-linux",
+    "build_info": "(local build)",
+    "argv": ["smartctl", "-aj", "/dev/nvme0"],
+    "exit_status": 0
+  },
+  "device": {
+    "name": "/dev/nvme0",
+    "info_name": "/dev/nvme0",
+    "type": "nvme",
+    "protocol": "NVMe"
+  },
+  "model_name": "Example NVMe",
+  "firmware_version": "1.0",
+  "nvme_pci_vendor": {
+    "id": 6966,
+    "subsystem_id": 6966
+  },
+  "nvme_total_capacity": 1000204886016,
+  "nvme_unallocated_capacity": 0,
+  "nvme_controller_id": 1,
+  "nvme_version": {
+    "string": "1.4",
+    "value": 10400
+  },
+  "nvme_number_of_namespaces": 1,
+  "smart_support": {
+    "available": true,
+    "enabled": true
+  },
+  "smart_status": {
+    "passed": true,
+    "nvme": {
+      "value": 0
+    }
+  },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 38,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 3,
+    "data_units_read": 123456789,
+    "data_units_written": 98765432,
+    "host_reads": 1234567,
+    "host_writes": 7654321,
+    "controller_busy_time": 42,
+    "power_cycles": 31,
+    "power_on_hours": 1200,
+    "unsafe_shutdowns": 7,
+    "media_errors": 0,
+    "num_err_log_entries": 0,
+    "warning_temp_time": 0,
+    "critical_comp_time": 0
+  },
+  "temperature": {
+    "current": 38
+  },
+  "nvme_composite_temperature_threshold": {
+    "warning": 82,
+    "critical": 85
+  },
+  "power_cycle_count": 31,
+  "power_on_time": {
+    "hours": 1200
+  }
+}

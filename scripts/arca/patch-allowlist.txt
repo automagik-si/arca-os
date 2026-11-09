@@ -1,0 +1,39 @@
+# Upstream files the Arca OS patch stack may change. The stack guard,
+# scripts/arca/check-patch-stack.sh, refuses an upstream change to any file
+# not listed here. One path per line; lines starting with # are comments.
+incus-osd/api/images/update_file_component.go
+incus-osd/cmd/image-publisher/main_sync.go
+incus-osd/internal/applications/helpers.go
+incus-osd/internal/applications/load.go
+incus-osd/internal/state/struct.go
+scripts/prepare-upload.sh
+# Wi-Fi hooks in upstream code.
+incus-osd/api/system_network.go
+incus-osd/internal/rest/api_system_network.go
+incus-osd/internal/network/networkd.go
+incus-osd/internal/network/templates/network-common.txt
+incus-osd/internal/seed/network.go
+incus-osd/internal/nftables/nft.go
+incus-osd/internal/tui/tui.go
+incus-osd/cmd/incus-osd/main.go
+# The generated REST API specification, which documents the Wi-Fi types.
+doc/rest-api.yaml
+# The always-on power profile: the console never blanks on a timer.
+mkosi.conf
+# NVMe health in the storage document.
+incus-osd/api/system_storage.go
+incus-osd/internal/storage/storage.go
+# The NVIDIA driver application (boot-selected sysext, driver switching).
+doc/reference/applications/gpu-support.md
+doc/reference/applications/non-primary.md
+doc/reference/system/kernel.md
+incus-osd/internal/applications/app_gpu_support.go
+incus-osd/internal/applications/sysext.go
+incus-osd/internal/kernel/kernel.go
+incus-osd/internal/rest/api_applications.go
+incus-osd/internal/rest/api_system_kernel.go
+incus-osd/internal/state/file.go
+incus-osd/internal/systemd/sysext.go
+incus-osd/internal/update/update.go
+incus-osd/tests/incusos_tests/tests_incusos_api_applications.py
+mkosi.images/base/mkosi.extra/usr/lib/systemd/system/incus-osd.service

@@ -15,6 +15,7 @@ mkdir upload
 
 cp incus-osd/flasher-tool upload/
 
+cp mkosi.output/arca.raw upload/
 cp mkosi.output/debug.raw upload/
 cp mkosi.output/gpu-support.raw upload/
 cp mkosi.output/nvidia.raw upload/

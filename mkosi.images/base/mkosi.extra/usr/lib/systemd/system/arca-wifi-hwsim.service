@@ -1,0 +1,24 @@
+# Simulated Wi-Fi radios for tests. Inert without the arca-wifi-hwsim system
+# credential, which only a test VM is given.
+[Unit]
+Description=Simulated Wi-Fi radios for tests
+ConditionCredential=arca-wifi-hwsim
+Before=incus-osd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=modprobe mac80211_hwsim radios=5
+# The radios' monitor device is not a network to configure: every radiotap
+# device (type 803) without a phy80211 moves into a namespace of its own, so the
+# network configuration never sees it, whatever the module named it. Each step
+# is a no-op when done before, so the unit can be started again; it fails when
+# no monitor device ends up in that namespace.
+ExecStart=/bin/sh -euc '[ -e /run/netns/hwsim ] || ip netns add hwsim; \
+	for d in /sys/class/net/*; do \
+		if [ "$$(cat "$$d/type")" = 803 ] && [ ! -e "$$d/phy80211" ]; then ip link set "$${d##*/}" netns hwsim; fi; \
+	done; \
+	ip -n hwsim -o link show | grep -q " link/ieee802.11/radiotap "'
+
+[Install]
+WantedBy=multi-user.target
