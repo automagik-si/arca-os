@@ -156,7 +156,7 @@ func nvidiaTestCommand(t *testing.T, root string, tt nvidiaBootTest, firmware []
 			}
 		case "systemd-dissect":
 			// The fixture packs ship the same metadata as the merged driver.
-			if len(args) == 3 && args[0] == "--copy-from" && args[2] == "/usr/share/nvidia/supported-gpus" {
+			if len(args) == 3 && args[0] == "--copy-from" && strings.HasPrefix(args[2], "/usr/share/nvidia/") {
 				body, err := os.ReadFile(filepath.Join(root, args[2]))
 
 				return string(body), err

@@ -126,7 +126,7 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 	config.Cards = normalised
 	boot.Config = *config
 
-	boot.Reason = n.checkPreviousAttempt()
+	boot.Reason = n.checkPreviousAttempt(ctx)
 	if installed && config.Driver == "nvidia" && boot.Reason == "" {
 		version, err := n.validate(ctx)
 
@@ -140,7 +140,7 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 			}
 		}
 
-		reason := n.state.Applications.NVIDIA.State.BadVersions[n.attemptKey(version)]
+		reason := n.quarantineReason(version)
 		if reason != "" {
 			boot.Reason = reason
 		}
@@ -237,6 +237,19 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 	completed = true
 
 	return nil
+}
+
+// quarantineReason explains why the linked build or its driver version must not be loaded.
+// A build quarantined only by build, such as one that just hung, is never loaded again either.
+func (n *nvidia) quarantineReason(version string) string {
+	s := &n.state.Applications.NVIDIA.State
+
+	reason := s.BadVersions[n.attemptKey(version)]
+	if s.ActiveExtensionVersion != "" && s.BadBuilds[n.buildKey(n.activeBuild())] != "" {
+		reason = s.BadBuilds[n.buildKey(n.activeBuild())]
+	}
+
+	return reason
 }
 
 func (n *nvidia) startAttempt(ctx context.Context, boot *nvidiaBoot) {

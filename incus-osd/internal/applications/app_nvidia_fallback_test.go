@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
 
 func TestNVIDIABootFallbackRebootIgnoresHungUnload(t *testing.T) {
@@ -155,6 +157,9 @@ func TestNVIDIABootFallbackWithoutRebootBindsNouveau(t *testing.T) {
 			saved, err := state.LoadOrCreate(n.path("/state.txt"))
 			require.NoError(t, err)
 			require.Equal(t, s.Reason, saved.Applications.NVIDIA.State.Reason)
+			// The "restart to finish" reason always comes with needs_reboot.
+			require.Equal(t, probe == "fails", saved.Applications.NVIDIA.State.NeedsReboot)
+			require.Equal(t, probe == "fails", n.state.System.Update.State.NeedsReboot)
 		})
 	}
 }
@@ -280,49 +285,220 @@ func TestNVIDIAInterruptedAttemptQuarantinesBuildOrVersion(t *testing.T) {
 
 	for _, previous := range []string{"good-same-driver", "none", "also-bad", "same-build"} {
 		for _, marker := range []string{"attempt", "health"} {
-			t.Run(previous+"/"+marker, func(t *testing.T) {
-				t.Parallel()
-				n, _, _ := switchFixture(t, nvidiaStable)
-				s := &n.state.Applications.NVIDIA.State
-				driver := s.DriverVersion
-				failed := api.ApplicationNVIDIABuild{Branch: nvidiaStable, Version: "001"}
-				// Both fixture packs carry the same NVIDIA driver version: 002 is a rebuilt pack.
-				rebuilt := api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}
+			for _, recorded := range []bool{true, false} {
+				t.Run(previous+"/"+marker+"/"+map[bool]string{true: "recorded", false: "legacy"}[recorded], func(t *testing.T) {
+					t.Parallel()
+					n, _, _ := switchFixture(t, nvidiaStable)
+					s := &n.state.Applications.NVIDIA.State
+					driver := s.DriverVersion
+					failed := api.ApplicationNVIDIABuild{Branch: nvidiaStable, Version: "001"}
+					// Both fixture packs carry the same NVIDIA driver version: 002 is a rebuilt pack.
+					rebuilt := api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}
 
-				switch previous {
-				case "good-same-driver":
-					s.Previous = &rebuilt
-				case "also-bad":
-					s.Previous = &rebuilt
-					s.BadBuilds = map[string]string{n.buildKey(rebuilt): "failed before"}
-				case "same-build":
-					s.Previous = &failed
-				default:
-				}
+					switch previous {
+					case "good-same-driver":
+						s.Previous = &rebuilt
+					case "also-bad":
+						s.Previous = &rebuilt
+						s.BadBuilds = map[string]string{n.buildKey(rebuilt): "failed before"}
+					case "same-build":
+						s.Previous = &failed
+					default:
+					}
 
-				if marker == "attempt" {
-					s.PendingAttempt, s.AttemptBootID = n.attemptKey(driver), "boot-zero"
-				} else {
-					s.PendingHealth, s.HealthBootID = n.attemptKey(driver), "boot-zero"
-				}
+					if marker == "attempt" {
+						s.PendingAttempt, s.AttemptBootID = n.attemptKey(driver), "boot-zero"
+					} else {
+						s.PendingHealth, s.HealthBootID = n.attemptKey(driver), "boot-zero"
+					}
 
-				require.Empty(t, n.checkPreviousAttempt())
-				require.Empty(t, s.PendingAttempt)
-				require.Empty(t, s.PendingHealth)
+					// Markers saved before A2c have no build and keep their earlier meaning.
+					if recorded {
+						s.AttemptBuild = &failed
+					}
 
-				saved, err := state.LoadOrCreate(n.path("/state.txt"))
-				require.NoError(t, err)
+					require.Empty(t, n.checkPreviousAttempt(t.Context()))
+					require.Empty(t, s.PendingAttempt)
+					require.Empty(t, s.PendingHealth)
+					require.Nil(t, s.AttemptBuild)
 
-				if previous == "good-same-driver" {
-					require.NotContains(t, saved.Applications.NVIDIA.State.BadVersions, n.attemptKey(driver))
-					require.NotEmpty(t, saved.Applications.NVIDIA.State.BadBuilds[n.buildKey(failed)])
-					require.NotContains(t, saved.Applications.NVIDIA.State.BadBuilds, n.buildKey(rebuilt))
+					saved, err := state.LoadOrCreate(n.path("/state.txt"))
+					require.NoError(t, err)
 
-					return
-				}
+					if previous != "none" {
+						require.NotEmpty(t, saved.Applications.NVIDIA.State.BadBuilds[n.buildKey(failed)])
+					}
 
-				require.NotEmpty(t, saved.Applications.NVIDIA.State.BadVersions[n.attemptKey(driver)])
-			})
+					if recorded && previous == "good-same-driver" {
+						require.NotContains(t, saved.Applications.NVIDIA.State.BadVersions, n.attemptKey(driver))
+						require.NotContains(t, saved.Applications.NVIDIA.State.BadBuilds, n.buildKey(rebuilt))
+
+						return
+					}
+
+					require.NotEmpty(t, saved.Applications.NVIDIA.State.BadVersions[n.attemptKey(driver)])
+				})
+			}
 		}
 	}
+}
+
+// nextNVIDIABoot reloads the durable state the way a power cycle leaves it.
+func nextNVIDIABoot(t *testing.T, n *nvidia, id string) {
+	t.Helper()
+
+	loaded, err := state.LoadOrCreate(n.path("/state.txt"))
+	require.NoError(t, err)
+
+	n.state = loaded
+	n.appState = &loaded.Applications.NVIDIA.State.ApplicationState
+	n.state.OS.SystemIsReady = false
+	writeGPUFixtureFile(t, n.sysroot, "proc/sys/kernel/random/boot_id", id)
+	require.NoError(t, os.RemoveAll(n.path("/run/incus-os")))
+
+	// sysfs starts again with no driver bound to the cards.
+	for _, address := range []string{"0000:01:00.0", "0000:02:00.0"} {
+		err := os.Remove(n.path("/sys/bus/pci/devices/" + address + "/driver"))
+		if !errors.Is(err, os.ErrNotExist) {
+			require.NoError(t, err)
+		}
+	}
+}
+
+func TestNVIDIAHungPreviousBuildIsQuarantinedOnTheNextBoot(t *testing.T) {
+	t.Parallel()
+	n, commands, _ := switchFixture(t, nvidiaStable)
+	n.state.OS.SystemIsReady = false
+
+	s := &n.state.Applications.NVIDIA.State
+	previous := api.ApplicationNVIDIABuild{Branch: nvidiaStable, Version: "001"}
+	requested := api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}
+	driver := s.DriverVersion
+
+	// B is quarantined, so the boot guard linked the previous build A instead.
+	s.Previous = &previous
+	s.RequestedBranch, s.Version = requested.Branch, requested.Version
+	s.BadBuilds = map[string]string{n.buildKey(requested): "failed before"}
+	require.NoError(t, n.state.SaveDurable())
+
+	original := n.runCommand
+	n.runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "/sbin/insmod" {
+			saved, err := state.LoadOrCreate(n.path("/state.txt"))
+			require.NoError(t, err)
+			require.Equal(t, &previous, saved.Applications.NVIDIA.State.AttemptBuild)
+			// The module load hangs; the host only comes back after a power cycle.
+			panic("insmod hung")
+		}
+
+		return original(ctx, name, args...)
+	}
+
+	require.Panics(t, func() { _ = n.prepare(t.Context(), true) })
+
+	nextNVIDIABoot(t, n, "boot-two")
+
+	n.runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
+		require.NotEqual(t, "/sbin/insmod", name, "the hung build must not be retried")
+
+		return original(ctx, name, args...)
+	}
+	require.NoError(t, n.prepare(t.Context(), true))
+	require.NoError(t, n.Start(t.Context()))
+
+	s = &n.state.Applications.NVIDIA.State
+	require.NotEmpty(t, s.BadBuilds[n.buildKey(previous)])
+	require.NotEmpty(t, s.BadBuilds[n.buildKey(requested)])
+	// No other good build of that driver version remains, so the version is quarantined too.
+	require.NotEmpty(t, s.BadVersions[n.attemptKey(driver)])
+	require.Equal(t, "nouveau", s.ActiveDriver)
+	require.Contains(t, readNVIDIABoot(t, n).Reason, "previous startup")
+	require.NotContains(t, s.Reason, "restored")
+	require.Nil(t, s.AttemptBuild)
+	require.LessOrEqual(t, strings.Count(strings.Join(*commands, "\n"), "systemctl --no-block reboot"), 1)
+
+	saved, err := state.LoadOrCreate(n.path("/state.txt"))
+	require.NoError(t, err)
+	require.NotEmpty(t, saved.Applications.NVIDIA.State.BadBuilds[n.buildKey(previous)])
+}
+
+func TestNVIDIABootRollbackReasonStaysVisible(t *testing.T) {
+	t.Parallel()
+	n, commands, _ := switchFixture(t, nvidiaStable)
+	n.state.OS.SystemIsReady = false
+
+	s := &n.state.Applications.NVIDIA.State
+	failed := api.ApplicationNVIDIABuild{Branch: nvidiaStable, Version: "001"}
+	previous := api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}
+	s.Previous = &previous
+
+	original := n.runCommand
+	n.runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "/usr/bin/nvidia-smi" && n.activeBuild() == failed {
+			return "", errors.New("GSP failed")
+		}
+
+		return original(ctx, name, args...)
+	}
+	require.NoError(t, n.prepare(t.Context(), true))
+	require.NoError(t, n.Start(t.Context()))
+	require.Equal(t, 1, strings.Count(strings.Join(*commands, "\n"), "systemctl --no-block reboot"))
+
+	nextNVIDIABoot(t, n, "boot-two")
+
+	// The boot guard links the requested previous build from disk.
+	require.NoError(t, os.Remove(n.path(filepath.Join(systemd.SystemExtensionsPath, nvidiaStable+".raw"))))
+	require.NoError(t, os.Symlink(n.path(filepath.Join(systemd.LocalExtensionsPath, "002", nvidiaLTS+".raw")), n.path(filepath.Join(systemd.SystemExtensionsPath, nvidiaLTS+".raw"))))
+	require.NoError(t, n.prepare(t.Context(), true))
+	require.NoError(t, n.Start(t.Context()))
+
+	want := "the NVIDIA driver nvidia 001 failed at startup; Arca went back to nvidia-lts 002"
+	s = &n.state.Applications.NVIDIA.State
+	require.Equal(t, previous, n.activeBuild())
+	require.Equal(t, "nvidia", s.ActiveDriver)
+	require.Equal(t, want, s.Reason)
+	require.Equal(t, 1, strings.Count(strings.Join(*commands, "\n"), "systemctl --no-block reboot"))
+
+	saved, err := state.LoadOrCreate(n.path("/state.txt"))
+	require.NoError(t, err)
+	require.Equal(t, want, saved.Applications.NVIDIA.State.Reason)
+	require.Equal(t, want, n.recoveryReason())
+
+	// Resetting the failure history ends the explanation.
+	config := n.state.Applications.NVIDIA.Config
+	config.ResetBadVersions = true
+	require.NoError(t, n.UpdateConfig(t.Context(), &api.ApplicationNVIDIA{Config: config}))
+	require.Nil(t, s.Recovery)
+
+	require.Empty(t, n.recoveryReason())
+}
+
+func TestNVIDIARecoveryReasonEndsWhenTheOwnerSwitches(t *testing.T) {
+	t.Parallel()
+	n, _, _ := switchFixture(t, nvidiaStable)
+	s := &n.state.Applications.NVIDIA.State
+	recovered := n.activeBuild()
+	s.ActiveDriver = "nvidia"
+	s.Recovery = &api.ApplicationNVIDIARecovery{Build: recovered, Reason: "the NVIDIA driver nvidia-lts 002 failed at startup; Arca went back to nvidia 001"}
+	require.Equal(t, s.Recovery.Reason, n.recoveryReason())
+
+	s.RequestedBranch, s.Version = nvidiaLTS, "002"
+
+	require.Empty(t, n.recoveryReason())
+	require.Nil(t, s.Recovery)
+}
+
+func TestNVIDIABootNeverLoadsAQuarantinedLinkedBuild(t *testing.T) {
+	t.Parallel()
+	n, commands, _ := switchFixture(t, nvidiaStable)
+	n.state.OS.SystemIsReady = false
+
+	s := &n.state.Applications.NVIDIA.State
+	s.BadBuilds = map[string]string{n.buildKey(n.activeBuild()): "NVIDIA did not complete its previous startup"}
+	require.NoError(t, n.prepare(t.Context(), true))
+	require.NoError(t, n.Start(t.Context()))
+	require.NotContains(t, strings.Join(*commands, "\n"), "/sbin/insmod")
+	require.Equal(t, "nouveau", s.ActiveDriver)
+	require.Equal(t, "NVIDIA did not complete its previous startup", readNVIDIABoot(t, n).Reason)
+	require.NotContains(t, strings.Join(*commands, "\n"), "reboot")
 }

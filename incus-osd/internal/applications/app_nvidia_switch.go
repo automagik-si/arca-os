@@ -514,7 +514,7 @@ func (n *nvidia) activateBuild(ctx context.Context, build api.ApplicationNVIDIAB
 				}
 
 				if restoreErr != nil {
-					state.PendingAttempt, state.AttemptBootID, state.PendingHealth, state.HealthBootID = "", "", "", ""
+					clearNVIDIAAttempts(state)
 					state.NeedsReboot, state.Reason = true, errNVIDIARestore.Error()
 					n.state.System.Update.State.NeedsReboot = true
 					restoreErr = errors.Join(errNVIDIARestore, restoreErr, n.state.SaveDurable())
@@ -755,6 +755,7 @@ func (n *nvidia) checkBuild(ctx context.Context) error {
 	}
 
 	s.PendingHealth, s.HealthBootID = "", ""
+	forgetNVIDIAAttemptBuild(s)
 
 	n.clearBadVersion()
 
@@ -779,9 +780,14 @@ func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) e
 		return err
 	}
 
+	s.Recovery = &api.ApplicationNVIDIARecovery{Build: *s.Previous, Reason: "the NVIDIA driver " + nvidiaBuildLabel(n.activeBuild()) + " failed at startup; Arca went back to " + nvidiaBuildLabel(*s.Previous)}
 	s.RequestedBranch, s.Version = s.Previous.Branch, s.Previous.Version
 
 	return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, true)), true)
+}
+
+func nvidiaBuildLabel(build api.ApplicationNVIDIABuild) string {
+	return build.Branch + " " + build.Version
 }
 
 func withNVIDIANote(reason string, note string) string {
@@ -817,13 +823,13 @@ func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, keepModules
 
 	_, err := n.unloadModules(repairCtx)
 	if err != nil {
-		return errNVIDIANouveau.Error()
+		return n.nouveauFailed()
 	}
 
 	if !gpuModuleBlacklisted("nouveau", n.state.System.Kernel.Config.BlacklistModules) {
 		_, err = n.command(repairCtx, "/sbin/modprobe", "nouveau")
 		if err != nil {
-			return errNVIDIANouveau.Error()
+			return n.nouveauFailed()
 		}
 
 		// Nouveau is usually loaded already, so modprobe alone does not make it take the card.
@@ -836,18 +842,35 @@ func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, keepModules
 	}
 
 	if failed {
-		return errNVIDIANouveau.Error()
+		return n.nouveauFailed()
 	}
 
 	return ""
+}
+
+// nouveauFailed asks for the restart that the "restart to finish" reason promises.
+func (n *nvidia) nouveauFailed() string {
+	n.state.Applications.NVIDIA.State.NeedsReboot = true
+	n.state.System.Update.State.NeedsReboot = true
+
+	return errNVIDIANouveau.Error()
 }
 
 func (n *nvidia) recoveryReason() string {
 	s := &n.state.Applications.NVIDIA.State
 	requested := api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version}
 
+	// A boot-time return to the previous build stays explained while that build is requested and running.
+	if s.Recovery != nil && s.Recovery.Build != requested {
+		s.Recovery = nil
+	}
+
+	if s.Recovery != nil && n.activeBuild() == s.Recovery.Build && s.ActiveDriver == "nvidia" {
+		return s.Recovery.Reason
+	}
+
 	reason := s.BadBuilds[n.buildKey(requested)]
-	if reason != "" && s.Previous != nil && n.activeBuild() == *s.Previous && s.ActiveExtensionVersion != "" {
+	if reason != "" && s.Previous != nil && n.activeBuild() == *s.Previous && s.ActiveExtensionVersion != "" && s.ActiveDriver == "nvidia" {
 		return reason + "; restored the previous driver from disk"
 	}
 
@@ -879,7 +902,8 @@ func (n *nvidia) deferRollback(ctx context.Context, reason string, boot bool) (r
 
 		s := &n.state.Applications.NVIDIA.State
 
-		s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+		clearNVIDIAAttempts(s)
+
 		if s.Previous != nil {
 			s.RequestedBranch, s.Version = s.Previous.Branch, s.Previous.Version
 
