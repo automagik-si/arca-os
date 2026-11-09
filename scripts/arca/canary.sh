@@ -204,7 +204,7 @@ fi
 rm -f "$work/os.qcow2"
 created=1
 incus create -q --vm "${P[@]}" "$fp" "$vm" -c security.secureboot=false -c limits.cpu="$VM_CPUS" \
-	-c limits.memory="$VM_MEMORY" -d "root,size=$VM_ROOT,limits.read=$DISK_READ,limits.write=$DISK_WRITE" </dev/null \
+	-c limits.memory="$VM_MEMORY" -d "root,size=$VM_ROOT" -d "root,limits.read=$DISK_READ" -d "root,limits.write=$DISK_WRITE" </dev/null \
 	|| finish inconclusive "could not create $vm"
 incus image delete "${P[@]}" "$fp" </dev/null
 incus config device add -q "${P[@]}" "$vm" vtpm tpm </dev/null
