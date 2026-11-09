@@ -3,8 +3,11 @@
 # builder, publish-update.sh, canary.sh and incus are stubs over a fake
 # builder filesystem, and git is real. It checks that a failed canary never
 # promotes (also not on later runs), a passed canary promotes the same build,
-# an inconclusive canary turns into a failure after CANARY_TRIES runs, a busy
-# builder skips the run, and a dry run calls nothing.
+# an inconclusive canary turns into a failure after CANARY_TRIES runs, a canary
+# that dies without a verdict or a failure the tree could not record is never
+# promoted later, a failed build or publish is removed and backed off, low
+# space refuses a build, builds never move the latest link, a busy builder
+# skips the run, and a dry run calls nothing.
 #
 #   scripts/arca/test/autopublish.sh
 #
@@ -59,6 +62,8 @@ config)
 	case "$*" in
 	*limits.cpu*) echo 4 ;; *limits.read*) echo 150MB ;; *limits.write*) echo 80MB ;; *) exit 1 ;;
 	esac ;;
+storage) # storage info <pool> --bytes
+	printf 'info:\n  total space: "%s"\n  space used: "%s"\n' $((1000 * 1073741824)) $(((1000 - $(cat "$T/pool-free-gib")) * 1073741824)) ;;
 stop) echo "incus stop $2" >>"$T/calls"; echo STOPPED >"$T/builder.state" ;;
 delete) echo "incus delete $*" >>"$T/calls" ;;
 file) # file push <src> <vm>/<path>
@@ -69,9 +74,13 @@ exec) # exec <vm> -- <cmd> ...
 	tar) tar -C "$B$3" -cf - . ;;
 	ls) ls -1 "$B$3" ;;
 	sha256sum) sha256sum "$B$2" ;;
+	df) printf 'Avail\n%s\n' $(($(cat "$T/builder-free-gib") * 1073741824)) ;;
+	test) test -f "$B$3" ;;
+	rm) echo "builder rm $3" >>"$T/calls"; rm -rf "${B:?}$3" ;;
+	sh) [ -d "$B/srv/artifacts/os/$(cat "$T/next-version")" ] && echo '{}' >"$B/srv/artifacts/os/$(cat "$T/next-version")/autopublish.json" ;;
 	*) exit 1 ;;
 	esac ;;
-profile) echo incusbr0 ;;
+profile) case "$*" in *pool*) echo crucial ;; *) echo incusbr0 ;; esac ;;
 network) echo 127.0.0.1/24 ;;
 *) exit 1 ;;
 esac
@@ -90,6 +99,7 @@ case "$1" in
 true) ;;
 scripts/arca/build.sh)
 	v=$(cat "$T/next-version")
+	[ ! -e "$T/build-broken" ] || exit 1
 	mkdir -p "$B/srv/artifacts/os/$v"
 	echo "version: $v" ;;
 scripts/arca/release-tree.sh)
@@ -101,10 +111,14 @@ scripts/arca/release-tree.sh)
 	case "$cmd" in
 	notes) cp "$B${o[--file]}" "$tree/$v/notes.json" ;;
 	promote)
+		[ ! -e "$T/record-broken" ] || exit 1
 		if [ -f "$tree/$v/canary.json" ] && [ "$(jq -r .state "$tree/$v/canary.json")" = failed ]; then exit 2; fi
 		jq -n --arg v "$v" '{version: $v, state: "passed", reason: ""}' >"$tree/$v/canary.json"
 		set-channels "$tree" "$v" '. + ["stable"] | unique' ;;
 	fail)
+		# Like the real one: a reason is required, and recording can fail.
+		[ -n "${o[--reason]:-}" ] || exit 2
+		[ ! -e "$T/record-broken" ] || exit 1
 		jq -n --arg v "$v" --arg r "${o[--reason]}" '{version: $v, state: "failed", reason: $r}' >"$tree/$v/canary.json"
 		set-channels "$tree" "$v" 'map(select(. != "testing"))' ;;
 	prune)
@@ -127,6 +141,7 @@ mkdir -p "$tree/$v"
 jq -n --arg v "$v" --arg c "${o[--channel]}" '{format: "1.0", version: $v, channels: [$c], severity: "none", files: []}' >"$tree/$v/update.json"
 reindex "$tree"
 tar -C "$tree" -cf - . | tar -C "${o[--serve-dir]}" -xf -
+[ ! -e "$T/publish-broken" ] || exit 1
 EOF
 
 # The fake canary.sh: its verdict comes from $T/canary-mode.
@@ -137,6 +152,9 @@ echo "canary $*" >>"$T/calls"
 case "$(cat "$T/canary-mode")" in
 pass) echo "PASS version"; echo "result: passed"; exit 0 ;;
 fail) echo "FAIL arca arca.service is not active after 600 s"; echo "result: failed"; echo "reason: arca.service is not active after 600 s"; exit 1 ;;
+fail-noreason) echo "result: failed"; exit 1 ;;
+die-target) echo "phase: target"; exit 1 ;;
+die-baseline) exit 1 ;;
 *) echo "result: inconclusive"; echo "reason: the base canary did not boot"; exit 3 ;;
 esac
 EOF
@@ -166,6 +184,8 @@ export T=$t PATH=$t/bin:$PATH XDG_CACHE_HOME=$t/cache XDG_RUNTIME_DIR=$t/run XDG
 export ARCA_BUILDER_LOCK=$t/cache/arcaos-builder.lock
 export ARCA_AUTOPUBLISH_IN_BUILDER=$t/bin/in-builder ARCA_AUTOPUBLISH_PUBLISH_UPDATE=$t/bin/publish-update ARCA_AUTOPUBLISH_CANARY=$t/bin/canary
 printf 'CANARY_TRIES=2\n' >"$t/config/arca-os/autopublish.conf"
+echo 500 >"$t/pool-free-gib"
+echo 100 >"$t/builder-free-gib"
 run() { # <canary mode> <next version>: runs autopublish, sets rc and out
 	echo "$1" >"$t/canary-mode"
 	echo "$2" >"$t/next-version"
@@ -196,6 +216,8 @@ check failed-canary "the reason is recorded" grep -q "arca.service is not active
 check failed-canary "stable is unchanged" [ "$(jq -r '[.updates[] | select(.channels | index("stable"))][0].version' "$idx")" = 202611010000 ]
 check failed-canary "the builder is stopped" [ "$(cat "$t/builder.state")" = STOPPED ]
 check failed-canary "notes.json lists the merge subject" jqe '.changes | index("merge: a change that breaks arca")' "$t/serve/202611100001/notes.json"
+check failed-canary "the build never moves the latest link" called "build.sh --no-latest"
+check failed-canary "the verdict is saved before the tree changes" [ "$(jq -r .state "$t/state/arca-os/autopublish/verdicts/202611100001.json")" = failed ]
 check failed-canary "notes.json says NVIDIA is not included" jqe '.not_included[0] | test("NVIDIA")' "$t/serve/202611100001/notes.json"
 
 # 2. The next run, with the canary now passing and no new commit: nothing.
@@ -258,5 +280,94 @@ commit "merge: after the dry run"
 out=$("$ap" --dry-run --serve-dir "$t/serve" --checkout "$t/checkout" --remote origin --branch main </dev/null 2>&1)
 check dry-run "plans a publish of the new commit" grep -q '^plan: publish' <<<"$out"
 check dry-run "calls nothing" [ ! -s "$t/calls" ]
+
+# 8. The canary dies without a verdict after switching to testing: failed, never promoted later.
+run die-target 202611100010
+check died-on-target "exits 1" [ "$rc" -eq 1 ]
+check died-on-target "recorded failed" [ "$(state 202611100010)" = failed ]
+check died-on-target "with a plain reason" grep -q "stopped without a verdict" "$t/serve/202611100010/canary.json"
+run pass 202611100099
+check died-on-target "a later run with a passing canary does nothing" [ ! -s "$t/calls" ]
+check died-on-target "never promoted" [ -z "$(channels 202611100010)" ]
+
+# 9. The canary dies before switching: counted as inconclusive, then failed, never promoted.
+commit "merge: a canary that dies early"
+run die-baseline 202611100011
+check died-early "first death is inconclusive" [ "$rc" -eq 3 ]
+run die-baseline 202611100099
+check died-early "the second death (CANARY_TRIES=2) fails it" [ "$(state 202611100011)" = failed ]
+check died-early "and exits 1" [ "$rc" -eq 1 ]
+run pass 202611100099
+check died-early "never promoted later" [ -z "$(channels 202611100011)" ]
+
+# 10. A failed verdict with no reason still gets recorded, with a default reason.
+commit "merge: a canary that fails silently"
+run fail-noreason 202611100012
+check no-reason "exits 1" [ "$rc" -eq 1 ]
+check no-reason "recorded failed" [ "$(state 202611100012)" = failed ]
+check no-reason "with a default reason" grep -q "without giving a reason" "$t/serve/202611100012/canary.json"
+
+# 11. Recording the failure in the tree fails: the saved verdict is applied by the next run, never promoted.
+commit "merge: a failure the tree cannot record"
+touch "$t/record-broken"
+run fail 202611100013
+rm -f "$t/record-broken"
+check record-broken "exits 1" [ "$rc" -eq 1 ]
+check record-broken "the verdict was saved" [ "$(jq -r .state "$t/state/arca-os/autopublish/verdicts/202611100013.json")" = failed ]
+run pass 202611100099
+check record-broken "the next run applies the saved failure" [ "$(state 202611100013)" = failed ]
+check record-broken "without running the canary again" not_called "canary "
+check record-broken "without building" not_called "build.sh"
+check record-broken "never promoted" [ -z "$(channels 202611100013)" ]
+
+# 12. A failing build backs off, stops after BUILD_TRIES (3), and a new commit resets it.
+commit "merge: a change that does not build"
+bfile() { echo "$t/state/arca-os/autopublish/build-failures/$(git -C "$t/origin" rev-parse HEAD)"; }
+touch "$t/build-broken"
+run pass 202611100014
+check build-fails "exits 1" [ "$rc" -eq 1 ]
+check build-fails "counted once" [ "$(cut -d' ' -f1 "$(bfile)")" = 1 ]
+run pass 202611100014
+check build-fails "the next run backs off" grep -q "backing off" <<<"$out"
+check build-fails "and builds nothing" not_called "build.sh"
+echo "1 0" >"$(bfile)"
+run pass 202611100014
+echo "2 0" >"$(bfile)"
+run pass 202611100014
+check build-fails "counted three times" [ "$(cut -d' ' -f1 "$(bfile)")" = 3 ]
+echo "3 0" >"$(bfile)"
+run pass 202611100014
+check build-fails "then waits for a new commit" grep -q "waiting for a new commit" <<<"$out"
+check build-fails "without building" not_called "build.sh"
+rm -f "$t/build-broken"
+commit "merge: fix the build"
+run pass 202611100015
+check build-fails "a new commit builds and is promoted" [ "$(channels 202611100015)" = stable,testing ]
+check build-fails "the failure count is cleared" [ -z "$(ls "$t/state/arca-os/autopublish/build-failures")" ]
+
+# 13. Publishing fails after the build: the build is removed and marked failed in the tree.
+commit "merge: a release that does not publish"
+touch "$t/publish-broken"
+run pass 202611100016
+rm -f "$t/publish-broken"
+check publish-fails "exits 1" [ "$rc" -eq 1 ]
+check publish-fails "the build directory is deleted" [ ! -d "$t/builder/srv/artifacts/os/202611100016" ]
+check publish-fails "it is marked failed in the tree" called "fail --version 202611100016 --base none --reason publishing did not finish"
+check publish-fails "it is not left in testing" [ -z "$(channels 202611100016)" ]
+check publish-fails "never promoted" not_called "promote"
+
+# 14. Too little space refuses the build.
+commit "merge: while the disk is full"
+echo 10 >"$t/builder-free-gib"
+run pass 202611100017
+echo 100 >"$t/builder-free-gib"
+check low-space "builder: exits 1" [ "$rc" -eq 1 ]
+check low-space "builder: says why" grep -q "refusing to build: builder 10 GiB free" <<<"$out"
+check low-space "builder: builds nothing" not_called "build.sh"
+echo 20 >"$t/pool-free-gib"
+run pass 202611100017
+echo 500 >"$t/pool-free-gib"
+check low-space "pool: refuses" grep -q "pool crucial 20 GiB free" <<<"$out"
+check low-space "pool: builds nothing" not_called "build.sh"
 
 [ "$fails" -eq 0 ] || exit 1

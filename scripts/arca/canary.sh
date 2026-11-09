@@ -30,8 +30,12 @@
 # takes it, as vm-test.sh does. The builder must be running; with
 # --stop-builder it is stopped once the canary's disk is prepared.
 #
-# Output: one "PASS <check>" or "FAIL <check>" line per check, then
-# "result: passed|failed|inconclusive" and, unless passed, "reason: <text>".
+# Output: one "PASS <check>" or "FAIL <check>" line per check, "phase: target"
+# once the canary is switched to --channel, then "result:
+# passed|failed|inconclusive" and, unless passed, "reason: <text>". Every exit
+# after the usage checks carries a verdict: an unexpected error before the
+# switch is inconclusive, and after it a failure, because the target was
+# running.
 # Exit codes: 0 passed, 1 failed, 2 refused (usage), 3 inconclusive.
 set -euo pipefail
 
@@ -104,6 +108,7 @@ created=0
 work=''
 alias=canary-$vm
 fp=''
+phase=baseline verdict_done=0 err_line=''
 
 result() { # <PASS|FAIL> <check> [detail]
 	results+=("$1 $2${3:+ $3}")
@@ -112,12 +117,13 @@ result() { # <PASS|FAIL> <check> [detail]
 }
 # finish <passed|failed|inconclusive> [reason]: prints the verdict and exits.
 finish() {
+	verdict_done=1
 	echo "result: $1"
 	[ -z "${2:-}" ] || echo "reason: $2"
 	case "$1" in passed) exit 0 ;; failed) exit 1 ;; *) exit 3 ;; esac
 }
 instance_state() { incus list "${P[@]}" -f csv -c ns </dev/null | awk -F, -v n="$1" '$1 == n { print $2 }'; }
-vexec() { incus exec "${P[@]}" "$vm" -- "$@" </dev/null; }
+vexec() { timeout 300 incus exec "${P[@]}" "$vm" -- "$@" </dev/null; }
 osd() { vexec curl -sf --max-time 30 --unix-socket "$OSD_SOCK" "$@"; }
 osd_env() { osd http://localhost/1.0 2>/dev/null | jq -r ".metadata.environment.$1 // empty" 2>/dev/null || true; }
 app_version() { osd "http://localhost/1.0/applications/$1" 2>/dev/null | jq -r '.metadata.state.version // empty' 2>/dev/null || true; }
@@ -126,6 +132,13 @@ journal_tail() { vexec journalctl -u incus-osd -b0 --no-pager 2>/dev/null | tail
 
 # shellcheck disable=SC2317,SC2329  # called from the EXIT trap
 cleanup() {
+	local rc=$?
+	if [ "$verdict_done" -eq 0 ]; then
+		verdict_done=1
+		echo "result: $([ "$phase" = target ] && echo failed || echo inconclusive)"
+		echo "reason: the canary stopped unexpectedly (exit $rc${err_line:+, line $err_line}) while $([ "$phase" = target ] && echo "testing $target" || echo "preparing the $base baseline")"
+		if [ "$phase" = target ]; then rc=1; else rc=3; fi
+	fi
 	if [ "$created" -eq 1 ] && [ "$keep" -eq 0 ]; then
 		log "deleting $vm"
 		incus delete "${P[@]}" --force "$vm" </dev/null >/dev/null 2>&1 || true
@@ -138,8 +151,10 @@ cleanup() {
 			incus exec "${P[@]}" "$builder" -- rm -rf "$bout" </dev/null >/dev/null 2>&1 || true
 		fi
 	fi
+	exit "$rc"
 }
 trap cleanup EXIT
+trap 'err_line=$LINENO' ERR
 
 [ "$(instance_state "$builder")" = RUNNING ] || finish inconclusive "the builder $builder is not running"
 if [ -n "$(instance_state "$vm")" ]; then
@@ -250,6 +265,8 @@ cfg=$(osd http://localhost/1.0/system/update | jq -c --arg c "$channel" \
 vexec sh -c 'printf "%s" "$1" | curl -sf --max-time 30 --unix-socket "$2" -X PUT -H "Content-Type: application/json" --data-binary @- http://localhost/1.0/system/update >/dev/null' \
 	canary "{\"config\":$cfg}" "$OSD_SOCK" || finish inconclusive "could not set the canary's channel to $channel"
 osd -X POST http://localhost/1.0/system/update/:check >/dev/null || log "the first update check request failed; the 5m schedule retries"
+phase=target
+echo "phase: target"
 log "pointed at channel $channel with automatic reboots; waiting up to ${timeout} s for $target"
 
 # shellcheck disable=SC2329  # called through wait_for
@@ -295,7 +312,7 @@ if wait_for 600 arca_active; then
 	st=$(vexec systemctl is-active arca.service 2>/dev/null || true)
 	nr=$(vexec systemctl show -p NRestarts --value arca.service 2>/dev/null || true)
 	names='' call_rc=''
-	vexec rm -f /root/canary.secret
+	vexec rm -f /root/canary.secret || true
 	if vexec "$ARCA" token mint --scope viewer --id canary --config "$ARCA_CONFIG" --out /root/canary.secret >/dev/null 2>&1 \
 		&& vexec systemctl restart arca.service; then
 		wait_for 60 vexec test -S /run/arca/arca.sock || true
@@ -306,7 +323,7 @@ if wait_for 600 arca_active; then
 		fi
 		names=$(printf '%s' "$out" | jq -r '.projects[]?.project' 2>/dev/null || true)
 	fi
-	vexec rm -f /root/canary.secret
+	vexec rm -f /root/canary.secret || true
 	if [ "$st" != active ] || [ "$nr" != 0 ]; then
 		result FAIL arca "arca.service is '$st' with NRestarts=${nr:-unknown} after 60 s"
 	elif [ "$call_rc" != 0 ]; then

@@ -9,19 +9,31 @@
 #                  [--canary-vm arcaos-canary] [--nodes <remote,...>]
 #
 # A run does the first of these that applies:
+#   record   the newest autopublished release has a verdict saved in the state
+#            directory that the tree does not show yet (an earlier run stopped
+#            after the canary): apply it, without testing again
 #   resume   the newest autopublished release is still in testing with no
 #            canary verdict (an earlier canary could not run): run its canary
 #   publish  the branch moved since the newest autopublished release: build
-#            it in the builder (build.sh), publish it into channel testing
-#            (publish-update.sh) with notes.json, and run the canary
-#   nothing  otherwise
+#            it in the builder (build.sh --no-latest), publish it into channel
+#            testing (publish-update.sh) with notes.json, and run the canary
+#   nothing  otherwise, or the branch head failed to build or publish: after
+#            a failure the same commit waits 30 min, then 60 min, and after
+#            BUILD_TRIES (3) failures it waits for a new commit
 # The canary (canary.sh) installs the current stable release in a capped VM,
 # points it at testing and waits for it to update itself and pass. Passed: the
 # same signed release is promoted to stable (release-tree.sh promote; nothing
 # is rebuilt). Failed: canary.json records "failed" and the plain reason, and
 # the release leaves testing; it is never promoted. Inconclusive (the canary
-# could not run): it stays in testing and the next run retries, up to 3 runs,
-# then it is marked failed. After a verdict, the tree keeps the newest 3
+# could not run): it stays in testing and the next run retries; every canary
+# attempt counts, and after CANARY_TRIES (3) it is marked failed. Each verdict
+# is saved in the state directory before the tree is changed, and a version
+# that ever failed is never promoted. A canary that stops without a verdict
+# counts as inconclusive before it switched to testing, and as failed after.
+# A build or publish that fails is removed again: its build directory is
+# deleted and, when it reached the tree, it is marked failed there. A build is
+# refused when the builder has less than MIN_BUILDER_FREE_GIB (30) GiB free or
+# its storage pool less than MIN_POOL_FREE_GIB (50) GiB. After a verdict, the tree keeps the newest 3
 # stable releases, the newest testing one, the newest autopublished one and
 # every version a node in --nodes reports (running, next or alternate); the
 # rest is pruned. The builder is stopped at the end of every run.
@@ -39,7 +51,10 @@
 # The config file (default ~/.config/arca-os/autopublish.conf) holds KEY=value
 # lines, read as data: BRANCH, REMOTE, CHECKOUT, TOOLS_CHECKOUT, SERVE_DIR, BUILDER_TREE,
 # PROJECT, BUILDER, CANARY_VM, NODES, APPS, KEEP_STABLE, BUILD_ARGS,
-# CANARY_TIMEOUT, CANARY_TRIES, CANARY_BAKE_JQ, STATE_DIR. Flags win.
+# BUILD_TRIES, MIN_BUILDER_FREE_GIB, MIN_POOL_FREE_GIB, CANARY_TIMEOUT,
+# CANARY_TRIES, CANARY_BAKE_JQ, STATE_DIR. Flags win. A node in NODES whose
+# update channel is empty takes the newest release in any channel, testing
+# included; the run warns about it.
 #
 # Exit codes: 0 promoted, nothing to do, or skipped; 1 the canary failed or an
 # error; 2 refused (usage, config, uncapped builder); 3 inconclusive.
@@ -63,6 +78,7 @@ project=arcaos-dev builder=arcaos-builder canary_vm=arcaos-canary
 nodes='' apps=incus,arca keep_stable=3
 build_args='--local-kernel /srv/artifacts/kernel/latest'
 canary_timeout=2700 canary_tries=3 canary_bake_jq=''
+build_tries=3 min_builder_free_gib=30 min_pool_free_gib=50
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/arca-os/autopublish
 config=${XDG_CONFIG_HOME:-$HOME/.config}/arca-os/autopublish.conf
 dry_run=0
@@ -98,6 +114,7 @@ if [ -f "$config" ]; then
 		BUILDER) builder=$val ;; CANARY_VM) canary_vm=$val ;; NODES) nodes=$val ;; APPS) apps=$val ;;
 		KEEP_STABLE) keep_stable=$val ;; BUILD_ARGS) build_args=$val ;; CANARY_TIMEOUT) canary_timeout=$val ;;
 		CANARY_TRIES) canary_tries=$val ;; CANARY_BAKE_JQ) canary_bake_jq=$val ;; STATE_DIR) state_dir=$val ;;
+		BUILD_TRIES) build_tries=$val ;; MIN_BUILDER_FREE_GIB) min_builder_free_gib=$val ;; MIN_POOL_FREE_GIB) min_pool_free_gib=$val ;;
 		*) refuse "$config: unknown key $key" ;;
 		esac
 	done <"$config"
@@ -124,7 +141,10 @@ case "$project" in arcaos-*) ;; *) refuse "project '$project' does not start wit
 case "$builder_tree" in /srv/artifacts/*) ;; *) refuse "builder tree '$builder_tree' is not under /srv/artifacts/" ;; esac
 printf '%s' "$branch" | grep -Eqx '[A-Za-z0-9._/-]+' || refuse "bad branch '$branch'"
 printf '%s' "$keep_stable" | grep -Eqx '[1-9][0-9]*' || refuse "KEEP_STABLE must be a positive number"
-printf '%s' "$canary_tries" | grep -Eqx '[1-9][0-9]*' || refuse "CANARY_TRIES must be a positive number"
+for n in "$canary_tries" "$build_tries" "$min_builder_free_gib" "$min_pool_free_gib"; do
+	printf '%s' "$n" | grep -Eqx '[0-9]+' || refuse "CANARY_TRIES, BUILD_TRIES and the free space limits must be numbers"
+done
+if [ "$canary_tries" -lt 1 ] || [ "$build_tries" -lt 1 ]; then refuse "CANARY_TRIES and BUILD_TRIES must be at least 1"; fi
 [ -z "$nodes" ] || printf '%s' "$nodes" | grep -Eqx '[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*' || refuse "bad --nodes '$nodes'"
 [ "$canary_vm" != "$builder" ] || refuse "the canary VM must not be the builder"
 for c in git jq flock; do command -v "$c" >/dev/null || die "missing tool: $c"; done
@@ -177,6 +197,24 @@ for v in $(all_versions); do
 	fi
 done
 
+# The verdict ledger: a verdict is saved here before the tree is changed, and a
+# failure is never forgotten.
+ledger=$state_dir/verdicts
+saved_field() { if [ -f "$ledger/$1.json" ]; then jq -r ".$2 // empty" "$ledger/$1.json"; fi; }
+ever_failed() { [ -f "$state_dir/failed-versions" ] && grep -qx "$1" "$state_dir/failed-versions"; }
+# tree_agrees <version>: the tree already shows the saved verdict (or none is saved).
+tree_agrees() {
+	case "$(saved_field "$1" state)" in
+	failed) [ "$(verdict_of "$1")" = failed ] && ! in_ch testing | grep -qx "$1" && ! in_ch stable | grep -qx "$1" ;;
+	passed) [ "$(verdict_of "$1")" = passed ] && in_ch stable | grep -qx "$1" ;;
+	*) return 0 ;;
+	esac
+}
+# Build failures per commit: "<count> <epoch of the last failure>".
+build_fail_file() { echo "$state_dir/build-failures/$1"; }
+build_failures() { cut -d' ' -f1 "$(build_fail_file "$1")" 2>/dev/null || echo 0; }
+build_failed_at() { cut -d' ' -f2 "$(build_fail_file "$1")" 2>/dev/null || echo 0; }
+
 tools_sha=$(git -C "$tools" rev-parse HEAD)
 # The branch head: the remote's, read without fetching on a dry run.
 if [ "$dry_run" -eq 1 ]; then
@@ -214,6 +252,11 @@ for n in ${nodes//,/ }; do
 	vs=$(printf '%s' "$env_json" | jq -r '.environment | [.os_version, .os_version_next, .os_version_alternate] | map(select(. != null and . != "")) | unique | join(" ")' 2>/dev/null || true)
 	node_report="$node_report $n=${vs:-unknown}"
 	node_versions="$node_versions $vs"
+	ch=$(timeout 20 incus query "$n:/os/1.0/system/update" </dev/null 2>/dev/null | jq -r '.config.channel // empty' 2>/dev/null || true)
+	if [ -n "$env_json" ] && [ -z "$ch" ]; then
+		log "warning: node $n has no update channel set, so it takes the newest release in any channel, testing included"
+		node_report="$node_report (no channel: takes testing too)"
+	fi
 done
 
 # retention <newly stable or -> <protected...>: prints "keep <list>" and
@@ -249,9 +292,22 @@ notes_json() {
 # ---- The plan ---------------------------------------------------------------
 plan=nothing
 why=''
-if [ -n "$last_auto" ] && [ "$(verdict_of "$last_auto")" = pending ] && in_ch testing | grep -qx "$last_auto"; then
+now=$(date +%s)
+bf=$(build_failures "$target")
+backoff_until=$(($(build_failed_at "$target") + 1800 * (1 << (bf > 0 ? bf - 1 : 0))))
+if [ -n "$last_auto" ] && ever_failed "$last_auto" && [ "$(verdict_of "$last_auto")" != failed ]; then
+	plan=record
+	why="$last_auto failed before; that verdict is applied again"
+elif [ -n "$last_auto" ] && ! tree_agrees "$last_auto"; then
+	plan=record
+	why="$last_auto has a saved verdict ($(saved_field "$last_auto" state)) that the tree does not show yet"
+elif [ -n "$last_auto" ] && [ "$(verdict_of "$last_auto")" = pending ] && in_ch testing | grep -qx "$last_auto"; then
 	plan=resume
 	why="$last_auto is in testing with no canary verdict"
+elif [ "$target" != "$last_commit" ] && [ "$bf" -ge "$build_tries" ]; then
+	why="$branch at ${target:0:12} failed to build or publish $bf times; waiting for a new commit"
+elif [ "$target" != "$last_commit" ] && [ "$bf" -gt 0 ] && [ "$now" -lt "$backoff_until" ]; then
+	why="$branch at ${target:0:12} failed to build or publish $bf time(s); backing off until $(date -d "@$backoff_until" '+%H:%M')"
 elif [ "$target" != "$last_commit" ]; then
 	plan=publish
 	prev=none
@@ -278,20 +334,22 @@ if [ "$dry_run" -eq 1 ]; then
 	case "$plan" in
 	publish)
 		say "check the builder caps (limits.cpu=4, root limits.read=150MB, limits.write=80MB)"
-		say "build: in-builder.sh --project $project --vm $builder $checkout -- scripts/arca/build.sh $build_args"
+		say "check free space: builder >= ${min_builder_free_gib} GiB, its pool >= ${min_pool_free_gib} GiB"
+		say "build: in-builder.sh --project $project --vm $builder $checkout -- scripts/arca/build.sh --no-latest $build_args"
 		say "publish: publish-update.sh --version <new> --channel testing --apps $apps --serve-dir $serve_dir --builder-tree $builder_tree"
 		say "notes: release-tree.sh notes --version <new> (signed notes.json), with:"
 		notes_json '<new>' | sed 's/^/       /'
 		;;
 	resume) say "no build: $last_auto is already published in testing" ;;
+	record) say "no build, no canary: apply the saved verdict to $last_auto: $(saved_field "$last_auto" state)${last_auto:+ }$(ever_failed "$last_auto" && echo '(it failed before, so failed)')" ;;
 	esac
-	if [ "$plan" != nothing ]; then
+	if [ "$plan" = publish ] || [ "$plan" = resume ]; then
 		v=${last_auto:-<new>}
 		[ "$plan" = resume ] || v='<new>'
 		say "canary: canary.sh --project $project --vm $canary_vm --from-builder $builder --stop-builder --base ${prev_stable:-<none: inconclusive>} --target $v --channel testing --server-url http://<${project} bridge address>:<free port> --timeout $canary_timeout${canary_bake_jq:+ --bake-jq \"$canary_bake_jq\"}"
 		say "passed: release-tree.sh promote --version $v --base ${prev_stable:-none} --to stable (the same signed files)"
 		say "failed: release-tree.sh fail --version $v --reason '<reason>' (out of testing, never promoted)"
-		say "inconclusive: stays in testing; retried by the next run, failed after $canary_tries tries"
+		say "inconclusive: stays in testing; retried by the next run, failed after $canary_tries tries (every attempt counts)"
 		say "retention after a pass: $(retention "$v" "$prev_stable" | paste -sd';' - | sed 's/;/; /')"
 		say "retention after a failure: $(retention - "$prev_stable" "$v" | paste -sd';' - | sed 's/;/; /')"
 		say "mirror $builder:$builder_tree to $serve_dir, then stop $builder"
@@ -304,6 +362,7 @@ run_id=$(date -u +%Y%m%dT%H%M%SZ)
 run_log=$state_dir/run-$run_id.log
 http_pid=''
 used_builder=0
+mkdir -p "$ledger" "$state_dir/build-failures"
 summary() { # <result> <version> <reason>
 	jq -n --arg r "$1" --arg v "$2" --arg why "$3" --arg plan "$plan" --arg c "$target" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg l "$run_log" \
 		'{finished_at: $t, plan: $plan, commit: $c, version: $v, result: $r, reason: $why, log: $l}' >"$state_dir/last-run.json"
@@ -333,99 +392,190 @@ caps="$(incus config get --project "$project" "$builder" limits.cpu </dev/null) 
 [ "$caps" = "4 150MB 80MB" ] || refuse "$builder is not capped as required (cpu, read, write: $caps)"
 
 in_builder() { used_builder=1; "$IN_BUILDER" --project "$project" --vm "$builder" "$@" >>"$run_log" 2>&1; }
+bexec() { incus exec --project "$project" "$builder" -- "$@" </dev/null; }
 tree_op() { in_builder "$tools_wt" -- scripts/arca/release-tree.sh --tree "$builder_tree" "$@"; }
+builder_up() { [ "$(instance_state "$builder")" = RUNNING ] || in_builder "$tools_wt" -- true; }
 # mirror: the builder's tree onto the served one, pruned versions included.
 mirror() {
 	local kept v
-	[ "$(instance_state "$builder")" = RUNNING ] || in_builder "$tools_wt" -- true
-	incus exec --project "$project" "$builder" -- tar -C "$builder_tree" -cf - . </dev/null | tar -C "$serve_dir" -xf -
-	kept=$(incus exec --project "$project" "$builder" -- ls -1 "$builder_tree" </dev/null)
+	builder_up
+	bexec tar -C "$builder_tree" -cf - . | tar -C "$serve_dir" -xf -
+	kept=$(bexec ls -1 "$builder_tree")
 	for v in "$serve_dir"/*/; do
 		v=$(basename "$v")
 		printf '%s' "$v" | grep -Eqx '[0-9]{12}' || continue
 		printf '%s\n' "$kept" | grep -qx "$v" || { rm -rf "${serve_dir:?}/$v"; log "pruned $v from $serve_dir"; }
 	done
-	[ "$(incus exec --project "$project" "$builder" -- sha256sum "$builder_tree/index.sjson" </dev/null | cut -d' ' -f1)" = \
+	[ "$(bexec sha256sum "$builder_tree/index.sjson" | cut -d' ' -f1)" = \
 		"$(sha256sum "$serve_dir/index.sjson" | cut -d' ' -f1)" ] || die "the served index.sjson differs from the builder's"
+}
+# save_verdict <version> <passed|failed> <reason> <base>: before the tree changes.
+save_verdict() {
+	jq -n --arg v "$1" --arg s "$2" --arg r "$3" --arg b "$4" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		'{version: $v, state: $s, reason: $r, base: $b, saved_at: $t}' >"$ledger/$1.json.new"
+	mv "$ledger/$1.json.new" "$ledger/$1.json"
+	if [ "$2" = failed ] && ! ever_failed "$1"; then echo "$1" >>"$state_dir/failed-versions"; fi
+}
+# apply_verdict <version>: the saved verdict, into the tree. A version that
+# ever failed is marked failed, whatever was saved later.
+apply_verdict() {
+	local v=$1 st reason base
+	st=$(saved_field "$v" state) reason=$(saved_field "$v" reason) base=$(saved_field "$v" base)
+	if ever_failed "$v"; then
+		if [ "$st" != failed ]; then st=failed reason="it failed an earlier canary"; fi
+	fi
+	case "$st" in
+	passed) tree_op promote --version "$v" --base "${base:-none}" --to stable --from testing ;;
+	failed) tree_op fail --version "$v" --base "${base:-none}" --reason "${reason:-the canary failed}" --from testing ;;
+	*) die "no saved verdict for $v" ;;
+	esac
+}
+# record_build_failure <reason>: counts a failed build or publish of the target.
+record_build_failure() {
+	local n
+	n=$(($(build_failures "$target") + 1))
+	echo "$n $(date +%s)" >"$(build_fail_file "$target")"
+	summary error "${version:-}" "$1 (failure $n of $build_tries for ${target:0:12})"
+	log "$1; failure $n of $build_tries for ${target:0:12}; see $run_log"
+}
+# abandon <reason>: a build that will not be tested is removed again.
+abandon() {
+	set +e
+	if [ -n "$version" ]; then
+		if bexec test -f "$builder_tree/$version/update.json" >/dev/null 2>&1; then
+			tree_op fail --version "$version" --base none --reason "publishing did not finish: $1" --from testing
+			mirror
+		fi
+		bexec rm -rf "/srv/artifacts/os/$version" >/dev/null 2>&1
+		log "removed the build $version"
+	fi
+	set -e
+	record_build_failure "$1"
+	exit 1
+}
+# free_gib <pool>: the pool's free space in GiB.
+pool_free_gib() {
+	local info total used
+	info=$(incus storage info "$1" --bytes </dev/null)
+	total=$(printf '%s\n' "$info" | sed -n 's/^ *total space: "\{0,1\}\([0-9]*\)"\{0,1\}$/\1/p')
+	used=$(printf '%s\n' "$info" | sed -n 's/^ *space used: "\{0,1\}\([0-9]*\)"\{0,1\}$/\1/p')
+	[ -n "$total" ] && [ -n "$used" ] || { echo 0; return; }
+	echo $(((total - used) / 1073741824))
 }
 
 version=''
-if [ "$plan" = publish ]; then
-	log "building ${target:0:12} in $builder"
+if [ "$plan" = record ]; then
+	version=$last_auto
+	if ever_failed "$version" && [ "$(saved_field "$version" state)" != failed ]; then
+		save_verdict "$version" failed "it failed an earlier canary" "$(saved_field "$version" base)"
+	fi
+	log "applying the saved verdict for $version: $(saved_field "$version" state)"
+	apply_verdict "$version" || { summary error "$version" "applying the saved verdict failed"; die "applying the saved verdict for $version failed; see $run_log"; }
+	verdict=$(saved_field "$version" state) reason=$(saved_field "$version" reason)
+	prev_stable=$(saved_field "$version" base)
+elif [ "$plan" = publish ]; then
+	builder_up
+	pool=$(incus config device get --project "$project" "$builder" root pool </dev/null 2>/dev/null || true)
+	[ -n "$pool" ] || pool=$(incus profile device get --project "$project" default root pool </dev/null)
+	bfree=$(($(bexec df -B1 --output=avail / | tail -1) / 1073741824))
+	pfree=$(pool_free_gib "$pool")
+	if [ "$bfree" -lt "$min_builder_free_gib" ] || [ "$pfree" -lt "$min_pool_free_gib" ]; then
+		summary error '' "not enough space to build: builder ${bfree} GiB free (need $min_builder_free_gib), pool $pool ${pfree} GiB free (need $min_pool_free_gib)"
+		die "refusing to build: builder ${bfree} GiB free (need $min_builder_free_gib), pool $pool ${pfree} GiB free (need $min_pool_free_gib)"
+	fi
+	log "building ${target:0:12} in $builder (builder ${bfree} GiB free, pool $pool ${pfree} GiB free)"
 	# shellcheck disable=SC2086  # BUILD_ARGS is a word list
-	in_builder "$checkout" -- scripts/arca/build.sh $build_args || { summary error '' "the build failed"; die "the build failed; see $run_log"; }
+	in_builder "$checkout" -- scripts/arca/build.sh --no-latest $build_args || abandon "the build failed"
 	version=$(sed -n 's/^version: \([0-9]\{12\}\)$/\1/p' "$run_log" | tail -1)
-	[ -n "$version" ] || { summary error '' "the build printed no version"; die "the build printed no version; see $run_log"; }
+	[ -n "$version" ] || abandon "the build printed no version"
+	# Marked at once, so retention can remove it even if this run stops here.
+	bexec sh -c "printf '{}\n' >/srv/artifacts/os/$version/autopublish.json" || abandon "the build $version is not in /srv/artifacts/os"
 	log "built $version; publishing it into testing"
 	"$PUBLISH_UPDATE" --version "$version" --serve-dir "$serve_dir" --channel testing --apps "$apps" \
 		--project "$project" --builder "$builder" --builder-tree "$builder_tree" --checkout "$tools_wt" >>"$run_log" 2>&1 \
-		|| { summary error "$version" "publishing failed"; die "publishing $version failed; see $run_log"; }
+		|| abandon "publishing $version failed"
 	notes_json "$version" >"$state_dir/notes-$version.json"
-	incus file push -q -p --project "$project" "$state_dir/notes-$version.json" "$builder/srv/artifacts/autopublish/notes-$version.json" </dev/null
-	tree_op notes --version "$version" --file "/srv/artifacts/autopublish/notes-$version.json" \
-		|| { summary error "$version" "writing notes failed"; die "writing the notes failed; see $run_log"; }
+	incus file push -q -p --project "$project" "$state_dir/notes-$version.json" "$builder/srv/artifacts/autopublish/notes-$version.json" </dev/null \
+		|| abandon "copying the notes for $version failed"
+	tree_op notes --version "$version" --file "/srv/artifacts/autopublish/notes-$version.json" || abandon "writing the notes for $version failed"
 	mirror
+	rm -f "$state_dir"/build-failures/*
 else
 	version=$last_auto
 fi
 
-# The canary, served from this host on the canary's network.
-verdict='' reason=''
-if [ -z "$prev_stable" ]; then
-	verdict=inconclusive reason="there is no stable release to install the canary from"
-else
-	net=$(incus profile device get --project "$project" default eth0 network </dev/null)
-	addr=$(incus network get --project "$project" "$net" ipv4.address </dev/null)
-	addr=${addr%/*}
-	port=$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
-	(cd "$state_dir" && exec python3 -I -m http.server --bind "$addr" --directory "$serve_dir" "$port") 6>&- 7>&- 8>&- >>"$run_log" 2>&1 &
-	http_pid=$!
-	[ "$(instance_state "$builder")" = RUNNING ] || in_builder "$tools_wt" -- true
-	log "canary: $prev_stable -> $version on $canary_vm, served at http://$addr:$port"
-	set +e
-	"$CANARY" --project "$project" --vm "$canary_vm" --from-builder "$builder" --stop-builder \
-		--base "$prev_stable" --target "$version" --server-url "http://$addr:$port" --channel testing \
-		--apps "$apps" --timeout "$canary_timeout" ${canary_bake_jq:+--bake-jq "$canary_bake_jq"} >"$state_dir/canary-$version.out" 2>>"$run_log"
-	rc=$?
-	set -e
-	kill "$http_pid" 2>/dev/null || true
-	http_pid=''
-	cat "$state_dir/canary-$version.out" >>"$run_log"
-	reason=$(sed -n 's/^reason: //p' "$state_dir/canary-$version.out" | tail -1)
-	case "$rc" in
-	0) verdict=passed ;;
-	1) verdict=failed ;;
-	*) verdict=inconclusive reason=${reason:-canary.sh exited $rc} ;;
+if [ "$plan" != record ]; then
+	# Every canary attempt counts, counted before it starts.
+	tries_file=$state_dir/canary-tries-$version
+	tries=$(($(cat "$tries_file" 2>/dev/null || echo 0) + 1))
+	verdict='' reason=''
+	if [ "$tries" -gt "$canary_tries" ]; then
+		verdict=failed reason="the canary could not reach a verdict in $canary_tries tries"
+	else
+		echo "$tries" >"$tries_file"
+	fi
+	if [ -n "$verdict" ]; then
+		:
+	elif [ -z "$prev_stable" ]; then
+		verdict=inconclusive reason="there is no stable release to install the canary from"
+	else
+		# The canary, served from this host on the canary's network.
+		net=$(incus profile device get --project "$project" default eth0 network </dev/null)
+		addr=$(incus network get --project "$project" "$net" ipv4.address </dev/null)
+		addr=${addr%/*}
+		port=$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1])')
+		(cd "$state_dir" && exec python3 -I -m http.server --bind "$addr" --directory "$serve_dir" "$port") 6>&- 7>&- 8>&- >>"$run_log" 2>&1 &
+		http_pid=$!
+		builder_up
+		log "canary (try $tries of $canary_tries): $prev_stable -> $version on $canary_vm, served at http://$addr:$port"
+		out=$state_dir/canary-$version.out
+		set +e
+		"$CANARY" --project "$project" --vm "$canary_vm" --from-builder "$builder" --stop-builder \
+			--base "$prev_stable" --target "$version" --server-url "http://$addr:$port" --channel testing \
+			--apps "$apps" --timeout "$canary_timeout" ${canary_bake_jq:+--bake-jq "$canary_bake_jq"} >"$out" 2>>"$run_log"
+		rc=$?
+		set -e
+		kill "$http_pid" 2>/dev/null || true
+		http_pid=''
+		cat "$out" >>"$run_log"
+		said=$(sed -n 's/^result: //p' "$out" | tail -1)
+		reason=$(sed -n 's/^reason: //p' "$out" | tail -1)
+		# A verdict counts only when the exit code and the result line agree.
+		case "$rc:$said" in
+		0:passed) verdict=passed ;;
+		1:failed) verdict=failed reason=${reason:-the canary failed without giving a reason} ;;
+		3:inconclusive) verdict=inconclusive reason=${reason:-the canary could not run} ;;
+		*)
+			if grep -qx 'phase: target' "$out"; then
+				verdict=failed reason="the canary stopped without a verdict (exit $rc) while running $version"
+			else
+				verdict=inconclusive reason="the canary stopped without a verdict (exit $rc) before trying $version"
+			fi
+			;;
+		esac
+		if [ "$verdict" = passed ] && ever_failed "$version"; then
+			verdict=failed reason="it failed an earlier canary"
+		fi
+	fi
+	log "canary verdict for $version: $verdict${reason:+ ($reason)}"
+	if [ "$verdict" = inconclusive ] && [ "$tries" -ge "$canary_tries" ]; then
+		verdict=failed reason="the canary could not reach a verdict in $tries tries; last: $reason"
+	fi
+
+	case "$verdict" in
+	passed | failed)
+		save_verdict "$version" "$verdict" "$reason" "${prev_stable:-none}"
+		apply_verdict "$version" || { summary error "$version" "recording the $verdict verdict in the tree failed"; die "recording $version as $verdict failed; the next run applies it again; see $run_log"; }
+		rm -f "$tries_file"
+		;;
+	*)
+		mirror
+		summary inconclusive "$version" "$reason"
+		log "inconclusive (try $tries of $canary_tries): $reason"
+		exit 3
+		;;
 	esac
 fi
-log "canary verdict for $version: $verdict${reason:+ ($reason)}"
-
-tries_file=$state_dir/canary-tries-$version
-if [ "$verdict" = inconclusive ]; then
-	tries=$(($(cat "$tries_file" 2>/dev/null || echo 0) + 1))
-	echo "$tries" >"$tries_file"
-	if [ "$tries" -ge "$canary_tries" ]; then
-		verdict=failed reason="the canary could not run in $tries tries; last: $reason"
-	fi
-fi
-
-case "$verdict" in
-passed)
-	tree_op promote --version "$version" --base "$prev_stable" --to stable --from testing \
-		|| { summary error "$version" "promotion failed"; die "promoting $version failed; see $run_log"; }
-	;;
-failed)
-	tree_op fail --version "$version" --base "${prev_stable:-none}" --reason "$reason" --from testing \
-		|| { summary error "$version" "marking it failed failed"; die "marking $version failed did not work; see $run_log"; }
-	;;
-inconclusive)
-	mirror
-	summary inconclusive "$version" "$reason"
-	log "inconclusive ($tries of $canary_tries tries): $reason"
-	exit 3
-	;;
-esac
-rm -f "$tries_file"
 
 # Retention, protecting the canary's two versions and what the nodes report.
 mirror
