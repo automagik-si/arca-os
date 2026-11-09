@@ -7,7 +7,7 @@
 #   publish-update.sh --version <ver> [--serve-dir <dir>] [--channel stable]
 #                     [--apps incus,arca] [--with-image]
 #                     [--project arcaos-dev] [--builder arcaos-builder]
-#                     [--checkout <worktree>]
+#                     [--checkout <worktree>] [--builder-tree /srv/artifacts/updates]
 #
 # The LAN address and port the tree is served at are NOT configured here: they
 # are arguments to whatever serves --serve-dir (see scripts/arca/README.md,
@@ -40,6 +40,7 @@ while [ $# -gt 0 ]; do
 	--project) [ $# -ge 2 ] || refuse "need a value for $1"; project=$2; shift 2 ;;
 	--builder) [ $# -ge 2 ] || refuse "need a value for $1"; builder=$2; shift 2 ;;
 	--checkout) [ $# -ge 2 ] || refuse "need a value for $1"; checkout=$2; shift 2 ;;
+	--builder-tree) [ $# -ge 2 ] || refuse "need a value for $1"; builder_tree=$2; shift 2 ;;
 	-h | --help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 	*) refuse "unknown argument: $1" ;;
 	esac
@@ -48,6 +49,7 @@ done
 [ -n "$version" ] || refuse "--version <ver> is required"
 printf '%s' "$version" | grep -Eqx '[0-9]{12}' || refuse "version '$version' is not 12 digits"
 case "$project" in arcaos-*) ;; *) refuse "project '$project' does not start with arcaos-" ;; esac
+case "$builder_tree" in /srv/artifacts/*) ;; *) refuse "builder tree '$builder_tree' is not under /srv/artifacts/" ;; esac
 command -v incus >/dev/null || die "incus is not on PATH"
 
 # Publish into the builder's persistent tree (in a clean checkout, so the Go
