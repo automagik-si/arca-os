@@ -37,3 +37,13 @@ incus-osd/internal/systemd/sysext.go
 incus-osd/internal/update/update.go
 incus-osd/tests/incusos_tests/tests_incusos_api_applications.py
 mkosi.images/base/mkosi.extra/usr/lib/systemd/system/incus-osd.service
+# Smooth automatic updates (restart window, health bake, rollback, failed-version list).
+doc/reference/system.md
+doc/reference/system/update.md
+doc/rest-api.yaml
+incus-osd/api/system_update.go
+incus-osd/internal/rest/api_system_update.go
+incus-osd/internal/rest/server.go
+incus-osd/internal/secureboot/pcrs.go
+incus-osd/internal/systemd/sysupdate.go
+incus-osd/internal/util/uki.go

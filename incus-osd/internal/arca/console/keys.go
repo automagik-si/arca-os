@@ -9,6 +9,10 @@ import (
 // key handles one key press on the console and returns the event to pass on, or
 // nil when the console used it. It runs on the TUI's event loop.
 func (c *console) key(ev *tcell.EventKey) *tcell.EventKey {
+	if c.updatesKey(ev) {
+		return nil
+	}
+
 	switch ev.Key() { //nolint:exhaustive // tcell's key set is open; the default covers every other key
 	case tcell.KeyEsc:
 		if c.set(func(s *Snapshot) bool {
@@ -60,6 +64,18 @@ func (c *console) key(ev *tcell.EventKey) *tcell.EventKey {
 			return c.verticalKey(tcell.KeyDown)
 		case 'k':
 			return c.verticalKey(tcell.KeyUp)
+		case 'u', 'U':
+			c.set(func(s *Snapshot) bool {
+				if s.Page == pageUpdates {
+					s.Page = pageNone
+				} else {
+					s.Page = pageUpdates
+				}
+
+				return true
+			})
+
+			return nil
 		case '?':
 			c.set(func(s *Snapshot) bool {
 				if s.Page == pageHelp {

@@ -20,4 +20,5 @@ Resources </reference/system/resources>
 Security </reference/system/security>
 Storage </reference/system/storage>
 Update </reference/system/update>
+Automatic updates </reference/system/arca-updates>
 ```

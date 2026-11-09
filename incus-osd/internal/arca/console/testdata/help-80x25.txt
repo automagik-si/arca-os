@@ -6,14 +6,14 @@
 │ Tab         next panel (instances, events)                                   │
 │ Enter       details of the selected instance                                 │
 │ Esc         close this page                                                  │
+│ U           updates: o on / off, [ ] restart window,                         │
+│             r try a failed version again, c check now                        │
 │ ?           this page                                                        │
 │ L           upstream's screen, and back                                      │
 │                                                                              │
 │ Ctrl-C is held by the console.                                               │
-│ Changes are made from the fleet with the owner's approval.                   │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ Only the updates page changes this machine; other                            │
+│ changes are made from the fleet with the owner's approval.                   │
 │                                                                              │
 │                                                                              │
 │                                                                              │

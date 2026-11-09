@@ -23,6 +23,12 @@ The following configuration options can be set:
 
 * `maintenance_windows`: An optional list of maintenance windows.
 
+* `auto_updates_off`: If `true`, no automatic check, install or restart happens. A manual update check still works. Defaults to `false` (automatic updates on).
+
+* `restart_window`: When an installed OS update may restart the machine, in the same format as a maintenance window. Defaults to 03:00 to 05:00 local time.
+
+* `bake_time`: How long a new OS version must stay healthy before it's marked good, as a Go duration of at least one minute. Defaults to `15m`.
+
 ## Maintenance windows
 
 IncusOS supports defining maintenance windows that limit when the system will check for and apply updates. This can be useful to prevent updates from being installed during normal business hours or other inconvenient times. Each maintenance window consists of a start time and an end time (assumed to be in the system's configured timezone) and an optional start day of week and end day of week.
@@ -52,6 +58,10 @@ config:
     end_hour: 23
     end_minute: 59
 ```
+
+## Automatic updates and rollback
+
+See [automatic updates and rollback](arca-updates.md): restarts in the window, the health bake, rollback and the failed-version list.
 
 ## Manually checking for an update
 

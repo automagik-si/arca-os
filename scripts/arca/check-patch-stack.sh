@@ -13,12 +13,12 @@
 # <path> <class>", then "total <n>/<cap>", where n sums added and deleted lines
 # over the non-owned paths. Binary paths count as zero lines.
 #
-# Exit codes: 0 when nothing is REFUSED and n <= the cap (900); 1 otherwise; 2 on usage
+# Exit codes: 0 when nothing is REFUSED and n <= the cap (1300); 1 otherwise; 2 on usage
 # or an unknown base ref.
 set -euo pipefail
 
-# Arca + NVIDIA edits to upstream files; was 250 before the NVIDIA line joined.
-CAP=900
+# Arca + NVIDIA + update-health edits to upstream files; was 900 before automatic updates.
+CAP=1300
 ALLOWLIST=scripts/arca/patch-allowlist.txt
 
 usage() {
@@ -33,10 +33,13 @@ owned() {
 	incus-osd/api/images/update_file_component_arca_test.go) return 0 ;;
 	incus-osd/api/system_network_arca_wifi.go | incus-osd/internal/tui/arca_overlay.go | incus-osd/internal/tui/arca_overlay_test.go) return 0 ;;
 	incus-osd/internal/tui/arca_console.go | incus-osd/internal/tui/arca_console_test.go) return 0 ;;
+	incus-osd/api/system_update_arca.go) return 0 ;;
 	esac
 	[[ $1 =~ ^\.github/workflows/arca-[^/]*\.yml$ ]] && return 0
 	[[ $1 =~ ^mkosi\.sandbox/etc/apt/[^/]+/arca[^/]*$ ]] && return 0
 	[[ $1 =~ ^incus-osd/internal/applications/app_arca[^/]*\.go$ ]] && return 0
+	[[ $1 =~ ^incus-osd/internal/(update|util|rest)/arca_[^/]*\.go$ ]] && return 0
+	[[ $1 =~ ^doc/reference/system/arca-[^/]*\.md$ ]] && return 0
 	[[ $1 =~ ^mkosi\.images/(base|debug)/(.*/)?arca-[^/]*$ ]] && return 0
 	nvidia_owned "$1" && return 0
 	return 1

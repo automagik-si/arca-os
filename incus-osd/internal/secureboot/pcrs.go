@@ -78,8 +78,15 @@ func ForceUpdatePCRBindings(ctx context.Context, s *state.State) error {
 		return err
 	}
 
-	// Extract the signing certificate from the UKI we're running from.
-	ukiCert, err := getPublicKeyFromUKI(fmt.Sprintf("/boot/EFI/Linux/%s_%s.efi", s.OS.Name, s.OS.RunningRelease))
+	// Extract the signing certificate from the UKI we're running from; its name may carry a boot counter.
+	ukiPath := fmt.Sprintf("/boot/EFI/Linux/%s_%s.efi", s.OS.Name, s.OS.RunningRelease)
+
+	ukis, err := util.GetUKIVersions()
+	if err == nil {
+		ukiPath = ukis.CurrentFilepath
+	}
+
+	ukiCert, err := getPublicKeyFromUKI(ukiPath)
 	if err != nil {
 		return err
 	}

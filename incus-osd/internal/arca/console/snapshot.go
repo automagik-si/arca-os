@@ -13,6 +13,7 @@ const (
 	pageNone page = iota
 	pageDetails
 	pageHelp
+	pageUpdates
 )
 
 // panel is the part of the dashboard the keys act on.
@@ -52,6 +53,10 @@ type Snapshot struct {
 
 	// Now is the time the snapshot was taken, for the clock.
 	Now time.Time
+
+	// Updates is the automatic updater's state; UpdateSel the failed version the keys act on.
+	Updates   Updates
+	UpdateSel int
 }
 
 // App is one installed application.
@@ -120,6 +125,7 @@ func (s Snapshot) Equal(o Snapshot) bool {
 		reflect.DeepEqual(s.Details, o.Details) &&
 		s.InstancesErr == o.InstancesErr &&
 		s.Selected == o.Selected && s.Page == o.Page && s.Focus == o.Focus &&
+		reflect.DeepEqual(s.Updates, o.Updates) && s.UpdateSel == o.UpdateSel &&
 		s.InstancesAt.Truncate(time.Minute).Equal(o.InstancesAt.Truncate(time.Minute)) &&
 		s.Now.Truncate(time.Minute).Equal(o.Now.Truncate(time.Minute))
 }
@@ -130,6 +136,7 @@ func (s Snapshot) clone() Snapshot {
 	c.Apps = slices.Clone(s.Apps)
 	c.IPs = slices.Clone(s.IPs)
 	c.Instances = slices.Clone(s.Instances)
+	c.Updates = s.Updates.clone()
 	c.Details = make([]InstanceDetails, len(s.Details))
 
 	for i, d := range s.Details {

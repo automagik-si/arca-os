@@ -28,6 +28,14 @@ const (
 // respecting any defined maintenance windows. Typically this should be called
 // automatically by the daemon scheduler.
 func CheckRespectMaintenanceWindows(ctx context.Context, s *state.State) error {
+	// The owner turned automatic updates off; only a manual check runs.
+	if s.System.Update.Config.AutoUpdatesOff {
+		s.System.Update.State.Status = "Automatic updates are off"
+		slog.DebugContext(ctx, s.System.Update.State.Status)
+
+		return nil
+	}
+
 	// Check if we are within a defined maintenance window.
 	inMaintenanceWindow := len(s.System.Update.Config.MaintenanceWindows) == 0
 	for _, window := range s.System.Update.Config.MaintenanceWindows {
@@ -181,6 +189,13 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 	appsUpdated := map[string]string{}
 
 	for _, appName := range toInstall {
+		previous := ""
+
+		app, err := applications.Load(ctx, s, appName)
+		if err == nil && app.IsInstalled() {
+			previous = app.Version()
+		}
+
 		newAppVersion, err := checkAndDownloadUpdate(ctx, s, t, p, TypeApplication, appName, forceApplyUpdate)
 		if err != nil {
 			s.System.Update.State.Status = "Failed to check for update for application '" + appName + "'"
@@ -191,6 +206,8 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 
 		if newAppVersion != "" {
 			appsUpdated[appName] = newAppVersion
+
+			rememberPreviousApplication(s, appName, previous, newAppVersion)
 		}
 	}
 
@@ -215,6 +232,8 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 					s.System.Update.State.Status = "Failed to reload application '" + appName + "'"
 					showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
 				}
+
+				verifyApplication(ctx, s, liveAppOps(), appName, appVersion)
 			}
 		}
 	}
@@ -458,6 +477,14 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 			return "", errors.New("installed Secure Boot keys version (" + s.SecureBoot.Version + ") is newer than available update (" + update.Version() + "); skipping")
 		}
 	case TypeOS:
+		hold := osUpdateHold(s, update.Version())
+		if hold != "" {
+			s.System.Update.State.Status = hold
+			slog.WarnContext(ctx, hold, "version", update.Version())
+
+			return "", nil
+		}
+
 		// If we're running from the backup image don't attempt to re-update to a broken version.
 		if !s.System.Update.State.NeedsReboot && s.OS.RunningFromBackup() && s.OS.NextRelease == update.Version() {
 			slog.WarnContext(ctx, "Latest "+s.OS.Name+" image version "+s.OS.NextRelease+" has been identified as problematic, skipping update")
@@ -478,6 +505,13 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 
 		if app.IsPinned() && (app.IsInstalled() || (app.Name() != "nvidia" && app.Name() != "nvidia-lts")) {
 			slog.InfoContext(ctx, "Skipping application update because version pinning is enabled", "app", appName)
+
+			return "", nil
+		}
+
+		failedReason, failed := s.UpdateHealth.FailedApplications[appName+":"+update.Version()]
+		if failed && update.Version() != app.Version() {
+			slog.WarnContext(ctx, "Skipping an application version that failed before", "app", appName, "version", update.Version(), "reason", failedReason)
 
 			return "", nil
 		}
@@ -614,14 +648,17 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			return "", err
 		}
 
-		// Record the new release.
-		if !s.System.Update.Config.AutoReboot && s.OS.SystemIsReady {
+		// Record the new release, and arm its health check for when it first runs.
+		rebootNow := restartAfterApply(ctx, s)
+		if !rebootNow {
 			// Mark the system as needing a reboot down the line.
 			s.System.Update.State.NeedsReboot = true
 		}
 
 		s.OS.NextRelease = update.Version()
-		_ = s.Save()
+		bootID, _ := (&liveMachine{s: s}).bootID()
+		armBake(s, update.Version(), bootID)
+		_ = s.SaveDurable()
 
 		// Record the state of auto-unlocked LUKS devices. With some TPMs this can be slow, so cache the
 		// result after applying an OS update rather than needing to determine it each time a request
@@ -637,8 +674,8 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			return "", err
 		}
 
-		// Handle reboot if needed.
-		if s.System.Update.Config.AutoReboot || !s.OS.SystemIsReady {
+		// Handle reboot if needed; otherwise the automatic updater restarts in the window.
+		if rebootNow {
 			err = rebootSystem(ctx, s)
 			if err != nil {
 				return "", err

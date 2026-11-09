@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/rest/response"
@@ -70,8 +71,11 @@ func (s *Server) apiSystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		// Return the current system update state.
-		_ = response.SyncResponse(true, s.state.System.Update).Render(w)
+		// Return the current system update state, with the automatic updater's record.
+		ret := s.state.System.Update
+		ret.State.Health = update.Health(s.state, time.Now())
+
+		_ = response.SyncResponse(true, ret).Render(w)
 	case http.MethodPut:
 		// Apply a new system update configuration.
 		newConfig := &api.SystemUpdate{}
@@ -115,6 +119,11 @@ func (s *Server) apiSystemUpdate(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+		}
+
+		// Turning automatic updates back on clears a "Needs you" pause.
+		if !newConfig.Config.AutoUpdatesOff {
+			s.state.UpdateHealth.NeedsOwner = ""
 		}
 
 		// Apply the updated configuration.

@@ -189,27 +189,9 @@ func ApplySystemUpdate(ctx context.Context, version string) error {
 	// Flush all writes to get a consistent ESP if the system gets forcefully rebooted by the user.
 	unix.Sync()
 
-	// Work around systemd's enabling of "boot counting" for the newly installed UKI. Normally
-	// this can be useful, but for an IncusOS system in which every system boots exactly the same
-	// UKI, we know that the UKI will be good. systemd-boot's enumeration of boot options prioritizes
-	// UKIs that haven't booted successfully, which then throws off the index-based boot selection
-	// that we use to ensure the system reboots into the same UKI profile after an update.
-	ukis, err := os.ReadDir("/boot/EFI/Linux/")
-	if err != nil {
-		return err
-	}
-
-	for _, uki := range ukis {
-		baseUKI, found := strings.CutSuffix(uki.Name(), "+3-0.efi")
-
-		if found {
-			err := os.Rename("/boot/EFI/Linux/"+uki.Name(), "/boot/EFI/Linux/"+baseUKI+".efi")
-			if err != nil {
-				return err
-			}
-		}
-	}
-
+	// The new UKI keeps systemd's boot counter ("+3-0"): if it never comes up three times in a row,
+	// systemd-boot goes back to the previous one. incus-osd blesses it once its health bake passes,
+	// and the next boot is chosen by entry ID, so the counter doesn't change which profile boots.
 	// Update the next boot ID to reflect the newly installed update.
 	err = util.SetNextBootID(ctx, util.BootIDNewest)
 	if err != nil {

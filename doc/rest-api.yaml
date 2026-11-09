@@ -1664,11 +1664,62 @@ definitions:
         title: SystemUpdate defines a struct to hold information about the system's update policy.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemUpdateBake:
+        properties:
+            last_failure:
+                type: string
+                x-go-name: LastFailure
+            passes:
+                format: int64
+                type: integer
+                x-go-name: Passes
+            previous:
+                type: string
+                x-go-name: Previous
+            rollback:
+                description: Rollback is set when this checks the version an automatic rollback went back to.
+                type: boolean
+                x-go-name: Rollback
+            staged_boot_id:
+                description: StagedBootID is the boot the version was installed from, before its restart.
+                type: string
+                x-go-name: StagedBootID
+            started:
+                description: Started (RFC 3339) is when the version first ran; empty until then.
+                type: string
+                x-go-name: Started
+            starts:
+                description: Starts counts incus-osd starts in boot StartsBootID, to catch a daemon that never comes up.
+                format: int64
+                type: integer
+                x-go-name: Starts
+            starts_boot_id:
+                type: string
+                x-go-name: StartsBootID
+            strikes:
+                description: Strikes counts failed checks, Passes passed ones; LastFailure says what failed last.
+                format: int64
+                type: integer
+                x-go-name: Strikes
+            version:
+                type: string
+                x-go-name: Version
+        title: SystemUpdateBake is the health check of one OS version after it was installed.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateConfig:
         properties:
             auto_reboot:
                 type: boolean
                 x-go-name: AutoReboot
+            auto_updates_off:
+                description: AutoUpdatesOff stops automatic checks, applies and restarts; a manual check still works.
+                type: boolean
+                x-go-name: AutoUpdatesOff
+            bake_time:
+                description: BakeTime is how long a new OS version must stay healthy before it is marked good; unset means 15m.
+                type: string
+                x-go-name: BakeTime
             channel:
                 type: string
                 x-go-name: Channel
@@ -1680,7 +1731,84 @@ definitions:
                     $ref: '#/definitions/SystemUpdateMaintenanceWindow'
                 type: array
                 x-go-name: MaintenanceWindows
+            restart_window:
+                $ref: '#/definitions/SystemUpdateMaintenanceWindow'
         title: SystemUpdateConfig defines a struct to hold configuration details for the update checks.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemUpdateHealth:
+        description: |-
+            SystemUpdateHealth tracks automatic OS and application updates: what is running, what was
+            marked good or failed, and any update waiting for its restart or being checked.
+        properties:
+            addresses:
+                description: Addresses are the IPv4 addresses the machine had before the update restart.
+                items:
+                    type: string
+                type: array
+                x-go-name: Addresses
+            bake:
+                $ref: '#/definitions/SystemUpdateBake'
+            current_version:
+                type: string
+                x-go-name: CurrentVersion
+            defer_until:
+                description: DeferUntil (RFC 3339) is the latest time a restart deferred by a busy machine may still happen.
+                type: string
+                x-go-name: DeferUntil
+            failed_applications:
+                additionalProperties:
+                    type: string
+                description: FailedApplications maps "<application>:<version>" to why that application version failed.
+                type: object
+                x-go-name: FailedApplications
+            failed_versions:
+                additionalProperties:
+                    type: string
+                description: FailedVersions maps an OS version to why it failed; it is never applied again automatically.
+                type: object
+                x-go-name: FailedVersions
+            good_version:
+                type: string
+                x-go-name: GoodVersion
+            instances:
+                description: Instances are the "<project>/<name>" instances running before the update restart.
+                items:
+                    type: string
+                type: array
+                x-go-name: Instances
+            last_reason:
+                type: string
+                x-go-name: LastReason
+            last_result:
+                type: string
+                x-go-name: LastResult
+            needs_owner:
+                description: NeedsOwner is set when automatic recovery stopped; automatic updates stay off until the owner turns them on.
+                type: string
+                x-go-name: NeedsOwner
+            next_window:
+                type: string
+                x-go-name: NextWindow
+            pending_version:
+                type: string
+                x-go-name: PendingVersion
+            previous_applications:
+                additionalProperties:
+                    type: string
+                description: PreviousApplications maps an application to the version it had before its last update.
+                type: object
+                x-go-name: PreviousApplications
+            previous_version:
+                type: string
+                x-go-name: PreviousVersion
+            rollback_boot_id:
+                description: RollbackBootID is the boot an automatic rollback reboot was issued from; there is one per boot.
+                type: string
+                x-go-name: RollbackBootID
+            waiting:
+                type: string
+                x-go-name: Waiting
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateMaintenanceWindow:
@@ -1711,6 +1839,8 @@ definitions:
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateState:
         properties:
+            health:
+                $ref: '#/definitions/SystemUpdateHealth'
             last_check:
                 format: date-time
                 type: string
@@ -3867,6 +3997,33 @@ paths:
                 "200":
                     $ref: '#/responses/EmptySyncResponse'
             summary: Trigger update check
+            tags:
+                - system
+    /1.0/system/update/:retry:
+        post:
+            consumes:
+                - application/json
+            description: |-
+                Releases an OS version, or an application version given as "<application>:<version>", that
+                failed its health check, so it can be applied again, then triggers an update check.
+            operationId: system_post_update_retry
+            parameters:
+                - description: The failed version to try again
+                  in: body
+                  name: version
+                  required: true
+                  schema:
+                    example:
+                        version: "202611091832"
+                    type: object
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+            summary: Try a failed version again
             tags:
                 - system
 responses:

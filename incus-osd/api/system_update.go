@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -20,6 +21,15 @@ type SystemUpdateConfig struct {
 	Channel            string                          `json:"channel"                       yaml:"channel"`
 	CheckFrequency     string                          `json:"check_frequency"               yaml:"check_frequency"`
 	MaintenanceWindows []SystemUpdateMaintenanceWindow `json:"maintenance_windows,omitempty" yaml:"maintenance_windows,omitempty"`
+
+	// AutoUpdatesOff stops automatic checks, applies and restarts; a manual check still works.
+	AutoUpdatesOff bool `json:"auto_updates_off,omitempty" yaml:"auto_updates_off,omitempty"`
+
+	// RestartWindow is when an OS update may restart the machine; unset means 03:00 to 05:00.
+	RestartWindow *SystemUpdateMaintenanceWindow `json:"restart_window,omitempty" yaml:"restart_window,omitempty"`
+
+	// BakeTime is how long a new OS version must stay healthy before it is marked good; unset means 15m.
+	BakeTime string `json:"bake_time,omitempty" yaml:"bake_time,omitempty"`
 }
 
 // SystemUpdateState holds information about the current update state.
@@ -27,6 +37,8 @@ type SystemUpdateState struct {
 	LastCheck   time.Time `json:"last_check"   yaml:"last_check"` // In system's timezone.
 	Status      string    `json:"status"       yaml:"status"`
 	NeedsReboot bool      `json:"needs_reboot" yaml:"needs_reboot"`
+
+	Health *SystemUpdateHealth `json:"health,omitempty" yaml:"health,omitempty"`
 
 	PendingMaintenanceWindowCheck bool `json:"-"`
 }
@@ -56,8 +68,30 @@ func (c *SystemUpdateConfig) Validate() error {
 		}
 	}
 
+	if c.BakeTime != "" {
+		bake, err := time.ParseDuration(c.BakeTime)
+		if err != nil {
+			return errors.New("invalid bake time: " + err.Error())
+		}
+
+		if bake < time.Minute {
+			return errors.New("invalid bake time: must be at least one minute")
+		}
+	}
+
+	windows := slices.Clone(c.MaintenanceWindows)
+
+	if c.RestartWindow != nil {
+		w := c.RestartWindow
+		if w.StartHour < 0 || w.StartHour > 23 || w.EndHour < 0 || w.EndHour > 23 || w.StartMinute < 0 || w.StartMinute > 59 || w.EndMinute < 0 || w.EndMinute > 59 {
+			return errors.New("invalid restart window: hours must be 0-23 and minutes 0-59")
+		}
+
+		windows = append(windows, *w)
+	}
+
 	// Basic maintenance window validation.
-	for _, mw := range c.MaintenanceWindows {
+	for _, mw := range windows {
 		// To simplify logic, we don't allow a week-long migration window
 		// to start and end on the same day.
 		if mw.StartDayOfWeek != NONE && mw.StartDayOfWeek == mw.EndDayOfWeek {

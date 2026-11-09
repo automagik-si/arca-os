@@ -117,6 +117,12 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 			availableVersions = append(availableVersions, version.otherOSVersion)
 		}
 
+		// Keep the version an application update replaced, so it can go back to it.
+		previous := s.UpdateHealth.PreviousApplications[app.Name()]
+		if previous != "" && sysextImageExists(app.Name(), previous) {
+			availableVersions = append(availableVersions, previous)
+		}
+
 		slices.Sort(availableVersions)
 		availableVersions = slices.Compact(availableVersions)
 

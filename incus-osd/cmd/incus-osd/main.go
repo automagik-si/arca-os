@@ -363,6 +363,9 @@ func run(ctx context.Context, s *state.State) error {
 	s.OS.SuccessfulBoot = true
 	s.OS.SystemIsReady = true
 
+	// Drive automatic OS updates: the health bake, rollback and restarts in the window.
+	update.Run(ctx, s)
+
 	err = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseSystemIsReady)
 	if err != nil {
 		return err
@@ -621,7 +624,10 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	// do so as part of the shutdown/reboot logic because an externally-triggered power cycle (such as a
 	// physical power button being pressed) may not permit us to properly set the underlying EFI variable
 	// since systemd will already be tearing down the system.
-	err = util.SetNextBootID(ctx, util.BootIDNewest)
+	// Update the automatic updater's record first: it may have marked a version failed.
+	update.ReconcileBoot(ctx, s)
+
+	err = util.SetNextBootIDSkipping(ctx, util.BootIDNewest, update.NextBootSkips(s))
 	if err != nil {
 		return err
 	}
@@ -794,7 +800,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 
 	// Honor a system's update check frequency being set to "never", unless no primary application is
 	// installed.
-	skipInitialUpdateCheck := s.System.Update.Config.CheckFrequency == "never"
+	skipInitialUpdateCheck := s.System.Update.Config.CheckFrequency == "never" || s.System.Update.Config.AutoUpdatesOff
 
 	_, err = applications.GetPrimary(ctx, s, false)
 	if err != nil {
@@ -803,7 +809,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 
 		if skipInitialUpdateCheck {
-			slog.InfoContext(ctx, "No primary application found, forcing an initial update check even though 'CheckFrequency=never'")
+			slog.InfoContext(ctx, "No primary application found, forcing an initial update check even though automatic checks are off")
 		}
 
 		skipInitialUpdateCheck = false
