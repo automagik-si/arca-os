@@ -104,6 +104,13 @@ func (s *Server) putSystemKernel(w http.ResponseWriter, r *http.Request, apply f
 		return
 	}
 
+	err = kernel.ValidateKernelConfiguration(kernelData.Config)
+	if err != nil {
+		_ = response.BadRequest(err).Render(w)
+
+		return
+	}
+
 	applyErr := apply(r.Context(), kernelData.Config)
 	s.state.System.Kernel.Config = kernelData.Config
 

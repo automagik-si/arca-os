@@ -198,10 +198,7 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 
 	// Refresh extensions and reload applications if any have been updated or freshly installed.
 	if len(appsUpdated) > 0 {
-		// Apply the system extensions.
-		slog.DebugContext(ctx, "Refreshing system extensions")
-
-		err := applications.RefreshExtensions(ctx, s)
+		err = refreshApplicationUpdates(ctx, s, appsUpdated, applications.Load, applications.RefreshExtensions)
 		if err != nil {
 			s.System.Update.State.Status = "Failed to refresh system extensions"
 			showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
@@ -223,6 +220,43 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 	}
 
 	s.System.Update.State.Status = "Application update check completed"
+
+	return nil
+}
+
+func refreshApplicationUpdates(ctx context.Context, s *state.State, updated map[string]string, load func(context.Context, *state.State, string) (applications.Application, error), refresh func(context.Context, *state.State) error) error {
+	err := prepareApplicationUpdates(ctx, s, updated, load)
+	if err != nil {
+		return err
+	}
+
+	return refresh(ctx, s)
+}
+
+func prepareApplicationUpdates(ctx context.Context, s *state.State, updated map[string]string, load func(context.Context, *state.State, string) (applications.Application, error)) error {
+	for name := range updated {
+		app, err := load(ctx, s, name)
+		if err != nil {
+			return err
+		}
+
+		updater, ok := app.(interface {
+			PrepareUpdate(ctx context.Context) error
+		})
+		if ok {
+			err = updater.PrepareUpdate(ctx)
+			if err != nil {
+				if name == "nvidia" || name == "nvidia-lts" {
+					s.Applications.NVIDIA.State.Reason = "the NVIDIA update could not be prepared; the current driver is unchanged"
+					slog.WarnContext(ctx, s.Applications.NVIDIA.State.Reason, "error", err)
+
+					continue
+				}
+
+				return err
+			}
+		}
+	}
 
 	return nil
 }
@@ -300,7 +334,7 @@ func reloadApplication(ctx context.Context, s *state.State, appName string, appV
 	}
 
 	// Start/reload the application.
-	if app.IsRunning(ctx) || (app.Name() == "nvidia" && app.IsInitialized()) {
+	if app.IsRunning(ctx) || ((app.Name() == "nvidia" || app.Name() == "nvidia-lts") && app.IsInitialized()) {
 		slog.InfoContext(ctx, "Reloading application", "name", appName, "version", appVersion)
 
 		err := app.Update(ctx)
@@ -442,14 +476,14 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 			return "", err
 		}
 
-		if app.IsPinned() {
+		if app.IsPinned() && (app.IsInstalled() || (app.Name() != "nvidia" && app.Name() != "nvidia-lts")) {
 			slog.InfoContext(ctx, "Skipping application update because version pinning is enabled", "app", appName)
 
 			return "", nil
 		}
 
 		updateNeeded = update.Version() != app.Version()
-		if appName == "nvidia" {
+		if appName == "nvidia" || appName == "nvidia-lts" {
 			_, err := os.Stat(filepath.Join(systemd.LocalExtensionsPath, app.Version(), appName+".raw"))
 			updateNeeded = updateNeeded || errors.Is(err, os.ErrNotExist)
 		}
@@ -623,7 +657,7 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 
 		// Ensure a proper application symlink exists.
 		_, err = os.Lstat(filepath.Join(systemd.SystemExtensionsPath, appName+".raw"))
-		if err != nil && os.IsNotExist(err) {
+		if err != nil && os.IsNotExist(err) && appName != "nvidia" && appName != "nvidia-lts" {
 			// Ensure /var/lib/extensions/ exists.
 			err := os.MkdirAll(systemd.SystemExtensionsPath, 0o700)
 			if err != nil {

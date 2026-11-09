@@ -1,6 +1,6 @@
 #!/bin/sh -eux
 
-python3 /work/src/mkosi.images/nvidia/install.py /buildroot "${DESTDIR}"
+python3 /work/src/mkosi.images/nvidia/install.py /buildroot "${DESTDIR}" "${NVIDIA_BRANCH_DIR:-/work/src/mkosi.images/nvidia}"
 KERNEL="$(ls /buildroot/usr/lib/modules/)"
 SOURCE=/usr/src/nvidia
 cp "/buildroot/boot/config-${KERNEL}" "/buildroot/usr/src/linux-headers-${KERNEL}/.config"

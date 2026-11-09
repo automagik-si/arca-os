@@ -85,9 +85,19 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 
 	boot := nvidiaBoot{}
 
-	target, err := os.Readlink(n.path("/var/lib/extensions/nvidia.raw"))
-	if err == nil {
-		boot.ExtensionVersion = filepath.Base(filepath.Dir(target))
+	for _, branch := range []string{nvidiaStable, nvidiaLTS} {
+		target, err := os.Readlink(n.path("/var/lib/extensions/" + branch + ".raw"))
+		if err == nil {
+			boot.ExtensionVersion = filepath.Base(filepath.Dir(target))
+
+			old := n.activeBuild()
+			if old.Version != "" && (old.Version != boot.ExtensionVersion || old.Branch != branch) {
+				n.rememberPrevious(old)
+			}
+
+			n.state.Applications.NVIDIA.State.ActiveBranch = branch
+			n.state.Applications.NVIDIA.State.ActiveExtensionVersion = boot.ExtensionVersion
+		}
 	}
 
 	completed := false
@@ -123,6 +133,11 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 		boot.Version = version
 		if err != nil {
 			boot.Reason = err.Error()
+
+			reason, _ := os.ReadFile(n.path(systemd.NVIDIAExtensionReasonPath))
+			if strings.TrimSpace(string(reason)) == systemd.NVIDIAQuarantinedReason {
+				boot.Reason = systemd.NVIDIAQuarantinedReason
+			}
 		}
 
 		reason := n.state.Applications.NVIDIA.State.BadVersions[n.attemptKey(version)]
@@ -256,7 +271,7 @@ func (n *nvidia) startAttempt(ctx context.Context, boot *nvidiaBoot) {
 	err = n.markBound()
 	if err != nil {
 		boot.Reason = "completion of NVIDIA binding could not be recorded safely"
-		boot.Failure = true
+		boot.Deferred = true
 	}
 }
 

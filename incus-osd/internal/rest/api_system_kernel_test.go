@@ -44,3 +44,42 @@ func TestKernelPUTPersistsConfigurationWithWarnings(t *testing.T) {
 	require.Equal(t, s.System.Kernel.Config, loaded.System.Kernel.Config)
 	require.Len(t, loaded.System.Kernel.Config.PCI.Passthrough, 2)
 }
+
+func TestKernelPUTRejectsInvalidInputBeforeApplying(t *testing.T) {
+	t.Parallel()
+
+	for _, config := range []string{
+		`"memory":{"persistent_hugepages":-1}`,
+		`"memory":{"zram_swap_size":"invalid"}`,
+		`"zfs":{"arc_max_size":"-1GB"}`,
+		`"network":{"buffer_size":-1}`,
+		`"blacklist_modules":["nvidia\noptions bad=1"]`,
+		`"pci":{"passthrough":[{"vendor_id":"oops","product_id":"2805"}]}`,
+		`"pci":{"passthrough":[{"vendor_id":"10de","product_id":"2805","pci_address":"../../bad"}]}`,
+		`"pci":{"sriov":[{"pci_address":"0000:01:00.0","vf_count":-1}]}`,
+	} {
+		t.Run(config, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "state.txt")
+			s, err := state.LoadOrCreate(path)
+			require.NoError(t, err)
+
+			s.System.Kernel.Config.BlacklistModules = []string{"unchanged"}
+			require.NoError(t, s.SaveDurable())
+			server := Server{state: s}
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/1.0/system/kernel", strings.NewReader(`{"config":{`+config+`}}`))
+			reply := httptest.NewRecorder()
+			server.putSystemKernel(reply, request, func(context.Context, api.SystemKernelConfig) error {
+				t.Fatal("invalid input must never be applied")
+
+				return nil
+			})
+			require.Equal(t, http.StatusBadRequest, reply.Code)
+
+			loaded, err := state.LoadOrCreate(path)
+			require.NoError(t, err)
+			require.Equal(t, []string{"unchanged"}, loaded.System.Kernel.Config.BlacklistModules)
+			require.Equal(t, loaded.System.Kernel.Config, s.System.Kernel.Config)
+		})
+	}
+}

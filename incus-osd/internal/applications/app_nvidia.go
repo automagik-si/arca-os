@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -21,15 +22,23 @@ import (
 
 const nvidiaStable = "nvidia"
 
+const nvidiaLTS = "nvidia-lts"
+
 const nvidiaBootFile = "/run/incus-os/nvidia-boot.json"
 
 type nvidia struct {
 	common
 
-	variant      string
-	sysroot      string
-	runCommand   func(context.Context, string, ...string) (string, error)
-	verifyModule func(string) error
+	variant           string
+	sysroot           string
+	runCommand        func(context.Context, string, ...string) (string, error)
+	verifyModule      func(string) error
+	verifyImage       func(context.Context, string) error
+	refreshExtensions func(context.Context) error
+	findExtension     func(context.Context, string, string, bool) (string, []string, string)
+	extensionFiles    *nvidiaExtensionFiles
+	bootRecovery      bool
+	healthTimeout     time.Duration
 }
 
 type nvidiaBoot struct {
@@ -40,6 +49,7 @@ type nvidiaBoot struct {
 	Reason           string                      `json:"reason"`
 	Failure          bool                        `json:"failure,omitempty"`
 	Attempted        bool                        `json:"attempted,omitempty"`
+	Deferred         bool                        `json:"deferred,omitempty"`
 }
 
 func (n *nvidia) Name() string {
@@ -47,7 +57,14 @@ func (n *nvidia) Name() string {
 }
 
 func (n *nvidia) Get(_ context.Context) (any, error) {
-	return n.state.Applications.NVIDIA, nil
+	app := n.state.Applications.NVIDIA
+
+	app.State.RequestedBranch = n.requestedBranch()
+	if app.State.ActiveBranch == "" && app.State.ActiveExtensionVersion != "" {
+		app.State.ActiveBranch = nvidiaStable
+	}
+
+	return app, nil
 }
 
 func (*nvidia) Struct() any {
@@ -59,7 +76,7 @@ func (*nvidia) GetDependencies() []string {
 }
 
 func (n *nvidia) IsInstalled() bool {
-	return n.Version() != ""
+	return n.Version() != "" && n.variant == n.requestedBranch()
 }
 
 func (n *nvidia) IsRunning(_ context.Context) bool {
@@ -73,7 +90,9 @@ func (*nvidia) StartupWeight() int {
 func (n *nvidia) SetFriendlyVersion(_ context.Context) error {
 	version, err := os.ReadFile(n.path("/usr/share/nvidia/version"))
 	if err != nil {
-		n.state.Applications.NVIDIA.State.Reason = systemd.NVIDIAMissingReason
+		if !n.state.Applications.NVIDIA.State.NeedsReboot && n.state.Applications.NVIDIA.State.Reason != systemd.NVIDIAQuarantinedReason {
+			n.state.Applications.NVIDIA.State.Reason = systemd.NVIDIAMissingReason
+		}
 
 		return errors.New(systemd.NVIDIAMissingReason)
 	}
@@ -124,6 +143,7 @@ func (n *nvidia) UpdateConfig(_ context.Context, req any) error {
 	app.Config.Cards = cards
 	if app.Config.ResetBadVersions {
 		clear(n.state.Applications.NVIDIA.State.BadVersions)
+		clear(n.state.Applications.NVIDIA.State.BadBuilds)
 		n.state.Applications.NVIDIA.State.PendingAttempt = ""
 		n.state.Applications.NVIDIA.State.AttemptBootID = ""
 		n.state.Applications.NVIDIA.State.PendingHealth = ""
@@ -131,9 +151,14 @@ func (n *nvidia) UpdateConfig(_ context.Context, req any) error {
 		app.Config.ResetBadVersions = false
 	}
 
-	n.state.Applications.NVIDIA.Config = app.Config
+	previous := n.state.Applications.NVIDIA.Config
 
-	return n.requireReboot()
+	n.state.Applications.NVIDIA.Config = app.Config
+	if previous.Driver == app.Config.Driver && maps.Equal(previous.Cards, app.Config.Cards) {
+		return n.state.SaveDurable()
+	}
+
+	return n.deferSwitch("Reboot required to apply the NVIDIA driver choice")
 }
 
 func (n *nvidia) Initialize(_ context.Context) error {
@@ -142,6 +167,9 @@ func (n *nvidia) Initialize(_ context.Context) error {
 	}
 
 	n.appState.Initialized = true
+	if n.state.Applications.NVIDIA.State.ActiveExtensionVersion != "" {
+		return n.state.SaveDurable()
+	}
 
 	return n.requireReboot()
 }
@@ -151,6 +179,10 @@ func (n *nvidia) Stop(_ context.Context) error {
 }
 
 func (n *nvidia) Update(_ context.Context) error {
+	if n.state.OS.SystemIsReady {
+		return n.state.SaveDurable()
+	}
+
 	if n.state.Applications.NVIDIA.State.ActiveExtensionVersion != n.Version() {
 		return n.state.SaveDurable()
 	}
@@ -160,11 +192,31 @@ func (n *nvidia) Update(_ context.Context) error {
 	return n.requireReboot()
 }
 
-func (n *nvidia) Restart(_ context.Context) error {
-	return n.requireReboot()
+func (n *nvidia) Restart(ctx context.Context) error {
+	return n.reconcile(WithNVIDIALiveSwitch(ctx, n.Name()))
 }
 
 func (n *nvidia) Start(ctx context.Context) error {
+	if n.state.OS.SystemIsReady {
+		return n.state.SaveDurable()
+	}
+
+	claimed, err := claimNVIDIABoot(n.path(nvidiaStartedFile))
+	if err != nil {
+		slog.WarnContext(ctx, "NVIDIA boot startup could not be claimed; skipping the startup check", "error", err)
+
+		n.state.Applications.NVIDIA.State.Reason = "NVIDIA startup check was skipped because its boot marker could not be written"
+
+		return nil
+	}
+
+	if !claimed {
+		return n.state.SaveDurable()
+	}
+
+	n.bootRecovery = true
+	defer func() { n.bootRecovery = false }()
+
 	boot := nvidiaBoot{}
 
 	body, err := os.ReadFile(n.path(nvidiaBootFile))
@@ -189,6 +241,10 @@ func (n *nvidia) Start(ctx context.Context) error {
 		}
 	}
 
+	if boot.Deferred {
+		return n.deferSwitch(boot.Reason)
+	}
+
 	if boot.Failure {
 		return n.fallback(ctx, boot, boot.Reason)
 	}
@@ -197,9 +253,18 @@ func (n *nvidia) Start(ctx context.Context) error {
 		return n.requireReboot()
 	}
 
+	if boot.ExtensionVersion == n.state.Applications.NVIDIA.State.ActiveExtensionVersion && config.Driver == boot.Config.Driver && maps.Equal(config.Cards, boot.Config.Cards) {
+		n.state.Applications.NVIDIA.State.NeedsReboot = false
+	}
+
 	if boot.Reason != "" || len(boot.Cards) == 0 {
 		n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
 		n.state.Applications.NVIDIA.State.Reason = boot.Reason
+
+		recovery := n.recoveryReason()
+		if recovery != "" {
+			n.state.Applications.NVIDIA.State.Reason = recovery
+		}
 
 		return n.state.SaveDurable()
 	}
@@ -225,7 +290,7 @@ func (n *nvidia) Start(ctx context.Context) error {
 	n.state.Applications.NVIDIA.State.HealthBootID = ""
 
 	n.state.Applications.NVIDIA.State.ActiveDriver = "nvidia"
-	n.state.Applications.NVIDIA.State.Reason = ""
+	n.state.Applications.NVIDIA.State.Reason = n.recoveryReason()
 
 	return n.state.SaveDurable()
 }
@@ -259,6 +324,7 @@ func (n *nvidia) command(ctx context.Context, name string, args ...string) (stri
 }
 
 func (n *nvidia) requireReboot() error {
+	n.state.Applications.NVIDIA.State.NeedsReboot = true
 	n.state.System.Update.State.NeedsReboot = true
 
 	return n.state.SaveDurable()
@@ -269,12 +335,23 @@ func (n *nvidia) health(ctx context.Context, cards []string) error {
 		return errors.New("no NVIDIA GPU")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	parent := ctx
+
+	timeout := n.healthTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	out, err := n.command(ctx, "/usr/bin/nvidia-smi", "--query-gpu=pci.bus_id", "--format=csv,noheader")
 	if err != nil {
-		return errors.New("NVIDIA health check could not initialise every assigned GPU")
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+
+		return fmt.Errorf("%w: NVIDIA could not initialise every assigned GPU", errNVIDIAHealth)
 	}
 
 	initialised := map[string]bool{}
@@ -301,8 +378,12 @@ func normaliseNVIDIAAddress(address string) string {
 }
 
 func (n *nvidia) clearBadVersion() {
+	n.clearBadDriverVersion(n.state.Applications.NVIDIA.State.DriverVersion)
+}
+
+func (n *nvidia) clearBadDriverVersion(version string) {
 	s := &n.state.Applications.NVIDIA.State
-	key := n.attemptKey(s.DriverVersion)
+	key := n.attemptKey(version)
 	delete(s.BadVersions, key)
 
 	id, err := n.bootID()
@@ -406,6 +487,14 @@ func (n *nvidia) checkPreviousAttempt() string {
 	}
 
 	s.BadVersions[key] = reason
+	if s.Previous != nil {
+		if s.BadBuilds == nil {
+			s.BadBuilds = map[string]string{}
+		}
+
+		s.BadBuilds[n.buildKey(api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version})] = reason
+	}
+
 	s.PendingAttempt = ""
 	s.AttemptBootID = ""
 	s.PendingHealth = ""
@@ -420,18 +509,44 @@ func (n *nvidia) checkPreviousAttempt() string {
 }
 
 func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) error {
+	if n.state.OS.SystemIsReady || !n.bootRecovery {
+		return n.deferRollback(ctx, reason, false)
+	}
+
 	s := &n.state.Applications.NVIDIA.State
 	if s.BadVersions == nil {
 		s.BadVersions = map[string]string{}
 	}
 
+	if s.BadBuilds == nil {
+		s.BadBuilds = map[string]string{}
+	}
+
 	s.BadVersions[n.attemptKey(boot.Version)] = reason
-	s.ActiveDriver = "nouveau"
-	s.Reason = reason
-	s.PendingAttempt = ""
-	s.AttemptBootID = ""
-	s.PendingHealth = ""
-	s.HealthBootID = ""
+
+	build := n.activeBuild()
+	if build.Version == "" {
+		build = api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: n.appState.Version}
+	}
+
+	if build.Version != "" {
+		s.BadBuilds[n.buildKey(build)] = reason
+	}
+
+	s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+
+	err := n.state.SaveDurable()
+	if err != nil {
+		return errors.New("NVIDIA recovery state could not be saved; reboot the host")
+	}
+
+	if s.Previous != nil && s.Previous.Version != "" {
+		return n.rollback(ctx, boot, reason)
+	}
+
+	n.restoreNouveau(ctx, boot.Cards)
+
+	s.ActiveDriver, s.DriverVersion, s.Reason = "nouveau", "", reason
 
 	id, err := n.bootID()
 	if err != nil {
@@ -445,6 +560,7 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 	reboot := boot.Attempted && len(boot.Cards) > 0 && previous != id
 	if reboot {
 		s.FallbackBootID = id
+		s.NeedsReboot = true
 		n.state.System.Update.State.NeedsReboot = true
 	}
 
@@ -468,7 +584,12 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 
 // PrepareGPUs applies per-address ownership before explicitly loading Nouveau or NVIDIA.
 func PrepareGPUs(ctx context.Context, s *state.State) error {
-	app, err := Load(ctx, s, nvidiaStable)
+	branch := s.Applications.NVIDIA.State.RequestedBranch
+	if branch == "" {
+		branch = nvidiaStable
+	}
+
+	app, err := Load(ctx, s, branch)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 package api
 
-// ApplicationNVIDIAConfig selects the host driver and per-card uses, applied on reboot.
+// ApplicationNVIDIAConfig selects the host driver and per-card uses.
 type ApplicationNVIDIAConfig struct {
 	ApplicationConfig `yaml:",inline"`
 
@@ -8,6 +8,12 @@ type ApplicationNVIDIAConfig struct {
 
 	Driver string            `json:"driver"          yaml:"driver"`
 	Cards  map[string]string `json:"cards,omitempty" yaml:"cards,omitempty"`
+}
+
+// ApplicationNVIDIABuild identifies an offline driver pack.
+type ApplicationNVIDIABuild struct {
+	Branch  string `json:"branch"  yaml:"branch"`
+	Version string `json:"version" yaml:"version"`
 }
 
 // ApplicationNVIDIAState records health failures for each OS release and driver version.
@@ -19,6 +25,12 @@ type ApplicationNVIDIAState struct {
 	FallbackBootID string `json:"fallback_boot_id,omitempty" yaml:"fallback_boot_id,omitempty"`
 	PendingHealth  string `json:"pending_health,omitempty"   yaml:"pending_health,omitempty"`
 	HealthBootID   string `json:"health_boot_id,omitempty"   yaml:"health_boot_id,omitempty"`
+
+	RequestedBranch string                  `json:"requested_branch,omitempty" yaml:"requested_branch,omitempty"`
+	ActiveBranch    string                  `json:"active_branch,omitempty"    yaml:"active_branch,omitempty"`
+	Previous        *ApplicationNVIDIABuild `json:"previous,omitempty"         yaml:"previous,omitempty"`
+	NeedsReboot     bool                    `json:"needs_reboot"               yaml:"needs_reboot"`
+	BadBuilds       map[string]string       `json:"bad_builds,omitempty"       yaml:"bad_builds,omitempty"`
 
 	ActiveExtensionVersion string `json:"active_extension_version,omitempty" yaml:"active_extension_version,omitempty"`
 
