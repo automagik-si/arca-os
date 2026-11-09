@@ -132,7 +132,14 @@ func TestNVIDIAWillNotLoadOrRebootWithoutDurableState(t *testing.T) {
 		t.Parallel()
 		n, commands, _ := newNVIDIAFixture(t, nvidiaBootTest{healthFail: true})
 		require.NoError(t, n.prepare(t.Context(), true))
-		n.state.UnrecognizedFields = []string{"future.field"}
+		original := n.runCommand
+		n.runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
+			if name == "/usr/bin/nvidia-smi" {
+				n.state.UnrecognizedFields = []string{"future.field"}
+			}
+
+			return original(ctx, name, args...)
+		}
 		require.ErrorContains(t, n.Start(t.Context()), "could not be saved")
 		require.NotContains(t, *commands, "systemctl --no-block reboot")
 		require.Empty(t, n.state.Applications.NVIDIA.State.FallbackBootID)

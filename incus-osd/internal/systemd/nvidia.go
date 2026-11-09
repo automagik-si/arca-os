@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/lxc/incus/v7/shared/subprocess"
+
+	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
 
 // NVIDIAMissingReason explains why the host is using its in-kernel fallback.
@@ -19,14 +21,31 @@ const NVIDIAMissingReason = "the NVIDIA driver for this Arca OS version is not i
 const NVIDIAExtensionReasonPath = "/run/incus-os/nvidia-extension-reason"
 
 type nvidiaExtensions struct {
-	links    string
-	images   string
-	reason   string
-	validate func(context.Context, string) error
+	links     string
+	images    string
+	reason    string
+	validate  func(context.Context, string) error
+	preferred string
+	pinned    bool
 }
 
 func newNVIDIAExtensions() nvidiaExtensions {
-	return nvidiaExtensions{SystemExtensionsPath, LocalExtensionsPath, NVIDIAExtensionReasonPath, ValidateNVIDIAExtension}
+	m := nvidiaExtensions{links: SystemExtensionsPath, images: LocalExtensionsPath, reason: NVIDIAExtensionReasonPath, validate: ValidateNVIDIAExtension, pinned: true}
+
+	body, err := os.ReadFile("/var/lib/incus-os/state.txt")
+	if err != nil {
+		return m
+	}
+
+	s := state.State{}
+
+	err = state.Decode(body, nil, &s)
+	if err == nil && len(s.UnrecognizedFields) == 0 {
+		m.preferred = s.Applications.NVIDIA.State.Version
+		m.pinned = s.Applications.NVIDIA.Config.PinCurrentVersions
+	}
+
+	return m
 }
 
 // ValidateNVIDIAExtensions excludes incompatible GPU images without blocking other applications.
@@ -65,11 +84,7 @@ func ValidateNVIDIAExtension(ctx context.Context, image string) error {
 }
 
 func (m nvidiaExtensions) check(ctx context.Context) {
-	entries, err := os.ReadDir(m.links)
-	if err != nil {
-		return
-	}
-
+	entries, _ := os.ReadDir(m.links)
 	for _, entry := range entries {
 		if entry.Name() != "nvidia.raw" && (!strings.HasPrefix(entry.Name(), "nvidia-") || !strings.HasSuffix(entry.Name(), ".raw")) {
 			continue
@@ -84,6 +99,10 @@ func (m nvidiaExtensions) check(ctx context.Context) {
 
 		excludeNVIDIAImage(path)
 		m.record(NVIDIAMissingReason)
+	}
+
+	if m.preferred != "" {
+		_, _, _ = m.selectImage(ctx, m.preferred, m.pinned)
 	}
 }
 
@@ -110,6 +129,7 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 	candidates := []string{preferred, current}
 
 	if !pinned {
+		candidates = nil
 		for _, version := range slices.Backward(versions) {
 			candidates = append(candidates, version)
 		}

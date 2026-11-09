@@ -85,6 +85,11 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 
 	boot := nvidiaBoot{}
 
+	target, err := os.Readlink(n.path("/var/lib/extensions/nvidia.raw"))
+	if err == nil {
+		boot.ExtensionVersion = filepath.Base(filepath.Dir(target))
+	}
+
 	completed := false
 	defer func() {
 		if !completed {
@@ -243,6 +248,14 @@ func (n *nvidia) startAttempt(ctx context.Context, boot *nvidiaBoot) {
 
 	if err != nil {
 		boot.Reason = "NVIDIA driver failed to bind an assigned GPU"
+		boot.Failure = true
+
+		return
+	}
+
+	err = n.markBound()
+	if err != nil {
+		boot.Reason = "completion of NVIDIA binding could not be recorded safely"
 		boot.Failure = true
 	}
 }

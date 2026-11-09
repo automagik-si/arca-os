@@ -2,6 +2,7 @@ package applications
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -291,7 +292,11 @@ func sysextImageExists(name string, version string) bool {
 }
 
 func removeStaleSysextImages(appName string, skipVersions []string) error {
-	dirEntries, err := os.ReadDir(systemd.LocalExtensionsPath)
+	return removeStaleSysextImagesAt(systemd.LocalExtensionsPath, appName, skipVersions)
+}
+
+func removeStaleSysextImagesAt(images string, appName string, skipVersions []string) error {
+	dirEntries, err := os.ReadDir(images)
 	if err != nil {
 		return err
 	}
@@ -310,16 +315,16 @@ func removeStaleSysextImages(appName string, skipVersions []string) error {
 		}
 
 		// Check if an application image exists, and if so, remove it.
-		_, err := os.Stat(filepath.Join(systemd.LocalExtensionsPath, entry.Name(), appName+".raw"))
+		_, err := os.Stat(filepath.Join(images, entry.Name(), appName+".raw"))
 		if err == nil {
-			err := os.Remove(filepath.Join(systemd.LocalExtensionsPath, entry.Name(), appName+".raw"))
+			err := os.Remove(filepath.Join(images, entry.Name(), appName+".raw"))
 			if err != nil {
 				return err
 			}
 
 			// Opportunistically attempt to remove the directory. This will fail
 			// if it is non-empty, which is OK.
-			_ = os.Remove(filepath.Join(systemd.LocalExtensionsPath, entry.Name()))
+			_ = os.Remove(filepath.Join(images, entry.Name()))
 		}
 	}
 
@@ -387,8 +392,17 @@ func refreshNVIDIAExtension(ctx context.Context, s *state.State) {
 	if version == "" {
 		app.State.ActiveDriver = "nouveau"
 	}
-	// Keep all NVIDIA builds until their matching OS has booted, including a pre-downloaded update.
-	err := s.Save()
+
+	boot := nvidiaBoot{}
+
+	body, err := os.ReadFile(nvidiaBootFile)
+	if err == nil {
+		_ = json.Unmarshal(body, &boot)
+	}
+
+	flagNVIDIAReboot(s, boot)
+
+	err = s.Save()
 	if err != nil {
 		slog.Warn("NVIDIA selection could not be saved; other applications will still start")
 	}
@@ -405,7 +419,33 @@ func refreshExtensionsWithNVIDIA(ctx context.Context, s *state.State) error {
 		if err == nil {
 			_ = app.SetFriendlyVersion(ctx)
 		}
+
+		ukis, err := util.GetUKIVersions()
+		if err != nil {
+			slog.Warn("NVIDIA images could not be pruned because the other boot slot could not be identified")
+		} else {
+			err = pruneNVIDIAExtensions(s, ukis.OtherVersion, systemd.LocalExtensionsPath)
+			if err != nil {
+				slog.Warn("Old NVIDIA images could not be removed")
+			}
+		}
 	}
 
 	return nil
+}
+
+func pruneNVIDIAExtensions(s *state.State, otherRelease string, images string) error {
+	app := &s.Applications.NVIDIA
+	keep := []string{app.State.ActiveExtensionVersion, app.State.Version, otherRelease}
+
+	err := removeStaleSysextImagesAt(images, nvidiaStable, keep)
+	if err != nil {
+		return err
+	}
+
+	app.State.AvailableVersions = slices.DeleteFunc(app.State.AvailableVersions, func(version string) bool {
+		return !slices.Contains(keep, version)
+	})
+
+	return s.Save()
 }

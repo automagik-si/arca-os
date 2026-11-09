@@ -17,6 +17,8 @@ type ApplicationNVIDIAState struct {
 	PendingAttempt string `json:"pending_attempt,omitempty"  yaml:"pending_attempt,omitempty"`
 	AttemptBootID  string `json:"attempt_boot_id,omitempty"  yaml:"attempt_boot_id,omitempty"`
 	FallbackBootID string `json:"fallback_boot_id,omitempty" yaml:"fallback_boot_id,omitempty"`
+	PendingHealth  string `json:"pending_health,omitempty"   yaml:"pending_health,omitempty"`
+	HealthBootID   string `json:"health_boot_id,omitempty"   yaml:"health_boot_id,omitempty"`
 
 	ActiveExtensionVersion string `json:"active_extension_version,omitempty" yaml:"active_extension_version,omitempty"`
 

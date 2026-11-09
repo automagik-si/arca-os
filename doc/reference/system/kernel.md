@@ -2,6 +2,8 @@
 
 IncusOS exposes a limited set of configuration knobs for adjusting kernel-level settings. A system reboot may be required for changes to fully take effect.
 
+`PUT /1.0/system/kernel` saves the requested configuration even when some live changes fail. In that case it returns HTTP 200 with the combined apply errors in `metadata.warning`; the remaining kernel settings are still applied. A persistence failure returns an error.
+
 ## Configuration options
 
 Configuration fields are defined in the [`SystemKernelConfig` struct](https://github.com/lxc/incus-os/blob/main/incus-osd/api/system_kernel.go).

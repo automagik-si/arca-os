@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestNVIDIARefreshDoesNotBlockIncus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			m := nvidiaExtensions{links: filepath.Join(root, "extensions"), images: filepath.Join(root, "images"), reason: filepath.Join(root, "reason")}
+			m := nvidiaExtensions{links: filepath.Join(root, "extensions"), images: filepath.Join(root, "images"), reason: filepath.Join(root, "reason"), preferred: tt.preferred, pinned: tt.pinned}
 			require.NoError(t, os.MkdirAll(m.links, 0o700))
 
 			for _, version := range []string{"001", "002"} {
@@ -68,8 +69,16 @@ func TestNVIDIARefreshDoesNotBlockIncus(t *testing.T) {
 
 				return validateNVIDIAKernel(kernel, tt.kernel)
 			}
-			// ExecStartPre uses this exact guard, with no dependency on daemon state or an update server.
+			// Assert selection before the daemon refresh, so prepare can use NVIDIA on this first boot.
 			m.check(t.Context())
+
+			if tt.want != "" {
+				target, err := os.Readlink(link)
+				require.NoError(t, err)
+				require.Equal(t, filepath.Join(m.images, tt.want, "nvidia.raw"), target)
+				require.NoError(t, m.validate(t.Context(), link))
+			}
+
 			selected, versions, reason := m.selectImage(t.Context(), tt.preferred, tt.pinned)
 			require.Equal(t, tt.want, selected)
 			require.Contains(t, versions, "001")
@@ -121,4 +130,45 @@ func TestNVIDIAExecStartPreExcludesUnverifiableImage(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(root, "incus.raw"))
 	require.NoError(t, err)
+}
+
+func TestNVIDIAExecStartPreSelectsNewestVerifiedBuild(t *testing.T) {
+	t.Parallel()
+
+	for _, pinned := range []bool{false, true} {
+		t.Run(strconv.FormatBool(pinned), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+
+			m := nvidiaExtensions{links: filepath.Join(root, "links"), images: filepath.Join(root, "images"), reason: filepath.Join(root, "reason"), preferred: "002", pinned: pinned}
+			for _, version := range []string{"002", "003", "004"} {
+				directory := filepath.Join(m.images, version)
+				require.NoError(t, os.MkdirAll(directory, 0o700))
+				require.NoError(t, os.WriteFile(filepath.Join(directory, "nvidia.raw"), []byte(version), 0o600))
+			}
+
+			m.validate = func(_ context.Context, path string) error {
+				body, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+
+				if string(body) == "004" {
+					return errors.New("wrong signing key")
+				}
+
+				return nil
+			}
+			m.check(t.Context())
+			target, err := os.Readlink(filepath.Join(m.links, "nvidia.raw"))
+			require.NoError(t, err)
+
+			want := "003"
+			if pinned {
+				want = "002"
+			}
+
+			require.Equal(t, filepath.Join(m.images, want, "nvidia.raw"), target)
+		})
+	}
 }

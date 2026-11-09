@@ -33,12 +33,13 @@ type nvidia struct {
 }
 
 type nvidiaBoot struct {
-	Config    api.ApplicationNVIDIAConfig `json:"config"`
-	Version   string                      `json:"version"`
-	Cards     []string                    `json:"cards"`
-	Reason    string                      `json:"reason"`
-	Failure   bool                        `json:"failure,omitempty"`
-	Attempted bool                        `json:"attempted,omitempty"`
+	ExtensionVersion string                      `json:"extension_version,omitempty"`
+	Config           api.ApplicationNVIDIAConfig `json:"config"`
+	Version          string                      `json:"version"`
+	Cards            []string                    `json:"cards"`
+	Reason           string                      `json:"reason"`
+	Failure          bool                        `json:"failure,omitempty"`
+	Attempted        bool                        `json:"attempted,omitempty"`
 }
 
 func (n *nvidia) Name() string {
@@ -125,6 +126,8 @@ func (n *nvidia) UpdateConfig(_ context.Context, req any) error {
 		clear(n.state.Applications.NVIDIA.State.BadVersions)
 		n.state.Applications.NVIDIA.State.PendingAttempt = ""
 		n.state.Applications.NVIDIA.State.AttemptBootID = ""
+		n.state.Applications.NVIDIA.State.PendingHealth = ""
+		n.state.Applications.NVIDIA.State.HealthBootID = ""
 		app.Config.ResetBadVersions = false
 	}
 
@@ -190,6 +193,10 @@ func (n *nvidia) Start(ctx context.Context) error {
 		return n.fallback(ctx, boot, boot.Reason)
 	}
 
+	if flagNVIDIAReboot(n.state, boot) {
+		return n.requireReboot()
+	}
+
 	if boot.Reason != "" || len(boot.Cards) == 0 {
 		n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
 		n.state.Applications.NVIDIA.State.Reason = boot.Reason
@@ -202,6 +209,11 @@ func (n *nvidia) Start(ctx context.Context) error {
 		return n.fallback(ctx, boot, reason)
 	}
 
+	err = n.saveHealthAttempt(boot.Version)
+	if err != nil {
+		return err
+	}
+
 	err = n.health(ctx, boot.Cards)
 	if err != nil {
 		return n.fallback(ctx, boot, err.Error())
@@ -209,11 +221,29 @@ func (n *nvidia) Start(ctx context.Context) error {
 
 	n.state.Applications.NVIDIA.State.PendingAttempt = ""
 	n.state.Applications.NVIDIA.State.AttemptBootID = ""
+	n.state.Applications.NVIDIA.State.PendingHealth = ""
+	n.state.Applications.NVIDIA.State.HealthBootID = ""
 
 	n.state.Applications.NVIDIA.State.ActiveDriver = "nvidia"
 	n.state.Applications.NVIDIA.State.Reason = ""
 
 	return n.state.SaveDurable()
+}
+
+func flagNVIDIAReboot(s *state.State, boot nvidiaBoot) bool {
+	app := &s.Applications.NVIDIA
+	if app.Config.Driver != "nvidia" || app.State.ActiveExtensionVersion == "" || app.State.ActiveExtensionVersion == boot.ExtensionVersion {
+		return false
+	}
+
+	app.State.Reason = "reboot to enable NVIDIA"
+	if !boot.Attempted {
+		app.State.ActiveDriver = "nouveau"
+	}
+
+	s.System.Update.State.NeedsReboot = true
+
+	return true
 }
 
 func (n *nvidia) path(path string) string {
@@ -280,6 +310,11 @@ func (n *nvidia) clearBadVersion() {
 		s.PendingAttempt = ""
 		s.AttemptBootID = ""
 	}
+
+	if err == nil && s.PendingHealth == key && s.HealthBootID != id {
+		s.PendingHealth = ""
+		s.HealthBootID = ""
+	}
 }
 
 func (n *nvidia) attemptKey(version string) string {
@@ -316,9 +351,36 @@ func (n *nvidia) saveAttempt(version string) error {
 	return nil
 }
 
+func (n *nvidia) markBound() error {
+	s := &n.state.Applications.NVIDIA.State
+	s.PendingAttempt, s.AttemptBootID = "", ""
+
+	return n.state.SaveDurable()
+}
+
+func (n *nvidia) saveHealthAttempt(version string) error {
+	id, err := n.bootID()
+	if err != nil {
+		return err
+	}
+
+	s := &n.state.Applications.NVIDIA.State
+	previousHealth, previousBoot := s.PendingHealth, s.HealthBootID
+	s.PendingHealth, s.HealthBootID = n.attemptKey(version), id
+
+	err = n.state.SaveDurable()
+	if err != nil {
+		s.PendingHealth, s.HealthBootID = previousHealth, previousBoot
+
+		return errors.New("NVIDIA health check could not be recorded safely")
+	}
+
+	return nil
+}
+
 func (n *nvidia) checkPreviousAttempt() string {
 	s := &n.state.Applications.NVIDIA.State
-	if s.PendingAttempt == "" {
+	if s.PendingAttempt == "" && s.PendingHealth == "" {
 		return ""
 	}
 
@@ -327,7 +389,15 @@ func (n *nvidia) checkPreviousAttempt() string {
 		return "the previous NVIDIA startup could not be checked"
 	}
 
-	if id == s.AttemptBootID {
+	key, attemptBoot := s.PendingAttempt, s.AttemptBootID
+	reason := "NVIDIA did not complete its previous startup"
+
+	if key == "" {
+		key, attemptBoot = s.PendingHealth, s.HealthBootID
+		reason = "NVIDIA did not complete its previous health check"
+	}
+
+	if id == attemptBoot {
 		return "NVIDIA startup is already in progress"
 	}
 
@@ -335,9 +405,11 @@ func (n *nvidia) checkPreviousAttempt() string {
 		s.BadVersions = map[string]string{}
 	}
 
-	s.BadVersions[s.PendingAttempt] = "NVIDIA did not complete its previous startup"
+	s.BadVersions[key] = reason
 	s.PendingAttempt = ""
 	s.AttemptBootID = ""
+	s.PendingHealth = ""
+	s.HealthBootID = ""
 
 	err = n.state.SaveDurable()
 	if err != nil {
@@ -358,6 +430,8 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 	s.Reason = reason
 	s.PendingAttempt = ""
 	s.AttemptBootID = ""
+	s.PendingHealth = ""
+	s.HealthBootID = ""
 
 	id, err := n.bootID()
 	if err != nil {

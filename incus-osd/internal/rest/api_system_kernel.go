@@ -1,7 +1,9 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/lxc/incus-os/incus-osd/api"
@@ -81,31 +83,43 @@ func (s *Server) apiSystemKernel(w http.ResponseWriter, r *http.Request) {
 		// Return the current kernel state.
 		_ = response.SyncResponse(true, s.state.System.Kernel).Render(w)
 	case http.MethodPut:
-		kernelData := &api.SystemKernel{}
+		s.putSystemKernel(w, r, kernel.ApplyKernelConfiguration)
 
-		err := json.NewDecoder(r.Body).Decode(kernelData)
-		if err != nil {
-			_ = response.BadRequest(err).Render(w)
-
-			return
-		}
-
-		// Apply new configuration
-		err = kernel.ApplyKernelConfiguration(r.Context(), kernelData.Config)
-		if err != nil {
-			_ = response.InternalError(err).Render(w)
-
-			return
-		}
-
-		// Persist the configuration.
-		s.state.System.Kernel.Config = kernelData.Config
-
-		_ = response.EmptySyncResponse.Render(w)
+		return
 	default:
 		// If none of the supported methods, return NotImplemented.
 		_ = response.NotImplemented(nil).Render(w)
 	}
 
 	_ = s.state.Save()
+}
+
+func (s *Server) putSystemKernel(w http.ResponseWriter, r *http.Request, apply func(context.Context, api.SystemKernelConfig) error) {
+	kernelData := &api.SystemKernel{}
+
+	err := json.NewDecoder(r.Body).Decode(kernelData)
+	if err != nil {
+		_ = response.BadRequest(err).Render(w)
+
+		return
+	}
+
+	applyErr := apply(r.Context(), kernelData.Config)
+	s.state.System.Kernel.Config = kernelData.Config
+
+	err = s.state.SaveDurable()
+	if err != nil {
+		_ = response.InternalError(err).Render(w)
+
+		return
+	}
+
+	if applyErr != nil {
+		slog.WarnContext(r.Context(), "Kernel configuration saved with apply warnings", "warning", applyErr)
+		_ = response.SyncResponse(true, map[string]string{"warning": applyErr.Error()}).Render(w)
+
+		return
+	}
+
+	_ = response.EmptySyncResponse.Render(w)
 }
