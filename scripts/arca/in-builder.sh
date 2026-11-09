@@ -25,7 +25,8 @@ PROJECT=arcaos-dev
 VM=arcaos-builder
 # The builder takes 16 GiB; start it only with 4 GiB of headroom on top.
 MIN_MEM_GIB=20
-VM_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# /root/go/bin holds the tools make static-analysis installs (swagger, golangci-lint).
+VM_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/go/bin
 
 usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'in-builder: %s\n' "$*" >&2; }
