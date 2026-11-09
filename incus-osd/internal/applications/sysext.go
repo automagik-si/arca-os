@@ -403,7 +403,7 @@ func refreshNVIDIAExtension(ctx context.Context, s *state.State) {
 		return
 	}
 
-	if s.OS.SystemIsReady {
+	if s.OS.SystemIsReady || n.bootStarted() {
 		err = n.reconcile(ctx)
 	} else {
 		version, versions, reason := systemd.SelectNVIDIAExtension(ctx, app.State.Version, app.Config.PinCurrentVersions)
@@ -472,7 +472,7 @@ func refreshExtensionsWithNVIDIA(ctx context.Context, s *state.State) error {
 
 func pruneNVIDIAExtensions(s *state.State, otherRelease string, images string) error {
 	app := &s.Applications.NVIDIA
-	if app.State.ActiveExtensionVersion == "" || app.State.Reason == systemd.NVIDIAMissingReason {
+	if app.State.ActiveExtensionVersion == "" || (app.State.Reason == systemd.NVIDIAMissingReason || app.State.Reason == systemd.NVIDIAQuarantinedReason) {
 		return nil
 	}
 

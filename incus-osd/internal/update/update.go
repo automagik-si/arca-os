@@ -198,6 +198,11 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 
 	// Refresh extensions and reload applications if any have been updated or freshly installed.
 	if len(appsUpdated) > 0 {
+		err = prepareApplicationUpdates(ctx, s, appsUpdated)
+		if err != nil {
+			return err
+		}
+
 		// Apply the system extensions.
 		slog.DebugContext(ctx, "Refreshing system extensions")
 
@@ -223,6 +228,27 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 	}
 
 	s.System.Update.State.Status = "Application update check completed"
+
+	return nil
+}
+
+func prepareApplicationUpdates(ctx context.Context, s *state.State, updated map[string]string) error {
+	for name := range updated {
+		app, err := applications.Load(ctx, s, name)
+		if err != nil {
+			return err
+		}
+
+		updater, ok := app.(interface {
+			PrepareUpdate(ctx context.Context) error
+		})
+		if ok {
+			err = updater.PrepareUpdate(ctx)
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	return nil
 }

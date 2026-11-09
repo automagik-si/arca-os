@@ -33,6 +33,7 @@ func switchFixture(t *testing.T, branch string) (*nvidia, *[]string, *bool) {
 	}
 
 	writeGPUFixtureFile(t, n.sysroot, "sys/module/nvidia/refcnt", "0")
+	require.NoError(t, os.MkdirAll(n.path("/sys/module/nvidia/holders"), 0o700))
 	require.NoError(t, os.MkdirAll(n.path(systemd.SystemExtensionsPath), 0o700))
 	require.NoError(t, os.Symlink(n.path(filepath.Join(systemd.LocalExtensionsPath, "001", branch+".raw")), n.path(filepath.Join(systemd.SystemExtensionsPath, branch+".raw"))))
 
@@ -358,6 +359,7 @@ func TestNVIDIAModuleReferencesDeferBeforeAnyChanges(t *testing.T) {
 			t.Parallel()
 			n, commands, _ := switchFixture(t, nvidiaStable)
 			writeGPUFixtureFile(t, n.sysroot, "sys/module/"+module+"/refcnt", "1")
+			require.NoError(t, os.MkdirAll(n.path("/sys/module/"+module+"/holders"), 0o700))
 			require.NoError(t, n.switchBuild(t.Context(), api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}))
 			require.True(t, n.state.Applications.NVIDIA.State.NeedsReboot)
 			require.Empty(t, *commands)

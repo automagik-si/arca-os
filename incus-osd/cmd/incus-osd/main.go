@@ -349,6 +349,11 @@ func run(ctx context.Context, s *state.State) error {
 		return err
 	}
 
+	err = applications.MarkNVIDIABootComplete()
+	if err != nil {
+		return err
+	}
+
 	// Done with all initialization.
 	slog.InfoContext(ctx, "System is ready", "version", s.OS.RunningRelease)
 	s.OS.SuccessfulBoot = true

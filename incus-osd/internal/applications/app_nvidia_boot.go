@@ -133,6 +133,11 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 		boot.Version = version
 		if err != nil {
 			boot.Reason = err.Error()
+
+			reason, _ := os.ReadFile(n.path(systemd.NVIDIAExtensionReasonPath))
+			if strings.TrimSpace(string(reason)) == systemd.NVIDIAQuarantinedReason {
+				boot.Reason = systemd.NVIDIAQuarantinedReason
+			}
 		}
 
 		reason := n.state.Applications.NVIDIA.State.BadVersions[n.attemptKey(version)]
@@ -252,8 +257,17 @@ func (n *nvidia) startAttempt(ctx context.Context, boot *nvidiaBoot) {
 	boot.Attempted = true
 
 	err = n.loadModules(ctx)
-	if err == nil {
-		err = n.bindCards(boot.Cards)
+	if err != nil {
+		n.deferBootAttempt(boot, "NVIDIA modules could not be loaded; restart to try again")
+
+		return
+	}
+
+	err = n.bindCards(boot.Cards)
+	if err != nil && ctx.Err() != nil {
+		n.deferBootAttempt(boot, "NVIDIA startup was interrupted; restart to try again")
+
+		return
 	}
 
 	if err != nil {
@@ -266,7 +280,18 @@ func (n *nvidia) startAttempt(ctx context.Context, boot *nvidiaBoot) {
 	err = n.markBound()
 	if err != nil {
 		boot.Reason = "completion of NVIDIA binding could not be recorded safely"
-		boot.Failure = true
+		boot.Deferred = true
+	}
+}
+
+func (n *nvidia) deferBootAttempt(boot *nvidiaBoot, reason string) {
+	boot.Reason, boot.Deferred = reason, true
+	n.state.Applications.NVIDIA.State.PendingAttempt = ""
+	n.state.Applications.NVIDIA.State.AttemptBootID = ""
+
+	err := n.state.SaveDurable()
+	if err != nil {
+		boot.Reason = "NVIDIA startup could not be recorded safely; restart to try again"
 	}
 }
 

@@ -275,3 +275,39 @@ func TestNVIDIABootGuardFallbackKeepsGoodBuild(t *testing.T) {
 		})
 	}
 }
+
+func TestNVIDIAQuarantineHasAnExplicitReason(t *testing.T) {
+	t.Parallel()
+
+	for _, legacy := range []bool{false, true} {
+		t.Run(strconv.FormatBool(legacy), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			m := nvidiaExtensions{links: filepath.Join(root, "links"), images: filepath.Join(root, "images"), reason: filepath.Join(root, "reason"), release: "release", branch: "nvidia", preferred: "002", pinned: true}
+			image := filepath.Join(m.images, "002", "nvidia.raw")
+			require.NoError(t, os.MkdirAll(filepath.Dir(image), 0o700))
+			require.NoError(t, os.WriteFile(image, []byte("signed pack"), 0o600))
+			require.NoError(t, os.MkdirAll(m.links, 0o700))
+			require.NoError(t, os.Symlink(image, filepath.Join(m.links, "nvidia.raw")))
+
+			m.validate = func(context.Context, string) error { return nil }
+			if legacy {
+				m.badVersions = map[string]string{"release:driver": "failed health"}
+				m.driverVersion = func(context.Context, string) (string, error) { return "driver", nil }
+			} else {
+				m.badBuilds = map[string]string{"release:nvidia:002": "failed health"}
+			}
+
+			m.check(t.Context())
+			selected, _, reason := m.selectImage(t.Context(), "002", true)
+			require.Empty(t, selected)
+			require.Equal(t, NVIDIAQuarantinedReason, reason)
+			body, err := os.ReadFile(m.reason)
+			require.NoError(t, err)
+			require.Equal(t, NVIDIAQuarantinedReason, string(body))
+
+			_, err = os.Stat(image)
+			require.NoError(t, err)
+		})
+	}
+}

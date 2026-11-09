@@ -36,6 +36,7 @@ type nvidia struct {
 	refreshExtensions func(context.Context) error
 	findExtension     func(context.Context, string, string, bool) (string, []string, string)
 	extensionFiles    *nvidiaExtensionFiles
+	bootRecovery      bool
 }
 
 type nvidiaBoot struct {
@@ -46,6 +47,7 @@ type nvidiaBoot struct {
 	Reason           string                      `json:"reason"`
 	Failure          bool                        `json:"failure,omitempty"`
 	Attempted        bool                        `json:"attempted,omitempty"`
+	Deferred         bool                        `json:"deferred,omitempty"`
 }
 
 func (n *nvidia) Name() string {
@@ -86,7 +88,7 @@ func (*nvidia) StartupWeight() int {
 func (n *nvidia) SetFriendlyVersion(_ context.Context) error {
 	version, err := os.ReadFile(n.path("/usr/share/nvidia/version"))
 	if err != nil {
-		if !n.state.Applications.NVIDIA.State.NeedsReboot {
+		if !n.state.Applications.NVIDIA.State.NeedsReboot && n.state.Applications.NVIDIA.State.Reason != systemd.NVIDIAQuarantinedReason {
 			n.state.Applications.NVIDIA.State.Reason = systemd.NVIDIAMissingReason
 		}
 
@@ -193,9 +195,21 @@ func (n *nvidia) Restart(ctx context.Context) error {
 }
 
 func (n *nvidia) Start(ctx context.Context) error {
-	if n.state.OS.SystemIsReady && n.state.Applications.NVIDIA.State.ActiveExtensionVersion != "" {
+	if n.state.OS.SystemIsReady {
 		return n.state.SaveDurable()
 	}
+
+	claimed, err := claimNVIDIABoot(n.path(nvidiaStartedFile))
+	if err != nil {
+		return err
+	}
+
+	if !claimed {
+		return n.state.SaveDurable()
+	}
+
+	n.bootRecovery = true
+	defer func() { n.bootRecovery = false }()
 
 	boot := nvidiaBoot{}
 
@@ -219,6 +233,10 @@ func (n *nvidia) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	if boot.Deferred {
+		return n.deferSwitch(boot.Reason)
 	}
 
 	if boot.Failure {
@@ -257,6 +275,13 @@ func (n *nvidia) Start(ctx context.Context) error {
 
 	err = n.health(ctx, boot.Cards)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			n.state.Applications.NVIDIA.State.PendingHealth = ""
+			n.state.Applications.NVIDIA.State.HealthBootID = ""
+
+			return n.deferSwitch("NVIDIA startup was interrupted; restart to try again")
+		}
+
 		return n.fallback(ctx, boot, err.Error())
 	}
 
@@ -316,6 +341,14 @@ func (n *nvidia) health(ctx context.Context, cards []string) error {
 
 	out, err := n.command(ctx, "/usr/bin/nvidia-smi", "--query-gpu=pci.bus_id", "--format=csv,noheader")
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		return errors.New("NVIDIA health check could not initialise every assigned GPU")
 	}
 
@@ -343,8 +376,12 @@ func normaliseNVIDIAAddress(address string) string {
 }
 
 func (n *nvidia) clearBadVersion() {
+	n.clearBadDriverVersion(n.state.Applications.NVIDIA.State.DriverVersion)
+}
+
+func (n *nvidia) clearBadDriverVersion(version string) {
 	s := &n.state.Applications.NVIDIA.State
-	key := n.attemptKey(s.DriverVersion)
+	key := n.attemptKey(version)
 	delete(s.BadVersions, key)
 
 	id, err := n.bootID()
@@ -470,7 +507,7 @@ func (n *nvidia) checkPreviousAttempt() string {
 }
 
 func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) error {
-	if n.state.OS.SystemIsReady {
+	if n.state.OS.SystemIsReady || !n.bootRecovery {
 		return n.deferRollback(ctx, reason, false)
 	}
 

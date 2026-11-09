@@ -17,6 +17,11 @@ import (
 // NVIDIAMissingReason explains why the host is using its in-kernel fallback.
 const NVIDIAMissingReason = "the NVIDIA driver for this Arca OS version is not installed yet"
 
+// NVIDIAQuarantinedReason distinguishes failed health checks from an absent pack.
+const NVIDIAQuarantinedReason = "this NVIDIA driver version failed its check; it stays off until it's updated or reset"
+
+var errNVIDIAQuarantined = errors.New(NVIDIAQuarantinedReason)
+
 // NVIDIAExtensionReasonPath passes early extension selection status to boot preparation.
 const NVIDIAExtensionReasonPath = "/run/incus-os/nvidia-extension-reason"
 
@@ -90,7 +95,7 @@ func configureNVIDIAExtensions(m nvidiaExtensions, s *state.State) nvidiaExtensi
 func (m nvidiaExtensions) validateBuild(ctx context.Context, image string, branch string, version string) error {
 	reason := m.badBuilds[m.release+":"+branch+":"+version]
 	if reason != "" {
-		return errors.New(reason)
+		return errNVIDIAQuarantined
 	}
 
 	err := m.validate(ctx, image)
@@ -116,7 +121,7 @@ func (m nvidiaExtensions) validateBuild(ctx context.Context, image string, branc
 
 	reason = m.badVersions[m.release+":"+strings.TrimSpace(driver)]
 	if reason != "" {
-		return errors.New(reason)
+		return errNVIDIAQuarantined
 	}
 
 	return nil
@@ -180,7 +185,13 @@ func (m nvidiaExtensions) check(ctx context.Context) {
 		}
 
 		excludeNVIDIAImage(path)
-		m.record(NVIDIAMissingReason)
+
+		reason := NVIDIAMissingReason
+		if errors.Is(err, errNVIDIAQuarantined) {
+			reason = NVIDIAQuarantinedReason
+		}
+
+		m.record(reason)
 	}
 
 	if m.preferred != "" && !m.skipSelection {
@@ -230,6 +241,8 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 		}
 	}
 
+	reason := NVIDIAMissingReason
+
 	for _, version := range candidates {
 		if version == "" || version == "." || !slices.Contains(versions, version) {
 			continue
@@ -239,6 +252,10 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 
 		err := m.validateBuild(ctx, image, branch, version)
 		if err != nil {
+			if errors.Is(err, errNVIDIAQuarantined) {
+				reason = NVIDIAQuarantinedReason
+			}
+
 			continue
 		}
 
@@ -275,13 +292,13 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 	}
 
 	if m.inspectOnly {
-		return "", versions, NVIDIAMissingReason
+		return "", versions, reason
 	}
 
 	excludeNVIDIAImage(link)
-	m.record(NVIDIAMissingReason)
+	m.record(reason)
 
-	return "", versions, NVIDIAMissingReason
+	return "", versions, reason
 }
 
 func excludeNVIDIAImage(path string) {
