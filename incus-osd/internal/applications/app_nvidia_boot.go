@@ -92,7 +92,7 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 
 			old := n.activeBuild()
 			if old.Version != "" && (old.Version != boot.ExtensionVersion || old.Branch != branch) {
-				n.state.Applications.NVIDIA.State.Previous = &old
+				n.rememberPrevious(old)
 			}
 
 			n.state.Applications.NVIDIA.State.ActiveBranch = branch

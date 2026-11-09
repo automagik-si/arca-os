@@ -28,11 +28,14 @@ const nvidiaBootFile = "/run/incus-os/nvidia-boot.json"
 type nvidia struct {
 	common
 
-	variant      string
-	sysroot      string
-	runCommand   func(context.Context, string, ...string) (string, error)
-	verifyModule func(string) error
-	verifyImage  func(context.Context, string) error
+	variant           string
+	sysroot           string
+	runCommand        func(context.Context, string, ...string) (string, error)
+	verifyModule      func(string) error
+	verifyImage       func(context.Context, string) error
+	refreshExtensions func(context.Context) error
+	findExtension     func(context.Context, string, string, bool) (string, []string, string)
+	extensionFiles    *nvidiaExtensionFiles
 }
 
 type nvidiaBoot struct {
@@ -83,7 +86,9 @@ func (*nvidia) StartupWeight() int {
 func (n *nvidia) SetFriendlyVersion(_ context.Context) error {
 	version, err := os.ReadFile(n.path("/usr/share/nvidia/version"))
 	if err != nil {
-		n.state.Applications.NVIDIA.State.Reason = systemd.NVIDIAMissingReason
+		if !n.state.Applications.NVIDIA.State.NeedsReboot {
+			n.state.Applications.NVIDIA.State.Reason = systemd.NVIDIAMissingReason
+		}
 
 		return errors.New(systemd.NVIDIAMissingReason)
 	}
@@ -184,7 +189,7 @@ func (n *nvidia) Update(_ context.Context) error {
 }
 
 func (n *nvidia) Restart(ctx context.Context) error {
-	return n.reconcile(ctx)
+	return n.reconcile(WithNVIDIALiveSwitch(ctx, n.Name()))
 }
 
 func (n *nvidia) Start(ctx context.Context) error {
@@ -465,6 +470,10 @@ func (n *nvidia) checkPreviousAttempt() string {
 }
 
 func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) error {
+	if n.state.OS.SystemIsReady {
+		return n.deferRollback(ctx, reason, false)
+	}
+
 	if n.state.Applications.NVIDIA.State.Previous != nil && n.state.Applications.NVIDIA.State.Previous.Version != "" {
 		return n.rollback(ctx, reason)
 	}

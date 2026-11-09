@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/lxc/incus-os/incus-osd/api"
+	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
 
 func TestNVIDIAKernelCompatibility(t *testing.T) {
@@ -204,4 +207,71 @@ func TestNVIDIABranchSelectionAtBootAndBusyRefresh(t *testing.T) {
 	require.Equal(t, filepath.Join(m.images, "002", "nvidia-lts.raw"), target)
 	_, err = os.Stat(filepath.Join(m.links, "nvidia.raw"))
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestNVIDIASelectionSkipsQuarantinedBuildsAndDrivers(t *testing.T) {
+	t.Parallel()
+
+	for _, legacy := range []bool{false, true} {
+		t.Run(strconv.FormatBool(legacy), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+
+			m := nvidiaExtensions{images: filepath.Join(root, "images"), links: filepath.Join(root, "links"), release: "release", branch: "nvidia", inspectOnly: true}
+			for _, version := range []string{"001", "002"} {
+				directory := filepath.Join(m.images, version)
+				require.NoError(t, os.MkdirAll(directory, 0o700))
+				require.NoError(t, os.WriteFile(filepath.Join(directory, "nvidia.raw"), []byte(version), 0o600))
+			}
+
+			m.validate = func(context.Context, string) error { return nil }
+			if legacy {
+				m.badVersions = map[string]string{"release:bad-driver": "failed health"}
+				m.driverVersion = func(_ context.Context, image string) (string, error) {
+					if filepath.Base(filepath.Dir(image)) == "002" {
+						return "bad-driver", nil
+					}
+
+					return "good-driver", nil
+				}
+			} else {
+				m.badBuilds = map[string]string{"release:nvidia:002": "failed health"}
+			}
+
+			selected, _, reason := m.selectImage(t.Context(), "002", false)
+			require.Equal(t, "001", selected)
+			require.Empty(t, reason)
+		})
+	}
+}
+
+func TestNVIDIABootGuardFallbackKeepsGoodBuild(t *testing.T) {
+	t.Parallel()
+
+	for _, interrupted := range []bool{false, true} {
+		t.Run(strconv.FormatBool(interrupted), func(t *testing.T) {
+			t.Parallel()
+
+			s := &state.State{}
+			s.OS.RunningRelease = "release"
+			app := &s.Applications.NVIDIA
+			good := api.ApplicationNVIDIABuild{Branch: "nvidia", Version: "001"}
+			app.State.Previous = &good
+			app.State.RequestedBranch, app.State.Version = "nvidia-lts", "002"
+
+			app.State.ActiveBranch, app.State.ActiveExtensionVersion = "nvidia-lts", "002"
+			if interrupted {
+				app.State.PendingHealth = "release:bad-driver"
+			} else {
+				app.State.BadBuilds = map[string]string{"release:nvidia-lts:002": "failed health"}
+			}
+
+			m := configureNVIDIAExtensions(nvidiaExtensions{}, s)
+			require.Equal(t, good.Branch, m.branch)
+			require.Equal(t, good.Version, m.preferred)
+			require.True(t, m.lockedChoice)
+			require.True(t, m.pinned)
+			require.Equal(t, &good, app.State.Previous)
+		})
+	}
 }

@@ -221,7 +221,7 @@ func (s *Server) apiApplications(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Install the application.
-		err = update.CheckApplications(r.Context(), s.state, []string{app.Name}, false, false)
+		err = update.CheckApplications(applications.WithNVIDIALiveSwitch(r.Context(), app.Name), s.state, []string{app.Name}, false, false)
 		if err != nil {
 			_ = response.InternalError(err).Render(w)
 
@@ -1086,7 +1086,7 @@ func (s *Server) apiApplicationsSwitchVersion(w http.ResponseWriter, r *http.Req
 	}
 
 	// Reload sysext images pickup the new application version.
-	err = applications.RefreshExtensions(r.Context(), s.state)
+	err = applications.RefreshExtensions(applications.WithNVIDIALiveSwitch(r.Context(), app.Name()), s.state)
 	if err != nil {
 		_ = response.InternalError(err).Render(w)
 

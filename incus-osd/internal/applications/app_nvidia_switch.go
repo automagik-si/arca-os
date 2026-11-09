@@ -14,6 +14,19 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
 
+type nvidiaLiveSwitchKey struct{}
+
+// WithNVIDIALiveSwitch permits live driver changes for an explicit application API request.
+func WithNVIDIALiveSwitch(ctx context.Context, name string) context.Context {
+	if name != nvidiaStable && name != nvidiaLTS {
+		return ctx
+	}
+
+	return context.WithValue(ctx, nvidiaLiveSwitchKey{}, true)
+}
+
+var nvidiaModules = []string{"nvidia_peermem", "nvidia_drm", "nvidia_uvm", "nvidia_modeset", "nvidia"}
+
 var errNVIDIAModulesBusy = errors.New("NVIDIA modules are still in use")
 
 func (n *nvidia) requestedBranch() string {
@@ -84,11 +97,17 @@ func (n *nvidia) activeBuild() api.ApplicationNVIDIABuild {
 // reconcile selects the requested build while preserving the running pack until it can be replaced safely.
 func (n *nvidia) reconcile(ctx context.Context) error {
 	s := &n.state.Applications.NVIDIA.State
-	version, versions, reason := systemd.FindNVIDIAExtension(ctx, n.requestedBranch(), n.appState.Version, true)
+
+	find := n.findExtension
+	if find == nil {
+		find = systemd.FindNVIDIAExtension
+	}
+
+	version, versions, reason := find(ctx, n.requestedBranch(), n.appState.Version, true)
 
 	s.AvailableVersions = versions
 	if version == "" && !n.state.Applications.NVIDIA.Config.PinCurrentVersions {
-		version, versions, reason = systemd.FindNVIDIAExtension(ctx, n.requestedBranch(), n.appState.Version, false)
+		version, versions, reason = find(ctx, n.requestedBranch(), n.appState.Version, false)
 		s.AvailableVersions = versions
 	}
 
@@ -109,6 +128,11 @@ func (n *nvidia) reconcile(ctx context.Context) error {
 
 	if target == n.activeBuild() {
 		return n.state.SaveDurable()
+	}
+
+	live, explicit := ctx.Value(nvidiaLiveSwitchKey{}).(bool)
+	if n.state.OS.SystemIsReady && (!explicit || !live) {
+		return n.deferSwitch("a new NVIDIA driver is ready; restart to apply the update")
 	}
 
 	return n.switchBuild(ctx, target)
@@ -153,17 +177,18 @@ func (n *nvidia) busy() bool {
 	return false
 }
 
-func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABuild) error {
+func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABuild) (result error) {
 	if n.busy() {
 		return n.deferSwitch("NVIDIA devices are in use; the driver switch will run at the next boot")
 	}
 
-	s := &n.state.Applications.NVIDIA.State
-
-	previous := n.activeBuild()
-	if previous.Version != "" {
-		s.Previous = &previous
+	if n.modulesBusy() {
+		return n.deferSwitch("NVIDIA modules are still in use; the driver switch will run at the next boot")
 	}
+
+	s := &n.state.Applications.NVIDIA.State
+	previous := n.activeBuild()
+	n.rememberPrevious(previous)
 
 	err := n.state.SaveDurable()
 	if err != nil {
@@ -172,6 +197,7 @@ func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABu
 
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
+	defer func() { n.refreshOnError(ctx, &result) }()
 
 	err = n.activateBuild(ctx, target)
 	if err == nil {
@@ -213,7 +239,7 @@ func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABu
 			}
 		}
 
-		return n.deferRollback(ctx, reason)
+		return n.deferRollback(ctx, reason, false)
 	}
 
 	s.NeedsReboot = false
@@ -221,68 +247,154 @@ func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABu
 	return n.state.SaveDurable()
 }
 
-func (n *nvidia) activateBuild(ctx context.Context, build api.ApplicationNVIDIABuild) error {
+type nvidiaExtensionFiles struct {
+	mkdirAll func(string, os.FileMode) error
+	remove   func(string) error
+	symlink  func(string, string) error
+	rename   func(string, string) error
+}
+
+func (n *nvidia) files() nvidiaExtensionFiles {
+	if n.extensionFiles != nil {
+		return *n.extensionFiles
+	}
+
+	return nvidiaExtensionFiles{os.MkdirAll, os.Remove, os.Symlink, os.Rename}
+}
+
+func (n *nvidia) refresh(ctx context.Context) error {
+	if n.refreshExtensions != nil {
+		return n.refreshExtensions(ctx)
+	}
+
+	return systemd.RefreshExtensions(ctx)
+}
+
+func (n *nvidia) refreshOnError(ctx context.Context, result *error) {
+	if *result == nil {
+		return
+	}
+
+	repairCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	*result = errors.Join(*result, n.refresh(repairCtx))
+}
+
+func (n *nvidia) detachNVIDIA(ctx context.Context) error {
+	for _, branch := range []string{nvidiaStable, nvidiaLTS} {
+		err := n.files().remove(n.path(filepath.Join(systemd.SystemExtensionsPath, branch+".raw")))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	return n.refresh(ctx)
+}
+
+func (n *nvidia) modulesBusy() bool {
+	for _, module := range nvidiaModules {
+		body, err := os.ReadFile(n.path("/sys/module/" + module + "/refcnt"))
+		if errors.Is(err, os.ErrNotExist) {
+			_, moduleErr := os.Stat(n.path("/sys/module/" + module))
+			if errors.Is(moduleErr, os.ErrNotExist) {
+				continue
+			}
+
+			return true
+		}
+
+		if err != nil {
+			return true
+		}
+
+		refs, err := strconv.Atoi(strings.TrimSpace(string(body)))
+		if err != nil || refs != 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (n *nvidia) unloadModules(ctx context.Context) error {
+	if n.modulesBusy() {
+		return errNVIDIAModulesBusy
+	}
+
+	for _, module := range nvidiaModules {
+		_, err := os.Stat(n.path("/sys/module/" + module))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+
+		if err != nil {
+			return err
+		}
+
+		_, err = n.command(ctx, "/sbin/rmmod", module)
+		if err != nil {
+			return errNVIDIAModulesBusy
+		}
+	}
+
+	return nil
+}
+
+func (n *nvidia) activateBuild(ctx context.Context, build api.ApplicationNVIDIABuild) (result error) {
 	image := n.path(filepath.Join(systemd.LocalExtensionsPath, build.Version, build.Branch+".raw"))
+
+	reason := n.state.Applications.NVIDIA.State.BadBuilds[n.buildKey(build)]
+	if reason != "" {
+		return errors.New(reason)
+	}
 
 	err := n.validateImage(ctx, image)
 	if err != nil {
 		return errors.New("the requested NVIDIA pack could not be verified for this kernel")
 	}
 
-	_, err = n.command(ctx, "systemd-sysext", "unmerge")
+	if n.modulesBusy() {
+		return errNVIDIAModulesBusy
+	}
+	defer func() { n.refreshOnError(ctx, &result) }()
+
+	err = n.detachNVIDIA(ctx)
 	if err != nil {
-		return errors.New("the current NVIDIA extension could not be unmerged")
+		return err
 	}
 
-	for _, module := range []string{"nvidia_peermem", "nvidia_drm", "nvidia_uvm", "nvidia_modeset", "nvidia"} {
-		_, err := os.Stat(n.path("/sys/module/" + module))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-
-		if err == nil {
-			_, err = n.command(ctx, "/sbin/rmmod", module)
-		}
-
-		if err != nil {
-			_, _ = n.command(ctx, "systemd-sysext", "refresh")
-
-			return errNVIDIAModulesBusy
-		}
+	err = n.unloadModules(ctx)
+	if err != nil {
+		return err
 	}
 
 	link := n.path(filepath.Join(systemd.SystemExtensionsPath, build.Branch+".raw"))
+	files := n.files()
 
-	err = os.MkdirAll(filepath.Dir(link), 0o700)
+	err = files.mkdirAll(filepath.Dir(link), 0o700)
 	if err != nil {
 		return err
 	}
 
-	_ = os.Remove(link + ".new")
-
-	err = os.Symlink(image, link+".new")
-	if err != nil {
-		return err
-	}
-
-	err = os.Rename(link+".new", link)
-	if err != nil {
-		return err
-	}
-
-	other := nvidiaStable
-	if build.Branch == other {
-		other = nvidiaLTS
-	}
-
-	err = os.Remove(n.path(filepath.Join(systemd.SystemExtensionsPath, other+".raw")))
+	err = files.remove(link + ".new")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 
-	_, err = n.command(ctx, "systemd-sysext", "refresh")
+	err = files.symlink(image, link+".new")
 	if err != nil {
-		return errors.New("the requested NVIDIA extension could not be merged")
+		return err
+	}
+
+	err = files.rename(link+".new", link)
+	if err != nil {
+		return err
+	}
+
+	err = n.refresh(ctx)
+	if err != nil {
+		return err
 	}
 
 	s := &n.state.Applications.NVIDIA.State
@@ -290,6 +402,15 @@ func (n *nvidia) activateBuild(ctx context.Context, build api.ApplicationNVIDIAB
 	_, err = n.command(ctx, "/sbin/ldconfig")
 
 	return err
+}
+
+func (n *nvidia) rememberPrevious(build api.ApplicationNVIDIABuild) {
+	s := &n.state.Applications.NVIDIA.State
+	if build.Version == "" || s.BadBuilds[n.buildKey(build)] != "" || s.BadVersions[n.attemptKey(s.DriverVersion)] != "" || s.PendingAttempt != "" || s.PendingHealth != "" {
+		return
+	}
+
+	s.Previous = &build
 }
 
 func (n *nvidia) validateImage(ctx context.Context, image string) error {
@@ -307,6 +428,15 @@ func (n *nvidia) checkBuild(ctx context.Context) error {
 	}
 
 	s := &n.state.Applications.NVIDIA.State
+
+	reason := s.BadBuilds[n.buildKey(n.activeBuild())]
+	if reason == "" {
+		reason = s.BadVersions[n.attemptKey(version)]
+	}
+
+	if reason != "" {
+		return errors.New(reason)
+	}
 
 	s.DriverVersion = version
 	if n.state.Applications.NVIDIA.Config.Driver != "nvidia" || gpuModuleBlacklisted("nvidia", n.state.System.Kernel.Config.BlacklistModules) {
@@ -415,7 +545,7 @@ func (n *nvidia) rollback(ctx context.Context, reason string) error {
 	}
 
 	if n.busy() {
-		return n.deferRollback(ctx, reason)
+		return n.deferRollback(ctx, reason, true)
 	}
 
 	err = n.activateBuild(ctx, *s.Previous)
@@ -424,7 +554,7 @@ func (n *nvidia) rollback(ctx context.Context, reason string) error {
 	}
 
 	if err != nil {
-		return n.deferRollback(ctx, reason)
+		return n.deferRollback(ctx, reason, true)
 	}
 
 	s.NeedsReboot, s.Reason = false, reason+"; restored the previous driver from disk"
@@ -444,7 +574,38 @@ func (n *nvidia) recoveryReason() string {
 	return reason
 }
 
-func (n *nvidia) deferRollback(ctx context.Context, reason string) error {
+func (n *nvidia) deferRollback(ctx context.Context, reason string, boot bool) (result error) {
+	if !boot || n.state.OS.SystemIsReady {
+		var cleanupErr error
+
+		if !n.busy() && !n.modulesBusy() {
+			defer func() { n.refreshOnError(ctx, &result) }()
+
+			cleanupErr = n.detachNVIDIA(ctx)
+			if cleanupErr == nil {
+				n.state.Applications.NVIDIA.State.ActiveBranch = ""
+				n.state.Applications.NVIDIA.State.ActiveExtensionVersion = ""
+
+				cleanupErr = n.unloadModules(ctx)
+				if cleanupErr == nil {
+					n.state.Applications.NVIDIA.State.ActiveDriver = ""
+					n.state.Applications.NVIDIA.State.DriverVersion = ""
+				}
+			}
+		}
+
+		s := &n.state.Applications.NVIDIA.State
+
+		s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+		if s.Previous != nil {
+			s.RequestedBranch, s.Version = s.Previous.Branch, s.Previous.Version
+
+			return errors.Join(cleanupErr, n.deferSwitch("the new NVIDIA driver failed its check; restart to go back to the previous driver"))
+		}
+
+		return errors.Join(cleanupErr, n.deferSwitch("the new NVIDIA driver failed its check; restart to use the fallback driver"))
+	}
+
 	err := n.deferSwitch(reason + "; reboot to restore the previous driver")
 	if err != nil {
 		return err

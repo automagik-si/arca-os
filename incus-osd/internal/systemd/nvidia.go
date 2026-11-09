@@ -31,6 +31,10 @@ type nvidiaExtensions struct {
 	pinned        bool
 	skipSelection bool
 	lockedChoice  bool
+	release       string
+	badBuilds     map[string]string
+	badVersions   map[string]string
+	driverVersion func(context.Context, string) (string, error)
 }
 
 func newNVIDIAExtensions() nvidiaExtensions {
@@ -45,29 +49,77 @@ func newNVIDIAExtensions() nvidiaExtensions {
 
 	err = state.Decode(body, nil, &s)
 	if err == nil && len(s.UnrecognizedFields) == 0 {
-		m.preferred = s.Applications.NVIDIA.State.Version
-		m.branch = s.Applications.NVIDIA.State.RequestedBranch
-		m.pinned = s.Applications.NVIDIA.Config.PinCurrentVersions
-
-		app := &s.Applications.NVIDIA
-		if app.State.NeedsReboot {
-			m.pinned, m.lockedChoice = true, true
-		}
-
-		branch := m.branch
-		if branch == "" {
-			branch = "nvidia"
-		}
-
-		key := s.OS.RunningRelease + ":" + branch + ":" + m.preferred
-
-		interrupted := app.State.PendingHealth != "" || app.State.PendingAttempt != ""
-		if app.State.Previous != nil && (app.State.BadBuilds[key] != "" || interrupted) {
-			m.branch, m.preferred, m.pinned, m.lockedChoice = app.State.Previous.Branch, app.State.Previous.Version, true, true
-		}
+		m = configureNVIDIAExtensions(m, &s)
 	}
 
 	return m
+}
+
+func configureNVIDIAExtensions(m nvidiaExtensions, s *state.State) nvidiaExtensions {
+	app := &s.Applications.NVIDIA
+	m.preferred, m.branch, m.pinned = app.State.Version, app.State.RequestedBranch, app.Config.PinCurrentVersions
+
+	m.release, m.badBuilds, m.badVersions = s.OS.RunningRelease, app.State.BadBuilds, app.State.BadVersions
+	if app.State.NeedsReboot {
+		m.pinned, m.lockedChoice = true, true
+	}
+
+	branch := m.branch
+	if branch == "" {
+		branch = "nvidia"
+	}
+
+	key := m.release + ":" + branch + ":" + m.preferred
+	interrupted := app.State.PendingHealth != "" || app.State.PendingAttempt != ""
+
+	activeBranch := app.State.ActiveBranch
+	if activeBranch == "" {
+		activeBranch = "nvidia"
+	}
+
+	failedDriver := branch == activeBranch && m.preferred == app.State.ActiveExtensionVersion && m.badVersions[m.release+":"+app.State.DriverVersion] != ""
+
+	failed := m.badBuilds[key] != "" || failedDriver
+	if app.State.Previous != nil && (failed || interrupted) {
+		m.branch, m.preferred, m.pinned, m.lockedChoice = app.State.Previous.Branch, app.State.Previous.Version, true, true
+	}
+
+	return m
+}
+
+func (m nvidiaExtensions) validateBuild(ctx context.Context, image string, branch string, version string) error {
+	reason := m.badBuilds[m.release+":"+branch+":"+version]
+	if reason != "" {
+		return errors.New(reason)
+	}
+
+	err := m.validate(ctx, image)
+	if err != nil {
+		return err
+	}
+
+	if len(m.badVersions) == 0 {
+		return nil
+	}
+
+	readVersion := m.driverVersion
+	if readVersion == nil {
+		readVersion = func(ctx context.Context, image string) (string, error) {
+			return subprocess.RunCommandContext(ctx, "systemd-dissect", "--copy-from", image, "/usr/share/nvidia/version")
+		}
+	}
+
+	driver, err := readVersion(ctx, image)
+	if err != nil {
+		return err
+	}
+
+	reason = m.badVersions[m.release+":"+strings.TrimSpace(driver)]
+	if reason != "" {
+		return errors.New(reason)
+	}
+
+	return nil
 }
 
 // ValidateNVIDIAExtensions excludes incompatible GPU images without blocking other applications.
@@ -118,7 +170,11 @@ func (m nvidiaExtensions) check(ctx context.Context) {
 
 		path := filepath.Join(m.links, entry.Name())
 
-		err := m.validate(ctx, path)
+		target, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			err = m.validateBuild(ctx, target, strings.TrimSuffix(filepath.Base(target), ".raw"), filepath.Base(filepath.Dir(target)))
+		}
+
 		if err == nil {
 			continue
 		}
@@ -181,7 +237,7 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 
 		image := filepath.Join(m.images, version, branch+".raw")
 
-		err := m.validate(ctx, image)
+		err := m.validateBuild(ctx, image, branch, version)
 		if err != nil {
 			continue
 		}

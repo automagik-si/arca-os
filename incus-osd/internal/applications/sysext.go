@@ -420,7 +420,7 @@ func refreshNVIDIAExtension(ctx context.Context, s *state.State) {
 		if version != "" {
 			old := n.activeBuild()
 			if old.Version != "" && (old.Version != version || old.Branch != branch) {
-				app.State.Previous = &old
+				n.rememberPrevious(old)
 			}
 
 			app.State.ActiveBranch, app.State.ActiveExtensionVersion = branch, version
