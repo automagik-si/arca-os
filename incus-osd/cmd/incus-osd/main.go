@@ -55,6 +55,16 @@ var jobScheduler scheduling.Scheduler
 func main() {
 	ctx := context.Background()
 
+	if len(os.Args) == 2 && os.Args[1] == "--check-gpu-extension" {
+		err := systemd.ValidateNVIDIAExtensions(ctx)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+
+		return
+	}
+
 	// Get the OS name and version from /lib/os-release.
 	osName, osRelease, err := systemd.GetCurrentRelease(ctx)
 	if err != nil {
@@ -89,6 +99,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Record the OS name and version in the state.
+	s.OS.Name = osName
+	s.OS.RunningRelease = osRelease
+
+	if len(os.Args) == 2 && os.Args[1] == "--prepare-gpu" {
+		err := applications.PrepareGPUs(ctx, s)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+
+		return
+	}
+
 	jobScheduler, err = scheduling.NewScheduler()
 	if err != nil {
 		tui.EarlyError("unable to create scheduler: "+err.Error(), osName)
@@ -103,10 +127,6 @@ func main() {
 		tui.EarlyError("unable to configure console baud rates: "+err.Error(), osName)
 		os.Exit(1)
 	}
-
-	// Record the OS name and version in the state.
-	s.OS.Name = osName
-	s.OS.RunningRelease = osRelease
 
 	// Configure incus-agent.
 	err = configureIncusAgent(ctx, s)
@@ -1219,26 +1239,34 @@ func startApplications(ctx context.Context, s *state.State) error {
 
 		// If the application has been initialized, but isn't installed, attempt to
 		// re-download it.
-		if app.IsInitialized() && !app.IsInstalled() {
-			// The Incus application is a bit special, since it can be either the
-			// monthly stable or LTS release. We don't want to try to install both,
-			// so skip incorrect name/version pairs.
-			if strings.HasPrefix(app.Name(), "incus") {
-				if app.Name() == "incus" && strings.Contains(app.FriendlyVersion(), ".0.") {
-					continue
-				}
+		if !app.IsInitialized() || app.IsInstalled() {
+			continue
+		}
 
-				if app.Name() != "incus" && !strings.Contains(app.FriendlyVersion(), ".0.") {
-					continue
-				}
+		// The Incus application is a bit special, since it can be either the
+		// monthly stable or LTS release. We don't want to try to install both,
+		// so skip incorrect name/version pairs.
+		if strings.HasPrefix(app.Name(), "incus") {
+			if app.Name() == "incus" && strings.Contains(app.FriendlyVersion(), ".0.") {
+				continue
 			}
 
-			slog.WarnContext(ctx, "Application "+app.Name()+" should be installed, but doesn't exist on disk; attempting to re-download")
-
-			err := update.CheckApplications(ctx, s, []string{app.Name()}, true, true)
-			if err != nil {
-				return err
+			if app.Name() != "incus" && !strings.Contains(app.FriendlyVersion(), ".0.") {
+				continue
 			}
+		}
+
+		slog.WarnContext(ctx, "Application "+app.Name()+" should be installed, but doesn't exist on disk; attempting to re-download")
+
+		err = update.CheckApplications(ctx, s, []string{app.Name()}, true, true)
+		if err != nil {
+			if app.Name() == "nvidia" {
+				slog.Warn("The NVIDIA driver could not be downloaded; continuing startup")
+
+				continue
+			}
+
+			return err
 		}
 	}
 

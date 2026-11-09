@@ -39,19 +39,31 @@ func VerifyExtension(ctx context.Context, extensionFile string) error {
 	partitionFirstSectorRegex := regexp.MustCompile(`First sector: (\d+) \(at .+\)`)
 	partitionSizeRegex := regexp.MustCompile(`Partition size: (\d+) sectors \(.+\)`)
 
-	sectorSize, err := strconv.Atoi(sectorSizeRegex.FindStringSubmatch(output)[1])
+	sectorMatch := sectorSizeRegex.FindStringSubmatch(output)
+	firstMatch := partitionFirstSectorRegex.FindStringSubmatch(output)
+
+	sizeMatch := partitionSizeRegex.FindStringSubmatch(output)
+	if len(sectorMatch) != 2 || len(firstMatch) != 2 || len(sizeMatch) != 2 {
+		return errors.New("invalid system extension partition metadata")
+	}
+
+	sectorSize, err := strconv.Atoi(sectorMatch[1])
 	if err != nil {
 		return err
 	}
 
-	partitionFirstSector, err := strconv.Atoi(partitionFirstSectorRegex.FindStringSubmatch(output)[1])
+	partitionFirstSector, err := strconv.Atoi(firstMatch[1])
 	if err != nil {
 		return err
 	}
 
-	partitionSize, err := strconv.Atoi(partitionSizeRegex.FindStringSubmatch(output)[1])
+	partitionSize, err := strconv.Atoi(sizeMatch[1])
 	if err != nil {
 		return err
+	}
+
+	if sectorSize < 512 || sectorSize > 4096 || partitionSize <= 0 || partitionSize > (1024*1024)/sectorSize {
+		return errors.New("invalid system extension signature metadata size")
 	}
 
 	// Read the json metadata.
@@ -92,7 +104,13 @@ func VerifyExtension(ctx context.Context, extensionFile string) error {
 
 // RefreshExtensions refreshes the installed sysext images.
 func RefreshExtensions(ctx context.Context) error {
-	_, err := subprocess.RunCommandContext(ctx, "systemd-sysext", "refresh")
+	return refreshWithGPUCheck(ctx, newNVIDIAExtensions(), subprocess.RunCommandContext, ReloadDaemon)
+}
+
+func refreshWithGPUCheck(ctx context.Context, manager nvidiaExtensions, run func(context.Context, string, ...string) (string, error), reload func(context.Context) error) error {
+	manager.check(ctx)
+
+	_, err := run(ctx, "systemd-sysext", "refresh")
 	if err != nil {
 		// Check if we encountered a corrupt sysext image.
 		corruptSysextRegex := regexp.MustCompile(`Failed to read metadata for image (.+): Package not installed`)
@@ -110,7 +128,7 @@ func RefreshExtensions(ctx context.Context) error {
 	}
 
 	// Reload the systemd daemon.
-	return ReloadDaemon(ctx)
+	return reload(ctx)
 }
 
 func removeCorruptSysext(ctx context.Context, appName string) error {

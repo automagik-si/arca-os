@@ -1,0 +1,14 @@
+[Unit]
+Description=Select GPU drivers before explicit probing
+DefaultDependencies=no
+After=local-fs.target systemd-sysext.service systemd-tmpfiles-setup.service ldconfig.service
+Before=incus-osd.service sysinit.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+ExecStart=/usr/local/bin/incus-osd --prepare-gpu
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

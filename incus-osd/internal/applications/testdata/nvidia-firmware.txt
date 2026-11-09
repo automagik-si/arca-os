@@ -1,0 +1,4 @@
+nvidia/620.70.06/ucodes_tu10x.bin
+nvidia/620.70.06/ucodes_ga10x.bin
+nvidia/620.70.06/gsp_tu10x.bin
+nvidia/620.70.06/gsp_ga10x.bin

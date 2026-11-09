@@ -1,9 +1,11 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 )
 
 var currentStateVersion = 10
@@ -71,6 +73,26 @@ func (s *State) Save() error {
 
 	// Overwrite the prior state file with the updated version.
 	return os.Rename(s.path+".tmp", s.path)
+}
+
+// SaveDurable reports refused writes and syncs the rename before hardware recovery may proceed.
+func (s *State) SaveDurable() error {
+	if len(s.UnrecognizedFields) > 0 {
+		return errors.New("state contains unrecognized fields and cannot be saved")
+	}
+
+	err := s.Save()
+	if err != nil {
+		return err
+	}
+
+	directory, err := os.Open(filepath.Dir(s.path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+
+	return directory.Sync()
 }
 
 func writeFile(filename string, body []byte) error {

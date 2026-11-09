@@ -68,6 +68,8 @@ func UninstallApplication(ctx context.Context, s *state.State, name string) erro
 		s.Applications.Debug = api.Application{}
 	case "gpu-support":
 		s.Applications.GPUSupport = api.Application{}
+	case nvidiaStable:
+		s.Applications.NVIDIA = api.ApplicationNVIDIA{}
 	case incusVersionStable, incusVersionLTS70:
 		s.Applications.Incus = api.ApplicationIncus{}
 	case "incus-ceph":
