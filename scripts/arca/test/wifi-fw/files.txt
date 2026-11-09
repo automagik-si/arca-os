@@ -1,0 +1,9 @@
+fakewifi/fw-1.bin
+fakewifi/fw-2.bin
+fakewifi/board name.txt
+intel/iwlwifi/iwlwifi-so-a0-gf-a0-88.ucode
+intel/iwlwifi/iwlwifi-so-a0-gf-a0-89.ucode
+intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm
+intel/iwlwifi/iwlwifi-bz-b0-fm-c0-c102.ucode
+intel/iwlwifi/iwlwifi-bz-b0-fm-c0-c107.ucode
+other/blob.bin

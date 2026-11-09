@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lxc/incus-os/incus-osd/api"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
 	"github.com/lxc/incus-os/incus-osd/internal/network"
 	"github.com/lxc/incus-os/incus-osd/internal/nftables"
 	"github.com/lxc/incus-os/incus-osd/internal/providers"
@@ -98,8 +99,11 @@ func (s *Server) apiSystemNetwork(w http.ResponseWriter, r *http.Request) {
 			s.state.System.Network.Config.Time.Timezone = "UTC"
 		}
 
-		// Return the current network state.
-		_ = response.SyncResponse(true, s.state.System.Network).Render(w)
+		// Return the current network state, with the passphrases of the saved Wi-Fi networks left out.
+		current := s.state.System.Network
+		current.Config = wifi.Redact(current.Config)
+
+		_ = response.SyncResponse(true, current).Render(w)
 	case http.MethodPut:
 		// Replace the existing network configuration.
 		newConfig := &api.SystemNetwork{}
@@ -120,9 +124,20 @@ func (s *Server) apiSystemNetwork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Don't allow a new configuration that doesn't define any interfaces, bonds, or vlans.
+		// Don't allow a new configuration that doesn't define any interfaces, bonds, vlans or Wi-Fi networks.
 		if newConfig.Config == nil || seed.NetworkConfigHasEmptyDevices(*newConfig.Config) {
 			_ = response.BadRequest(errors.New("network configuration has no devices defined")).Render(w)
+
+			return
+		}
+
+		// A saved Wi-Fi network keeps its passphrase when the client sends none for it.
+		wifi.KeepSecrets(newConfig.Config, s.state.System.Network.Config)
+
+		// Refuse an invalid Wi-Fi configuration before anything changes. Its errors never carry a passphrase.
+		err = wifi.Validate(newConfig.Config, false, "", nil)
+		if err != nil {
+			_ = response.BadRequest(err).Render(w)
 
 			return
 		}

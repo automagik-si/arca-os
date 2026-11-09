@@ -1,0 +1,3 @@
+# The always-on server profile: the USB device behind a network interface is
+# never autosuspended.
+ACTION=="add", SUBSYSTEM=="net", SUBSYSTEMS=="usb", TEST=="device/../power/control", ATTR{device/../power/control}="on"

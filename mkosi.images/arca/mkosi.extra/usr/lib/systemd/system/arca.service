@@ -1,0 +1,19 @@
+[Unit]
+Description=Arca node
+Documentation=https://github.com/weunfold/arca
+After=incus.service incus-startup.service
+Wants=incus.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/local/bin/arca serve --config /usr/lib/arca/node.json
+Restart=on-failure
+RestartSec=10
+StateDirectory=arca arca/tokens
+StateDirectoryMode=0700
+RuntimeDirectory=arca
+RuntimeDirectoryMode=0700
+UMask=0077
+MemoryHigh=192M
+MemoryMax=256M

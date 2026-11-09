@@ -24,6 +24,7 @@ import (
 	"github.com/lxc/incus/v7/shared/units"
 
 	"github.com/lxc/incus-os/incus-osd/api"
+	"github.com/lxc/incus-os/incus-osd/internal/arca/wifi"
 	"github.com/lxc/incus-os/incus-osd/internal/nftables"
 	"github.com/lxc/incus-os/incus-osd/internal/proxy"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
@@ -154,6 +155,11 @@ func ApplyNetworkConfiguration(ctx context.Context, s *state.State, networkCfg *
 
 	// Restart networking after new config files have been generated.
 	err = systemd.RestartUnit(ctx, "systemd-networkd")
+	if err != nil {
+		return err
+	}
+
+	err = wifi.Activate(ctx, "/sys", systemd.StartUnit)
 	if err != nil {
 		return err
 	}
@@ -306,6 +312,7 @@ func ValidateNetworkConfiguration(ctx context.Context, networkCfg *api.SystemNet
 		numIPs += len(wg.Addresses)
 	}
 
+	numIPs += wifi.CountAddresses(networkCfg, wifi.SysRoot(requireValidMAC))
 	if numIPs == 0 {
 		return errors.New("zero IP addresses are configured")
 	}
@@ -339,7 +346,7 @@ func ValidateNetworkConfiguration(ctx context.Context, networkCfg *api.SystemNet
 		return err
 	}
 
-	return nil
+	return wifi.Validate(networkCfg, requireValidMAC, wifi.SysRoot(requireValidMAC), validateFirewall)
 }
 
 // UpdateNetworkState updates the network state within the SystemNetwork struct.
@@ -355,9 +362,7 @@ func UpdateNetworkState(ctx context.Context, n *api.SystemNetwork) error {
 	}
 
 	// Clear any existing state.
-	n.State = api.SystemNetworkState{
-		Interfaces: make(map[string]api.SystemNetworkInterfaceState),
-	}
+	n.State = wifi.ResetState(n.State)
 
 	// Keep track of all the roles being applied.
 	rolesFound := []string{}
@@ -1100,7 +1105,7 @@ func generateNetworkConfiguration(ctx context.Context, networkCfg *api.SystemNet
 		_ = os.Remove(systemd.SystemdTimesyncConfigFile)
 	}
 
-	return nil
+	return wifi.WriteFiles("", networkCfg)
 }
 
 // waitForUdevInterfaceRename waits up to a provided timeout for udev to pickup and process

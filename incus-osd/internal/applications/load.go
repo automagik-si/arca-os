@@ -14,7 +14,7 @@ import (
 )
 
 // Supported lists all supported applications.
-var Supported = []string{"debug", "gpu-support", nvidiaStable, nvidiaLTS, incusVersionStable, incusVersionLTS70, "incus-ceph", "incus-linstor", "migration-manager", "openfga", "operations-center"}
+var Supported = []string{"arca", "debug", "gpu-support", nvidiaStable, nvidiaLTS, incusVersionStable, incusVersionLTS70, "incus-ceph", "incus-linstor", "migration-manager", "openfga", "operations-center"}
 
 // ErrNoPrimary is returned when the system doesn't yet have a primary application.
 var ErrNoPrimary = errors.New("no primary application")
@@ -29,6 +29,8 @@ func Load(_ context.Context, s *state.State, name string) (Application, error) {
 	}
 
 	switch name {
+	case "arca":
+		app = &arca{common: common{state: s, appConfig: &s.Applications.Arca.Config, appState: &s.Applications.Arca.State}}
 	case "debug":
 		app = &debug{common: common{state: s, appConfig: &s.Applications.Debug.Config, appState: &s.Applications.Debug.State}}
 	case "gpu-support":

@@ -52,6 +52,7 @@ type SystemNetworkConfig struct {
 	Bonds      []SystemNetworkBond      `json:"bonds,omitempty"      yaml:"bonds,omitempty"`
 	VLANs      []SystemNetworkVLAN      `json:"vlans,omitempty"      yaml:"vlans,omitempty"`
 	Wireguard  []SystemNetworkWireguard `json:"wireguard,omitempty"  yaml:"wireguard,omitempty"`
+	Wireless   *SystemNetworkWireless   `json:"wireless,omitempty"   yaml:"wireless,omitempty"`
 }
 
 // SystemNetworkInterface contains information about a network interface.
@@ -215,6 +216,7 @@ type SystemNetworkProxyRule struct {
 type SystemNetworkState struct {
 	Interfaces             map[string]SystemNetworkInterfaceState `json:"interfaces"               yaml:"interfaces"`
 	ConfigurationInProcess bool                                   `json:"configuration_in_process" yaml:"configuration_in_process"`
+	Connectivity           *SystemNetworkConnectivity             `json:"connectivity,omitempty"   yaml:"connectivity,omitempty"`
 }
 
 // GetInterfaceNamesByRole returns a slice of interface names that have the given role applied to them.
@@ -297,6 +299,7 @@ type SystemNetworkInterfaceState struct {
 	Stats     SystemNetworkInterfaceStats            `json:"stats"               yaml:"stats"`
 	Type      string                                 `json:"type,omitempty"      yaml:"type,omitempty"`
 	Wireguard *SystemNetworkWireguardState           `json:"wireguard,omitempty" yaml:"wireguard,omitempty"`
+	Wireless  *SystemNetworkWirelessState            `json:"wireless,omitempty"  yaml:"wireless,omitempty"`
 }
 
 // SystemNetworkInterfaceStats holds RX/TX stats for an interface.
