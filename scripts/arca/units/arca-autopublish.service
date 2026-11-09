@@ -1,0 +1,17 @@
+# Installed as a user unit on the build host; see doc/reference/arca-publishing.md.
+# ExecStart names the checkout that holds autopublish.sh: edit it to match the host.
+[Unit]
+Description=Arca OS automatic publishing (build, canary, promote)
+
+[Service]
+Type=oneshot
+ExecStart=%h/workspace/repos/arca-os/scripts/arca/autopublish.sh
+StandardInput=null
+Nice=10
+# A build, a canary and a promotion take about an hour; the timeout is a backstop.
+TimeoutStartSec=4h
+# Room for the cleanup on stop: the canary VM is deleted and the builder stopped.
+TimeoutStopSec=300
+NoNewPrivileges=yes
+# Exit 3 is an inconclusive canary: the next run retries it on its own.
+SuccessExitStatus=3

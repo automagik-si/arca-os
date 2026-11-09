@@ -1,0 +1,11 @@
+# Installed as a user unit on the build host; see doc/reference/arca-publishing.md.
+[Unit]
+Description=Run Arca OS automatic publishing every 30 minutes
+
+[Timer]
+OnCalendar=*:00/30
+RandomizedDelaySec=2min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
