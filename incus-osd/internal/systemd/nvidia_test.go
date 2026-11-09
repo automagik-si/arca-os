@@ -172,3 +172,36 @@ func TestNVIDIAExecStartPreSelectsNewestVerifiedBuild(t *testing.T) {
 		})
 	}
 }
+
+func TestNVIDIABranchSelectionAtBootAndBusyRefresh(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	m := nvidiaExtensions{links: filepath.Join(root, "links"), images: filepath.Join(root, "images"), reason: filepath.Join(root, "reason"), preferred: "002", branch: "nvidia-lts", pinned: true}
+	require.NoError(t, os.MkdirAll(m.links, 0o700))
+
+	for _, branch := range []string{"nvidia", "nvidia-lts"} {
+		directory := filepath.Join(m.images, "002")
+		require.NoError(t, os.MkdirAll(directory, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, branch+".raw"), []byte(branch), 0o600))
+	}
+
+	old := filepath.Join(m.images, "002", "nvidia.raw")
+	require.NoError(t, os.Symlink(old, filepath.Join(m.links, "nvidia.raw")))
+	m.validate = func(context.Context, string) error { return nil }
+	m.skipSelection = true
+	require.NoError(t, refreshWithGPUCheck(t.Context(), m, func(context.Context, string, ...string) (string, error) { return "", nil }, func(context.Context) error { return nil }))
+	target, err := os.Readlink(filepath.Join(m.links, "nvidia.raw"))
+	require.NoError(t, err)
+	require.Equal(t, old, target)
+
+	_, err = os.Stat(filepath.Join(m.links, "nvidia-lts.raw"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	m.skipSelection = false
+	m.check(t.Context())
+	target, err = os.Readlink(filepath.Join(m.links, "nvidia-lts.raw"))
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(m.images, "002", "nvidia-lts.raw"), target)
+	_, err = os.Stat(filepath.Join(m.links, "nvidia.raw"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}

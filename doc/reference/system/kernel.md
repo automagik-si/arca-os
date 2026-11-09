@@ -32,3 +32,5 @@ The following configuration options can be set:
       * `vendor_id`: The PCI vendor ID
       * `product_id`: The PCI product ID
       * `pci_address`: Optional; if specified the system will attempt to unbind the given PCI device from its existing driver and configure it for passing though to a virtual machine without requiring a reboot.
+
+Invalid kernel configuration returns HTTP 400 before any changes are applied or saved. Valid configuration is persisted even if applying it live fails; those apply errors are returned as warnings.

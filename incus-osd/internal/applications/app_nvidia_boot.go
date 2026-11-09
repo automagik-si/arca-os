@@ -85,9 +85,19 @@ func (n *nvidia) prepare(ctx context.Context, installed bool) (result error) {
 
 	boot := nvidiaBoot{}
 
-	target, err := os.Readlink(n.path("/var/lib/extensions/nvidia.raw"))
-	if err == nil {
-		boot.ExtensionVersion = filepath.Base(filepath.Dir(target))
+	for _, branch := range []string{nvidiaStable, nvidiaLTS} {
+		target, err := os.Readlink(n.path("/var/lib/extensions/" + branch + ".raw"))
+		if err == nil {
+			boot.ExtensionVersion = filepath.Base(filepath.Dir(target))
+
+			old := n.activeBuild()
+			if old.Version != "" && (old.Version != boot.ExtensionVersion || old.Branch != branch) {
+				n.state.Applications.NVIDIA.State.Previous = &old
+			}
+
+			n.state.Applications.NVIDIA.State.ActiveBranch = branch
+			n.state.Applications.NVIDIA.State.ActiveExtensionVersion = boot.ExtensionVersion
+		}
 	}
 
 	completed := false

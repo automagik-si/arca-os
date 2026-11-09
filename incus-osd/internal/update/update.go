@@ -300,7 +300,7 @@ func reloadApplication(ctx context.Context, s *state.State, appName string, appV
 	}
 
 	// Start/reload the application.
-	if app.IsRunning(ctx) || (app.Name() == "nvidia" && app.IsInitialized()) {
+	if app.IsRunning(ctx) || ((app.Name() == "nvidia" || app.Name() == "nvidia-lts") && app.IsInitialized()) {
 		slog.InfoContext(ctx, "Reloading application", "name", appName, "version", appVersion)
 
 		err := app.Update(ctx)
@@ -442,14 +442,14 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 			return "", err
 		}
 
-		if app.IsPinned() {
+		if app.IsPinned() && (app.IsInstalled() || (app.Name() != "nvidia" && app.Name() != "nvidia-lts")) {
 			slog.InfoContext(ctx, "Skipping application update because version pinning is enabled", "app", appName)
 
 			return "", nil
 		}
 
 		updateNeeded = update.Version() != app.Version()
-		if appName == "nvidia" {
+		if appName == "nvidia" || appName == "nvidia-lts" {
 			_, err := os.Stat(filepath.Join(systemd.LocalExtensionsPath, app.Version(), appName+".raw"))
 			updateNeeded = updateNeeded || errors.Is(err, os.ErrNotExist)
 		}
@@ -623,7 +623,7 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 
 		// Ensure a proper application symlink exists.
 		_, err = os.Lstat(filepath.Join(systemd.SystemExtensionsPath, appName+".raw"))
-		if err != nil && os.IsNotExist(err) {
+		if err != nil && os.IsNotExist(err) && appName != "nvidia" && appName != "nvidia-lts" {
 			// Ensure /var/lib/extensions/ exists.
 			err := os.MkdirAll(systemd.SystemExtensionsPath, 0o700)
 			if err != nil {

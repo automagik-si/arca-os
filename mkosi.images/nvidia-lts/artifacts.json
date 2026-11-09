@@ -1,0 +1,44 @@
+{
+  "x86_64": {
+    "driver_sha256": "8e2e71cc51a366331b7318b9b1d9d516918d1f46949baf722882ac77b7264df2",
+    "toolkit": [
+      {
+        "file": "libnvidia-container1_1.20.1-1_amd64.deb",
+        "sha256": "9d803cd9c898cb2fa927529d5ac4fc09f3d65c8cfbde8985de1b9398e53a4656"
+      },
+      {
+        "file": "libnvidia-container-tools_1.20.1-1_amd64.deb",
+        "sha256": "8bd131b8977a3db667982024850ae7b50cfa02d6b2be06a718064ec814778f05"
+      },
+      {
+        "file": "nvidia-container-toolkit_1.20.1-1_amd64.deb",
+        "sha256": "a95c9d206a7ecd6a90adff9290635271fa167a86b5767b17eaa0478a552eb02c"
+      },
+      {
+        "file": "nvidia-container-toolkit-base_1.20.1-1_amd64.deb",
+        "sha256": "e01964a064fbdb62425ab22ec5832349f92c5b0b50c8f23fdf14dad004db4fb2"
+      }
+    ]
+  },
+  "aarch64": {
+    "driver_sha256": "0e88699e3fd99d9ea082a18d646553cbb3247220a54a868338e7df1a1e6aef1f",
+    "toolkit": [
+      {
+        "file": "libnvidia-container1_1.20.1-1_arm64.deb",
+        "sha256": "e798239ca7579ad37d1429b347211a8105a79415ee71a02a81afc1db486aa776"
+      },
+      {
+        "file": "libnvidia-container-tools_1.20.1-1_arm64.deb",
+        "sha256": "ed68dc5c5bc257bc2ba149c450463482daaf2e1fe971342a1e1da19d87234894"
+      },
+      {
+        "file": "nvidia-container-toolkit_1.20.1-1_arm64.deb",
+        "sha256": "606e7b8dbf02cc31a21ffe8350d4afa9447eab6225f36feefc579017a2e3a3a8"
+      },
+      {
+        "file": "nvidia-container-toolkit-base_1.20.1-1_arm64.deb",
+        "sha256": "e9bcd4367ea53510f3c9557871cde8757d793206a49dbea01bef027fa4264575"
+      }
+    ]
+  }
+}

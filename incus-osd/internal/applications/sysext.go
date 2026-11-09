@@ -35,7 +35,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 		return err
 	}
 
-	apps = slices.DeleteFunc(apps, func(app Application) bool { return app.Name() == nvidiaStable })
+	apps = slices.DeleteFunc(apps, func(app Application) bool { return app.Name() == nvidiaStable || app.Name() == nvidiaLTS })
 
 	// If no applications are defined, there's nothing to do.
 	if len(apps) == 0 {
@@ -79,7 +79,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 		// in a situation where only an unversioned sysext image exists under
 		// /var/lib/extensions/ we don't wipe it which could potentially brick
 		// IncusOS if that image happened to be a primary application.
-		if file.Type()&fs.ModeSymlink != 0 && file.Name() != nvidiaStable+".raw" {
+		if file.Type()&fs.ModeSymlink != 0 && file.Name() != nvidiaStable+".raw" && file.Name() != nvidiaLTS+".raw" {
 			err := os.Remove(filepath.Join(systemd.SystemExtensionsPath, file.Name()))
 			if err != nil {
 				return err
@@ -151,16 +151,21 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 
 // RemoveExtension removes all versions of the specified system extension image from disk.
 func RemoveExtension(ctx context.Context, app Application) error {
-	// Remove symlink from /var/lib/extensions/.
-	err := os.Remove(filepath.Join(systemd.SystemExtensionsPath, app.Name()+".raw"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	names := []string{app.Name()}
+	if app.Name() == nvidiaStable || app.Name() == nvidiaLTS {
+		names = []string{nvidiaStable, nvidiaLTS}
 	}
 
-	// Remove all versioned sysext images.
-	err = removeStaleSysextImages(app.Name(), nil)
-	if err != nil {
-		return err
+	for _, name := range names {
+		err := os.Remove(filepath.Join(systemd.SystemExtensionsPath, name+".raw"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		err = removeStaleSysextImages(name, nil)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Reload the extensions.
@@ -383,28 +388,59 @@ func refreshNVIDIAExtension(ctx context.Context, s *state.State) {
 		return
 	}
 
-	version, versions, reason := systemd.SelectNVIDIAExtension(ctx, app.State.Version, app.Config.PinCurrentVersions)
-	app.State.AvailableVersions = versions
-
-	app.State.Reason = reason
-
-	app.State.ActiveExtensionVersion = version
-	if version == "" {
-		app.State.ActiveDriver = "nouveau"
+	name := app.State.RequestedBranch
+	if name == "" {
+		name = nvidiaStable
 	}
 
-	boot := nvidiaBoot{}
-
-	body, err := os.ReadFile(nvidiaBootFile)
-	if err == nil {
-		_ = json.Unmarshal(body, &boot)
-	}
-
-	flagNVIDIAReboot(s, boot)
-
-	err = s.Save()
+	loaded, err := Load(ctx, s, name)
 	if err != nil {
-		slog.Warn("NVIDIA selection could not be saved; other applications will still start")
+		return
+	}
+
+	n, ok := loaded.(*nvidia)
+	if !ok {
+		return
+	}
+
+	if s.OS.SystemIsReady {
+		err = n.reconcile(ctx)
+	} else {
+		version, versions, reason := systemd.SelectNVIDIAExtension(ctx, app.State.Version, app.Config.PinCurrentVersions)
+		app.State.AvailableVersions, app.State.Reason = versions, reason
+		branch := name
+
+		for _, candidate := range []string{nvidiaStable, nvidiaLTS} {
+			_, readErr := os.Readlink(filepath.Join(systemd.SystemExtensionsPath, candidate+".raw"))
+			if readErr == nil {
+				branch = candidate
+			}
+		}
+
+		if version != "" {
+			old := n.activeBuild()
+			if old.Version != "" && (old.Version != version || old.Branch != branch) {
+				app.State.Previous = &old
+			}
+
+			app.State.ActiveBranch, app.State.ActiveExtensionVersion = branch, version
+		} else {
+			app.State.ActiveExtensionVersion = ""
+		}
+
+		boot := nvidiaBoot{}
+
+		body, readErr := os.ReadFile(nvidiaBootFile)
+		if readErr == nil {
+			_ = json.Unmarshal(body, &boot)
+		}
+
+		flagNVIDIAReboot(s, boot)
+		err = s.SaveDurable()
+	}
+
+	if err != nil {
+		slog.WarnContext(ctx, "NVIDIA selection could not be applied; other applications will still start", "error", err)
 	}
 }
 
@@ -415,7 +451,7 @@ func refreshExtensionsWithNVIDIA(ctx context.Context, s *state.State) error {
 	}
 
 	if s.Applications.NVIDIA.State.Version != "" {
-		app, err := Load(ctx, s, nvidiaStable)
+		app, err := Load(ctx, s, s.Applications.NVIDIA.State.RequestedBranch)
 		if err == nil {
 			_ = app.SetFriendlyVersion(ctx)
 		}
@@ -436,11 +472,20 @@ func refreshExtensionsWithNVIDIA(ctx context.Context, s *state.State) error {
 
 func pruneNVIDIAExtensions(s *state.State, otherRelease string, images string) error {
 	app := &s.Applications.NVIDIA
-	keep := []string{app.State.ActiveExtensionVersion, app.State.Version, otherRelease}
+	if app.State.ActiveExtensionVersion == "" || app.State.Reason == systemd.NVIDIAMissingReason {
+		return nil
+	}
 
-	err := removeStaleSysextImagesAt(images, nvidiaStable, keep)
-	if err != nil {
-		return err
+	keep := []string{app.State.ActiveExtensionVersion, app.State.Version, otherRelease}
+	if app.State.Previous != nil {
+		keep = append(keep, app.State.Previous.Version)
+	}
+
+	for _, branch := range []string{nvidiaStable, nvidiaLTS} {
+		err := removeStaleSysextImagesAt(images, branch, keep)
+		if err != nil {
+			return err
+		}
 	}
 
 	app.State.AvailableVersions = slices.DeleteFunc(app.State.AvailableVersions, func(version string) bool {

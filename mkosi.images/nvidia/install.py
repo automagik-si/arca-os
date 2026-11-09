@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 import urllib.request
 
-BASE = Path('/work/src/mkosi.images/nvidia')
+BASE = Path(sys.argv[3]) if len(sys.argv) > 3 else Path('/work/src/mkosi.images/nvidia')
 VERSION = (BASE / 'version').read_text().strip()
 BUILD = Path(sys.argv[1])
 DEST = Path(sys.argv[2])

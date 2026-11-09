@@ -21,12 +21,16 @@ const NVIDIAMissingReason = "the NVIDIA driver for this Arca OS version is not i
 const NVIDIAExtensionReasonPath = "/run/incus-os/nvidia-extension-reason"
 
 type nvidiaExtensions struct {
-	links     string
-	images    string
-	reason    string
-	validate  func(context.Context, string) error
-	preferred string
-	pinned    bool
+	links         string
+	images        string
+	reason        string
+	validate      func(context.Context, string) error
+	preferred     string
+	branch        string
+	inspectOnly   bool
+	pinned        bool
+	skipSelection bool
+	lockedChoice  bool
 }
 
 func newNVIDIAExtensions() nvidiaExtensions {
@@ -42,7 +46,25 @@ func newNVIDIAExtensions() nvidiaExtensions {
 	err = state.Decode(body, nil, &s)
 	if err == nil && len(s.UnrecognizedFields) == 0 {
 		m.preferred = s.Applications.NVIDIA.State.Version
+		m.branch = s.Applications.NVIDIA.State.RequestedBranch
 		m.pinned = s.Applications.NVIDIA.Config.PinCurrentVersions
+
+		app := &s.Applications.NVIDIA
+		if app.State.NeedsReboot {
+			m.pinned, m.lockedChoice = true, true
+		}
+
+		branch := m.branch
+		if branch == "" {
+			branch = "nvidia"
+		}
+
+		key := s.OS.RunningRelease + ":" + branch + ":" + m.preferred
+
+		interrupted := app.State.PendingHealth != "" || app.State.PendingAttempt != ""
+		if app.State.Previous != nil && (app.State.BadBuilds[key] != "" || interrupted) {
+			m.branch, m.preferred, m.pinned, m.lockedChoice = app.State.Previous.Branch, app.State.Previous.Version, true, true
+		}
 	}
 
 	return m
@@ -59,6 +81,10 @@ func ValidateNVIDIAExtensions(ctx context.Context) error {
 // SelectNVIDIAExtension keeps a compatible image linked while retaining pending OS-specific images.
 func SelectNVIDIAExtension(ctx context.Context, preferred string, pinned bool) (string, []string, string) {
 	manager := newNVIDIAExtensions()
+
+	if manager.lockedChoice {
+		preferred, pinned = manager.preferred, manager.pinned
+	}
 
 	return manager.selectImage(ctx, preferred, pinned)
 }
@@ -101,13 +127,26 @@ func (m nvidiaExtensions) check(ctx context.Context) {
 		m.record(NVIDIAMissingReason)
 	}
 
-	if m.preferred != "" {
+	if m.preferred != "" && !m.skipSelection {
 		_, _, _ = m.selectImage(ctx, m.preferred, m.pinned)
 	}
 }
 
+// FindNVIDIAExtension selects a verified pack without changing the running extension.
+func FindNVIDIAExtension(ctx context.Context, branch string, preferred string, pinned bool) (string, []string, string) {
+	manager := newNVIDIAExtensions()
+	manager.branch, manager.inspectOnly = branch, true
+
+	return manager.selectImage(ctx, preferred, pinned)
+}
+
 func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pinned bool) (string, []string, string) {
-	link := filepath.Join(m.links, "nvidia.raw")
+	branch := m.branch
+	if branch == "" {
+		branch = "nvidia"
+	}
+
+	link := filepath.Join(m.links, branch+".raw")
 	versions := []string{}
 
 	entries, _ := os.ReadDir(m.images)
@@ -116,7 +155,7 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 			continue
 		}
 
-		_, err := os.Stat(filepath.Join(m.images, entry.Name(), "nvidia.raw"))
+		_, err := os.Stat(filepath.Join(m.images, entry.Name(), branch+".raw"))
 		if err == nil {
 			versions = append(versions, entry.Name())
 		}
@@ -140,11 +179,15 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 			continue
 		}
 
-		image := filepath.Join(m.images, version, "nvidia.raw")
+		image := filepath.Join(m.images, version, branch+".raw")
 
 		err := m.validate(ctx, image)
 		if err != nil {
 			continue
+		}
+
+		if m.inspectOnly {
+			return version, versions, ""
 		}
 
 		// Never remove the working link before a verified replacement is ready.
@@ -164,9 +207,19 @@ func (m nvidiaExtensions) selectImage(ctx context.Context, preferred string, pin
 			return "", versions, "the NVIDIA application link could not be updated"
 		}
 
+		other := "nvidia"
+		if branch == other {
+			other = "nvidia-lts"
+		}
+
+		_ = os.Remove(filepath.Join(m.links, other+".raw"))
 		m.record("")
 
 		return version, versions, ""
+	}
+
+	if m.inspectOnly {
+		return "", versions, NVIDIAMissingReason
 	}
 
 	excludeNVIDIAImage(link)

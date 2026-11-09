@@ -104,7 +104,10 @@ func VerifyExtension(ctx context.Context, extensionFile string) error {
 
 // RefreshExtensions refreshes the installed sysext images.
 func RefreshExtensions(ctx context.Context) error {
-	return refreshWithGPUCheck(ctx, newNVIDIAExtensions(), subprocess.RunCommandContext, ReloadDaemon)
+	manager := newNVIDIAExtensions()
+	manager.skipSelection = true
+
+	return refreshWithGPUCheck(ctx, manager, subprocess.RunCommandContext, ReloadDaemon)
 }
 
 func refreshWithGPUCheck(ctx context.Context, manager nvidiaExtensions, run func(context.Context, string, ...string) (string, error), reload func(context.Context) error) error {
