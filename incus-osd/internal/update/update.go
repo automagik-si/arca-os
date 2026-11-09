@@ -198,15 +198,7 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 
 	// Refresh extensions and reload applications if any have been updated or freshly installed.
 	if len(appsUpdated) > 0 {
-		err = prepareApplicationUpdates(ctx, s, appsUpdated)
-		if err != nil {
-			return err
-		}
-
-		// Apply the system extensions.
-		slog.DebugContext(ctx, "Refreshing system extensions")
-
-		err := applications.RefreshExtensions(ctx, s)
+		err = refreshApplicationUpdates(ctx, s, appsUpdated, applications.Load, applications.RefreshExtensions)
 		if err != nil {
 			s.System.Update.State.Status = "Failed to refresh system extensions"
 			showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
@@ -232,9 +224,18 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 	return nil
 }
 
-func prepareApplicationUpdates(ctx context.Context, s *state.State, updated map[string]string) error {
+func refreshApplicationUpdates(ctx context.Context, s *state.State, updated map[string]string, load func(context.Context, *state.State, string) (applications.Application, error), refresh func(context.Context, *state.State) error) error {
+	err := prepareApplicationUpdates(ctx, s, updated, load)
+	if err != nil {
+		return err
+	}
+
+	return refresh(ctx, s)
+}
+
+func prepareApplicationUpdates(ctx context.Context, s *state.State, updated map[string]string, load func(context.Context, *state.State, string) (applications.Application, error)) error {
 	for name := range updated {
-		app, err := applications.Load(ctx, s, name)
+		app, err := load(ctx, s, name)
 		if err != nil {
 			return err
 		}
@@ -245,6 +246,13 @@ func prepareApplicationUpdates(ctx context.Context, s *state.State, updated map[
 		if ok {
 			err = updater.PrepareUpdate(ctx)
 			if err != nil {
+				if name == "nvidia" || name == "nvidia-lts" {
+					s.Applications.NVIDIA.State.Reason = "the NVIDIA update could not be prepared; the current driver is unchanged"
+					slog.WarnContext(ctx, s.Applications.NVIDIA.State.Reason, "error", err)
+
+					continue
+				}
+
 				return err
 			}
 		}

@@ -351,7 +351,7 @@ func run(ctx context.Context, s *state.State) error {
 
 	err = applications.MarkNVIDIABootComplete()
 	if err != nil {
-		return err
+		slog.WarnContext(ctx, "NVIDIA boot marker could not be written; continuing startup", "error", err)
 	}
 
 	// Done with all initialization.

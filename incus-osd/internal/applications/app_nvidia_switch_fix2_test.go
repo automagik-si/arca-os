@@ -236,9 +236,10 @@ func TestNVIDIASwitchQuarantinesOnlyBindOrHealth(t *testing.T) {
 			if phase == "verification" {
 				require.Empty(t, *commands)
 				require.Nil(t, s.Previous)
+				require.False(t, s.NeedsReboot)
 			}
 
-			if !quarantine {
+			if !quarantine && phase != "verification" {
 				require.True(t, s.NeedsReboot)
 			}
 
@@ -275,40 +276,6 @@ func TestNVIDIAQuarantineReasonSurvivesMissingMetadata(t *testing.T) {
 	require.Equal(t, systemd.NVIDIAQuarantinedReason, n.state.Applications.NVIDIA.State.Reason)
 	require.Error(t, n.SetFriendlyVersion(t.Context()))
 	require.Equal(t, systemd.NVIDIAQuarantinedReason, n.state.Applications.NVIDIA.State.Reason)
-}
-
-func TestNVIDIAControlledBootErrorsDoNotQuarantine(t *testing.T) {
-	t.Parallel()
-
-	for _, phase := range []string{"load", "health"} {
-		t.Run(phase, func(t *testing.T) {
-			t.Parallel()
-			n, commands, _ := newNVIDIAFixture(t, nvidiaBootTest{})
-			original := n.runCommand
-			n.runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
-				if phase == "load" && name == "/sbin/insmod" {
-					return "", errors.New("temporary load failure")
-				}
-
-				if phase == "health" && name == "/usr/bin/nvidia-smi" {
-					return "", context.Canceled
-				}
-
-				return original(ctx, name, args...)
-			}
-			require.NoError(t, n.prepare(t.Context(), true))
-			require.NoError(t, n.Start(t.Context()))
-			require.True(t, n.state.Applications.NVIDIA.State.NeedsReboot)
-			require.Empty(t, n.state.Applications.NVIDIA.State.BadBuilds)
-			require.Empty(t, n.state.Applications.NVIDIA.State.BadVersions)
-			require.Empty(t, n.state.Applications.NVIDIA.State.PendingAttempt)
-			require.Empty(t, n.state.Applications.NVIDIA.State.PendingHealth)
-			require.NotContains(t, strings.Join(*commands, "\n"), "reboot")
-			writeGPUFixtureFile(t, n.sysroot, "proc/sys/kernel/random/boot_id", "next-boot")
-			require.Empty(t, n.checkPreviousAttempt())
-			require.Empty(t, n.state.Applications.NVIDIA.State.BadVersions)
-		})
-	}
 }
 
 func TestNVIDIAUpdateDefersDuringDaemonRestart(t *testing.T) {

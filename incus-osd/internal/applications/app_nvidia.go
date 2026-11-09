@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ type nvidia struct {
 	findExtension     func(context.Context, string, string, bool) (string, []string, string)
 	extensionFiles    *nvidiaExtensionFiles
 	bootRecovery      bool
+	healthTimeout     time.Duration
 }
 
 type nvidiaBoot struct {
@@ -201,7 +203,11 @@ func (n *nvidia) Start(ctx context.Context) error {
 
 	claimed, err := claimNVIDIABoot(n.path(nvidiaStartedFile))
 	if err != nil {
-		return err
+		slog.WarnContext(ctx, "NVIDIA boot startup could not be claimed; skipping the startup check", "error", err)
+
+		n.state.Applications.NVIDIA.State.Reason = "NVIDIA startup check was skipped because its boot marker could not be written"
+
+		return nil
 	}
 
 	if !claimed {
@@ -275,13 +281,6 @@ func (n *nvidia) Start(ctx context.Context) error {
 
 	err = n.health(ctx, boot.Cards)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			n.state.Applications.NVIDIA.State.PendingHealth = ""
-			n.state.Applications.NVIDIA.State.HealthBootID = ""
-
-			return n.deferSwitch("NVIDIA startup was interrupted; restart to try again")
-		}
-
 		return n.fallback(ctx, boot, err.Error())
 	}
 
@@ -336,20 +335,23 @@ func (n *nvidia) health(ctx context.Context, cards []string) error {
 		return errors.New("no NVIDIA GPU")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	parent := ctx
+
+	timeout := n.healthTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	out, err := n.command(ctx, "/usr/bin/nvidia-smi", "--query-gpu=pci.bus_id", "--format=csv,noheader")
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
+		if parent.Err() != nil {
+			return parent.Err()
 		}
 
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		return errors.New("NVIDIA health check could not initialise every assigned GPU")
+		return fmt.Errorf("%w: NVIDIA could not initialise every assigned GPU", errNVIDIAHealth)
 	}
 
 	initialised := map[string]bool{}
@@ -511,22 +513,40 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 		return n.deferRollback(ctx, reason, false)
 	}
 
-	if n.state.Applications.NVIDIA.State.Previous != nil && n.state.Applications.NVIDIA.State.Previous.Version != "" {
-		return n.rollback(ctx, reason)
-	}
-
 	s := &n.state.Applications.NVIDIA.State
 	if s.BadVersions == nil {
 		s.BadVersions = map[string]string{}
 	}
 
+	if s.BadBuilds == nil {
+		s.BadBuilds = map[string]string{}
+	}
+
 	s.BadVersions[n.attemptKey(boot.Version)] = reason
-	s.ActiveDriver = "nouveau"
-	s.Reason = reason
-	s.PendingAttempt = ""
-	s.AttemptBootID = ""
-	s.PendingHealth = ""
-	s.HealthBootID = ""
+
+	build := n.activeBuild()
+	if build.Version == "" {
+		build = api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: n.appState.Version}
+	}
+
+	if build.Version != "" {
+		s.BadBuilds[n.buildKey(build)] = reason
+	}
+
+	s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+
+	err := n.state.SaveDurable()
+	if err != nil {
+		return errors.New("NVIDIA recovery state could not be saved; reboot the host")
+	}
+
+	if s.Previous != nil && s.Previous.Version != "" {
+		return n.rollback(ctx, boot, reason)
+	}
+
+	n.restoreNouveau(ctx, boot.Cards)
+
+	s.ActiveDriver, s.DriverVersion, s.Reason = "nouveau", "", reason
 
 	id, err := n.bootID()
 	if err != nil {
@@ -540,6 +560,7 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 	reboot := boot.Attempted && len(boot.Cards) > 0 && previous != id
 	if reboot {
 		s.FallbackBootID = id
+		s.NeedsReboot = true
 		n.state.System.Update.State.NeedsReboot = true
 	}
 
