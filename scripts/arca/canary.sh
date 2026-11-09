@@ -264,8 +264,15 @@ if ! wait_for "$timeout" on_target; then
 fi
 result PASS version "$target after $(($(date +%s) - t0)) s"
 
-# The basic health checks on the new release.
-wait_for 600 apps_listed || true
+# The basic health checks on the new release, once incus-osd has swapped every
+# application to it (that follows the OS boot by a few seconds to minutes).
+# shellcheck disable=SC2329  # called through wait_for
+apps_at_target() {
+	local a
+	[ "$(osd_env system_is_ready)" = true ] || return 1
+	for a in "${apps[@]}"; do [ "$(app_version "$a")" = "$target" ] || return 1; done
+}
+wait_for 600 apps_at_target || true
 for a in "${apps[@]}"; do
 	v=$(app_version "$a")
 	if [ "$v" = "$target" ]; then
