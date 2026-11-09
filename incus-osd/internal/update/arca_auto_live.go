@@ -32,11 +32,19 @@ var started sync.Once
 
 // ReconcileBoot updates the automatic updater's record early in startup, before the next boot is
 // chosen. When this boot runs a version that must not stay, it goes back to the previous one at once.
+// Otherwise a version being checked must reach "system ready" in time, or each wait is a failed check.
 func ReconcileBoot(ctx context.Context, s *state.State) {
 	a := &auto{s: s, m: &liveMachine{s: s}}
 
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	util.SetFailedBootVersions(FailedVersions(s))
+
 	reason := a.reconcileBoot(ctx)
 	if reason == "" {
+		go watchReady(ctx, a, readyDeadline)
+
 		return
 	}
 
@@ -60,9 +68,23 @@ func ReconcileBoot(ctx context.Context, s *state.State) {
 	}
 }
 
-// NextBootSkips returns the OS versions the next boot must not pick.
-func NextBootSkips(s *state.State) []string {
-	return FailedVersions(s)
+// watchReady counts each wait of the given length for "system ready" as a failed check.
+func watchReady(ctx context.Context, a *auto, wait time.Duration) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+
+		if a.s.OS.SystemIsReady {
+			return
+		}
+
+		a.s.LockUpdateHealth()
+		a.notReady(ctx)
+		a.s.UnlockUpdateHealth()
+	}
 }
 
 // Run drives automatic OS updates once the system is ready, until ctx ends: the health bake of a
@@ -74,7 +96,9 @@ func Run(ctx context.Context, s *state.State) {
 }
 
 func loop(ctx context.Context, a *auto) {
+	a.s.LockUpdateHealth()
 	a.ready(ctx)
+	a.s.UnlockUpdateHealth()
 
 	for {
 		timer := time.NewTimer(tickEvery)
@@ -96,6 +120,9 @@ func loop(ctx context.Context, a *auto) {
 
 			a.s.UpdateMutex.Lock()
 			defer a.s.UpdateMutex.Unlock()
+
+			a.s.LockUpdateHealth()
+			defer a.s.UnlockUpdateHealth()
 
 			a.tick(ctx)
 		}()
@@ -256,10 +283,7 @@ func (l *liveMachine) health(ctx context.Context, h *api.SystemUpdateHealth) []s
 		}
 	}
 
-	nv := l.s.Applications.NVIDIA
-	if nv.Config.Driver == "nvidia" && nv.State.ActiveDriver == "nouveau" && nv.State.Reason != "" && !nv.State.NeedsReboot {
-		fails = append(fails, "the NVIDIA driver fell back: "+nv.State.Reason)
-	}
+	fails = append(fails, nvidiaHealth(h.NVIDIAWasActive, l.nvidiaActive(), l.s.Applications.NVIDIA.State)...)
 
 	if l.incusInstalled(ctx) {
 		fails = append(fails, incusHealth(ctx, h.Instances)...)
@@ -291,52 +315,96 @@ func incusHealth(ctx context.Context, instances []string) []string {
 		return nil
 	}
 
-	running, err := listRunning(c)
+	all, err := c.GetInstancesAllProjects(incusapi.InstanceTypeAny)
 	if err != nil {
 		return []string{"the Incus instances could not be listed"}
 	}
 
+	return instanceFailures(instances, all)
+}
+
+// instanceFailures returns the recorded instances that don't run. One that no longer exists isn't a failure.
+func instanceFailures(recorded []string, all []incusapi.Instance) []string {
 	fails := []string{}
 
-	for _, inst := range instances {
-		if !slices.Contains(running, inst) {
-			fails = append(fails, "instance "+inst+" is not running")
+	for _, name := range recorded {
+		i := slices.IndexFunc(all, func(inst incusapi.Instance) bool { return inst.Project+"/"+inst.Name == name })
+		if i >= 0 && all[i].StatusCode != incusapi.Running {
+			fails = append(fails, "instance "+name+" is not running")
 		}
 	}
 
 	return fails
 }
 
-func listRunning(c incusclient.InstanceServer) ([]string, error) {
-	all, err := c.GetInstancesAllProjects(incusapi.InstanceTypeAny)
-	if err != nil {
-		return nil, err
-	}
-
+// recordedInstances returns the running instances to bring back after a restart; ephemeral ones go away by design.
+func recordedInstances(all []incusapi.Instance) []string {
 	running := []string{}
 
 	for _, inst := range all {
-		if inst.StatusCode == incusapi.Running {
+		if inst.StatusCode == incusapi.Running && !inst.Ephemeral {
 			running = append(running, inst.Project+"/"+inst.Name)
 		}
 	}
 
 	slices.Sort(running)
 
-	return running, nil
+	return running
 }
 
-func (l *liveMachine) runningInstances(ctx context.Context) ([]string, error) {
+func (l *liveMachine) snapshot(ctx context.Context) restartSnapshot {
+	snap := restartSnapshot{addresses: l.addresses(ctx), nvidia: l.nvidiaActive()}
+
 	if !l.incusInstalled(ctx) {
-		return nil, nil
+		return snap
 	}
 
 	c, err := incusClient(ctx)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		var all []incusapi.Instance
+
+		all, err = c.GetInstancesAllProjects(incusapi.InstanceTypeAny)
+		snap.instances = recordedInstances(all)
 	}
 
-	return listRunning(c)
+	if err != nil {
+		slog.WarnContext(ctx, "Running instances could not be listed before the update restart", "error", err)
+	}
+
+	return snap
+}
+
+// nvidiaActive reports whether the NVIDIA driver drives a GPU now.
+func (l *liveMachine) nvidiaActive() bool {
+	return l.s.Applications.NVIDIA.State.ActiveDriver == "nvidia"
+}
+
+// nvidiaHealth fails only when the NVIDIA driver ran before the restart and no longer does. A node
+// whose GPUs all go to passthrough never ran it, so it isn't checked.
+func nvidiaHealth(wasActive bool, active bool, nv api.ApplicationNVIDIAState) []string {
+	if !wasActive || active || nv.NeedsReboot {
+		return nil
+	}
+
+	reason := "the NVIDIA driver no longer runs"
+	if nv.Reason != "" {
+		reason += ": " + nv.Reason
+	}
+
+	return []string{reason}
+}
+
+func (l *liveMachine) applications(ctx context.Context) map[string]string {
+	versions := map[string]string{}
+
+	for _, name := range checkedApplications {
+		app, err := applications.Load(ctx, l.s, name)
+		if err == nil && app.IsInstalled() {
+			versions[name] = app.Version()
+		}
+	}
+
+	return versions
 }
 
 func (*liveMachine) startInstances(ctx context.Context, instances []string) {
@@ -345,13 +413,14 @@ func (*liveMachine) startInstances(ctx context.Context, instances []string) {
 		return
 	}
 
-	running, err := listRunning(c)
+	all, err := c.GetInstancesAllProjects(incusapi.InstanceTypeAny)
 	if err != nil {
 		return
 	}
 
 	for _, inst := range instances {
-		if slices.Contains(running, inst) {
+		i := slices.IndexFunc(all, func(a incusapi.Instance) bool { return a.Project+"/"+a.Name == inst })
+		if i < 0 || all[i].StatusCode == incusapi.Running {
 			continue
 		}
 
@@ -433,15 +502,78 @@ func (l *liveMachine) bootInto(ctx context.Context, version string) error {
 		return errors.New("version " + version + " is not on the other slot")
 	}
 
-	// Without Secure Boot the disks are bound to one UKI; bind them to the one we go back to.
-	if l.s.SecureBootDisabled {
-		err := secureboot.UpdatePCR4Binding(ctx, v.OtherFilepath)
-		if err != nil {
-			return errors.New("the disks could not be bound to " + version + ": " + err.Error())
-		}
+	return switchBoot(ctx, bootSwitch{
+		version:     version,
+		target:      v.OtherFilepath,
+		current:     v.CurrentFilepath,
+		sbDisabled:  l.s.SecureBootDisabled,
+		keyChanged:  secureboot.UKIHasDifferentSecureBootCertificate,
+		rekey:       func(ctx context.Context, uki string) error { return secureboot.HandleSecureBootKeyChange(ctx, uki, "") },
+		rebindPCR4:  secureboot.UpdatePCR4Binding,
+		nextVersion: util.SetNextBootVersion,
+		nextCurrent: func(ctx context.Context) error { return util.SetNextBootID(ctx, util.BootIDCurrent) },
+	})
+}
+
+// bootSwitch is what switchBoot uses to start another UKI; tests replace it.
+type bootSwitch struct {
+	version, target, current string
+	sbDisabled               bool
+
+	keyChanged  func(uki string) (bool, error)
+	rekey       func(ctx context.Context, uki string) error
+	rebindPCR4  func(ctx context.Context, uki string) error
+	nextVersion func(ctx context.Context, version string) error
+	nextCurrent func(ctx context.Context) error
+}
+
+// switchBoot makes the next boot start the target UKI, with the disks bound so it can unlock them.
+// A target signed by another Secure Boot key is enrolled first; when the disks can't be bound to the
+// target, the next boot stays on the current UKI and an error says why.
+func switchBoot(ctx context.Context, b bootSwitch) error {
+	changed, err := b.keyChanged(b.target)
+	if err != nil {
+		return errors.New("the Secure Boot key of " + b.version + " could not be checked: " + err.Error())
 	}
 
-	return util.SetNextBootVersion(ctx, version)
+	err = b.nextVersion(ctx, b.version)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case changed:
+		// The target is signed by another key: the TPM must trust it, or the disks won't unlock.
+		err = b.rekey(ctx, b.target)
+		if err != nil {
+			rerr := b.rekey(ctx, b.current)
+			if rerr != nil {
+				slog.ErrorContext(ctx, "Disks could not be bound back to the running version", "error", rerr)
+			}
+		}
+	case b.sbDisabled:
+		// Without Secure Boot the disks are bound to one UKI; bind them to the target.
+		err = b.rebindPCR4(ctx, b.target)
+		if err != nil {
+			rerr := b.rebindPCR4(ctx, b.current)
+			if rerr != nil {
+				slog.ErrorContext(ctx, "Disks could not be bound back to the running version", "error", rerr)
+			}
+		}
+	default:
+		// Secure Boot on and the same key: the disks unlock in the target as they are.
+	}
+
+	if err != nil {
+		nerr := b.nextCurrent(ctx)
+		if nerr != nil {
+			slog.ErrorContext(ctx, "Next boot could not be set back to the running version", "error", nerr)
+		}
+
+		return errors.New("the disks could not be bound to " + b.version + ": " + err.Error())
+	}
+
+	return nil
 }
 
 func (l *liveMachine) reboot(ctx context.Context) error {

@@ -27,6 +27,9 @@ type fakeMachine struct {
 	fails      []string
 	instances  []string
 	addrs      []string
+	nvidia     bool
+	apps       map[string]string
+	bootIDErr  error
 
 	started    [][]string
 	good, bad  []string
@@ -37,13 +40,17 @@ type fakeMachine struct {
 
 func (f *fakeMachine) now() time.Time { return f.clock }
 
-func (f *fakeMachine) bootID() (string, error) { return f.boot, nil }
+func (f *fakeMachine) bootID() (string, error) { return f.boot, f.bootIDErr }
 
 func (f *fakeMachine) busy(_ context.Context) string { return f.busyReason }
 
 func (f *fakeMachine) health(_ context.Context, _ *api.SystemUpdateHealth) []string { return f.fails }
 
-func (f *fakeMachine) addresses(_ context.Context) []string { return f.addrs }
+func (f *fakeMachine) snapshot(_ context.Context) restartSnapshot {
+	return restartSnapshot{instances: f.instances, addresses: f.addrs, nvidia: f.nvidia}
+}
+
+func (f *fakeMachine) applications(_ context.Context) map[string]string { return f.apps }
 
 func (f *fakeMachine) markGood(v string) error { f.good = append(f.good, v); return nil } //nolint:nlreturn // one-line fake
 
@@ -52,10 +59,6 @@ func (f *fakeMachine) markBad(v string) error { f.bad = append(f.bad, v); return
 func (f *fakeMachine) reboot(_ context.Context) error { f.reboots++; return nil } //nolint:nlreturn // one-line fake
 
 func (f *fakeMachine) save() error { return f.s.SaveDurable() }
-
-func (f *fakeMachine) runningInstances(_ context.Context) ([]string, error) {
-	return f.instances, nil
-}
 
 func (f *fakeMachine) startInstances(_ context.Context, instances []string) {
 	f.started = append(f.started, instances)
@@ -95,8 +98,15 @@ func newAuto(t *testing.T) (*auto, *fakeMachine) {
 	return &auto{s: s, m: m}, m
 }
 
-// bootInto simulates the machine coming up on version in a new boot.
+// bootNew simulates a clean restart: the machine stops, then comes up on version in a new boot.
 func bootNew(a *auto, m *fakeMachine, version string, boot string) string {
+	a.s.UpdateHealth.CleanStopBootID = a.s.UpdateHealth.LastBootID
+
+	return crashBoot(a, m, version, boot)
+}
+
+// crashBoot simulates a new boot after one that didn't stop cleanly (a crash, a reset, a power cut).
+func crashBoot(a *auto, m *fakeMachine, version string, boot string) string {
 	m.boot = boot
 	a.s.OS.RunningRelease = version
 
@@ -422,7 +432,7 @@ func TestBootLoaderFallbackMarksFailed(t *testing.T) {
 	require.Equal(t, "version 202611020000 did not start; the machine went back to 202611010000", a.s.UpdateHealth.FailedVersions["202611020000"])
 	require.Nil(t, a.s.UpdateHealth.Bake)
 	require.Equal(t, "202611010000", a.s.OS.NextRelease)
-	require.Equal(t, []string{"202611020000"}, NextBootSkips(a.s))
+	require.Equal(t, []string{"202611020000"}, FailedVersions(a.s))
 }
 
 func TestPendingSurvivesSameBootRestart(t *testing.T) {

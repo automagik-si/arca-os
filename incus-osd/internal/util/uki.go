@@ -71,12 +71,11 @@ func GetUKIVersions() (UKIVersions, error) {
 			ret.CurrentVersion = versionGroup[1]
 			ret.CurrentFilepath = "/boot/EFI/Linux/" + uki.Name()
 		} else {
-			version := UKIFileVersion(uki.Name())
-			if version == "" {
+			ret.OtherVersion = UKIFileVersion(uki.Name())
+			if ret.OtherVersion == "" {
 				continue
 			}
 
-			ret.OtherVersion = version
 			ret.OtherFilepath = "/boot/EFI/Linux/" + uki.Name()
 		}
 	}
@@ -111,32 +110,12 @@ func GetCurrentUKIProfile() (string, error) {
 // default the next time the system starts. This helps ensure the system consistently uses
 // the same UKI profile, which may influence kernel defaults or other system behavior.
 func SetNextBootID(ctx context.Context, bootID BootID) error {
-	return SetNextBootIDSkipping(ctx, bootID, nil)
-}
-
-// SetNextBootIDSkipping is SetNextBootID that never picks one of the skipped versions,
-// unless no other version is left.
-func SetNextBootIDSkipping(ctx context.Context, bootID BootID, skip []string) error {
-	rebootID, err := getNextBootID(ctx, bootID, "", skip)
+	rebootID, err := nextBootID(ctx, bootID, "")
 	if err != nil {
 		return err
 	}
 
-	return setOneshot(ctx, rebootID)
-}
-
-// SetNextBootVersion makes the next boot start the given version, in the current UKI profile.
-func SetNextBootVersion(ctx context.Context, version string) error {
-	rebootID, err := getNextBootID(ctx, BootIDNewest, version, nil)
-	if err != nil {
-		return err
-	}
-
-	return setOneshot(ctx, rebootID)
-}
-
-func setOneshot(ctx context.Context, rebootID string) error {
-	_, err := subprocess.RunCommandContext(ctx, "bootctl", "set-oneshot", rebootID)
+	_, err = subprocess.RunCommandContext(ctx, "bootctl", "set-oneshot", rebootID)
 	if err != nil {
 		// Buggy UEFI implementations exist, which cannot write to the LoaderEntryOneShot EFI
 		// variable. In this case, log a warning, rather than outright failing. This will
@@ -155,7 +134,7 @@ func setOneshot(ctx context.Context, rebootID string) error {
 	return nil
 }
 
-func getNextBootID(ctx context.Context, bootID BootID, version string, skip []string) (string, error) {
+func getNextBootID(ctx context.Context, bootID BootID, allowed func(id string) bool) (string, error) {
 	type bootctlEntry struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
@@ -177,25 +156,15 @@ func getNextBootID(ctx context.Context, bootID BootID, version string, skip []st
 	targets := []string{}
 	targetRegex := regexp.MustCompile(`.*_\d{12}\.efi`)
 
-	ids := map[string]string{}
-
 	for _, entry := range entries {
 		if entry.Type != "type2" {
 			continue
 		}
 
-		// Depending on the systemd version, the ID may still carry a boot counter.
-		id := ukiCounterRegex.ReplaceAllString(entry.ID, ".efi")
-		if id == "" || targetRegex.FindString(id) == "" {
-			continue
+		id := bootEntryID(entry.ID)
+		if id != "" && targetRegex.FindString(id) != "" && allowed(id) {
+			targets = append(targets, id)
 		}
-
-		if slices.ContainsFunc(skip, func(v string) bool { return v != "" && strings.Contains(id, "_"+v+".efi") }) {
-			continue
-		}
-
-		ids[id] = entry.ID
-		targets = append(targets, id)
 	}
 
 	// Ensure the targets are sorted; by default this will put the oldest version first.
@@ -219,24 +188,6 @@ func getNextBootID(ctx context.Context, bootID BootID, version string, skip []st
 		// Nothing to do.
 	}
 
-	if version != "" {
-		idPrefix = version
-	}
-
-	target, err := pickBootTarget(targets, idPrefix)
-	if err != nil {
-		if len(skip) > 0 {
-			// Every other version is skipped; fall back to the plain choice.
-			return getNextBootID(ctx, bootID, version, nil)
-		}
-
-		return "", err
-	}
-
-	return ids[target], nil
-}
-
-func pickBootTarget(targets []string, idPrefix string) (string, error) {
 	// Get the current UKI profile.
 	profile, err := GetCurrentUKIProfile()
 	if err != nil {

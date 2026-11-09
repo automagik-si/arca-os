@@ -189,9 +189,7 @@ func ApplySystemUpdate(ctx context.Context, version string) error {
 	// Flush all writes to get a consistent ESP if the system gets forcefully rebooted by the user.
 	unix.Sync()
 
-	// The new UKI keeps systemd's boot counter ("+3-0"): if it never comes up three times in a row,
-	// systemd-boot goes back to the previous one. incus-osd blesses it once its health bake passes,
-	// and the next boot is chosen by entry ID, so the counter doesn't change which profile boots.
+	// The new UKI keeps systemd's boot counter ("+3-0"); incus-osd blesses it after its health check.
 	// Update the next boot ID to reflect the newly installed update.
 	err = util.SetNextBootID(ctx, util.BootIDNewest)
 	if err != nil {

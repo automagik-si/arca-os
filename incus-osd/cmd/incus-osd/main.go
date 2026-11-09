@@ -387,6 +387,7 @@ func shutdown(ctx context.Context, s *state.State) error {
 	modal := t.AddModal("System Shutdown", "shutdown")
 
 	slog.InfoContext(ctx, "System is shutting down", "version", s.OS.RunningRelease)
+	update.RecordCleanStop(ctx, s)
 	modal.Update("System is shutting down")
 
 	// Shutdown the job scheduler.
@@ -627,7 +628,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	// Update the automatic updater's record first: it may have marked a version failed.
 	update.ReconcileBoot(ctx, s)
 
-	err = util.SetNextBootIDSkipping(ctx, util.BootIDNewest, update.NextBootSkips(s))
+	err = util.SetNextBootID(ctx, util.BootIDNewest)
 	if err != nil {
 		return err
 	}
@@ -809,7 +810,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 
 		if skipInitialUpdateCheck {
-			slog.InfoContext(ctx, "No primary application found, forcing an initial update check even though automatic checks are off")
+			slog.InfoContext(ctx, "No primary application found, forcing an initial update check even though 'CheckFrequency=never'")
 		}
 
 		skipInitialUpdateCheck = false

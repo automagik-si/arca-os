@@ -28,11 +28,7 @@ const (
 // respecting any defined maintenance windows. Typically this should be called
 // automatically by the daemon scheduler.
 func CheckRespectMaintenanceWindows(ctx context.Context, s *state.State) error {
-	// The owner turned automatic updates off; only a manual check runs.
-	if s.System.Update.Config.AutoUpdatesOff {
-		s.System.Update.State.Status = "Automatic updates are off"
-		slog.DebugContext(ctx, s.System.Update.State.Status)
-
+	if automaticUpdatesOff(ctx, s) {
 		return nil
 	}
 
@@ -189,12 +185,7 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 	appsUpdated := map[string]string{}
 
 	for _, appName := range toInstall {
-		previous := ""
-
-		app, err := applications.Load(ctx, s, appName)
-		if err == nil && app.IsInstalled() {
-			previous = app.Version()
-		}
+		previous := installedVersion(ctx, s, appName)
 
 		newAppVersion, err := checkAndDownloadUpdate(ctx, s, t, p, TypeApplication, appName, forceApplyUpdate)
 		if err != nil {
@@ -477,11 +468,7 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 			return "", errors.New("installed Secure Boot keys version (" + s.SecureBoot.Version + ") is newer than available update (" + update.Version() + "); skipping")
 		}
 	case TypeOS:
-		hold := osUpdateHold(s, update.Version())
-		if hold != "" {
-			s.System.Update.State.Status = hold
-			slog.WarnContext(ctx, hold, "version", update.Version())
-
+		if osUpdateHeld(ctx, s, update.Version()) {
 			return "", nil
 		}
 
@@ -509,10 +496,7 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 			return "", nil
 		}
 
-		failedReason, failed := s.UpdateHealth.FailedApplications[appName+":"+update.Version()]
-		if failed && update.Version() != app.Version() {
-			slog.WarnContext(ctx, "Skipping an application version that failed before", "app", appName, "version", update.Version(), "reason", failedReason)
-
+		if applicationHeld(ctx, s, appName, update.Version(), app.Version()) {
 			return "", nil
 		}
 
@@ -648,7 +632,7 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			return "", err
 		}
 
-		// Record the new release, and arm its health check for when it first runs.
+		// Record the new release.
 		rebootNow := restartAfterApply(ctx, s)
 		if !rebootNow {
 			// Mark the system as needing a reboot down the line.
@@ -656,9 +640,7 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 		}
 
 		s.OS.NextRelease = update.Version()
-		bootID, _ := (&liveMachine{s: s}).bootID()
-		armBake(s, update.Version(), bootID)
-		_ = s.SaveDurable()
+		armOSBake(ctx, s, update.Version())
 
 		// Record the state of auto-unlocked LUKS devices. With some TPMs this can be slow, so cache the
 		// result after applying an OS update rather than needing to determine it each time a request
@@ -674,7 +656,7 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			return "", err
 		}
 
-		// Handle reboot if needed; otherwise the automatic updater restarts in the window.
+		// Handle reboot if needed.
 		if rebootNow {
 			err = rebootSystem(ctx, s)
 			if err != nil {

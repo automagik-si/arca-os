@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -34,6 +35,9 @@ type Summary struct {
 
 // Summarize returns the automatic updater's state as of now.
 func Summarize(s *state.State, now time.Time) Summary {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
 	h := s.UpdateHealth
 	cfg := s.System.Update.Config
 	w := RestartWindow(cfg)
@@ -95,7 +99,17 @@ func Summarize(s *state.State, now time.Time) Summary {
 
 // Health returns the record the API shows, with the values worked out now.
 func Health(s *state.State, now time.Time) *api.SystemUpdateHealth {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	// A copy that shares no map or slice with the record, which may change while it is sent.
 	h := s.UpdateHealth
+	h.FailedVersions = maps.Clone(h.FailedVersions)
+	h.FailedApplications = maps.Clone(h.FailedApplications)
+	h.PreviousApplications = maps.Clone(h.PreviousApplications)
+	h.KeptApplications = maps.Clone(h.KeptApplications)
+	h.Instances = slices.Clone(h.Instances)
+	h.Addresses = slices.Clone(h.Addresses)
 	h.CurrentVersion = s.OS.RunningRelease
 	h.PendingVersion = pendingVersion(s)
 	h.NextWindow = stamp(NextWindowStart(RestartWindow(s.System.Update.Config), now))
@@ -110,6 +124,9 @@ func Health(s *state.State, now time.Time) *api.SystemUpdateHealth {
 
 // SetAutomatic turns automatic updates on or off. Turning them on clears a "Needs you" pause.
 func SetAutomatic(ctx context.Context, s *state.State, on bool) error {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
 	s.System.Update.Config.AutoUpdatesOff = !on
 	if on {
 		s.UpdateHealth.NeedsOwner = ""
@@ -122,6 +139,9 @@ func SetAutomatic(ctx context.Context, s *state.State, on bool) error {
 
 // ShiftRestartWindow moves the restart window by the given number of hours.
 func ShiftRestartWindow(ctx context.Context, s *state.State, hours int) error {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
 	w := RestartWindow(s.System.Update.Config)
 	w.StartHour = ((w.StartHour+hours)%24 + 24) % 24
 	w.EndHour = ((w.EndHour+hours)%24 + 24) % 24
@@ -135,6 +155,20 @@ func ShiftRestartWindow(ctx context.Context, s *state.State, hours int) error {
 // RetryVersion lets a failed OS or application version be applied again, then checks for updates.
 // An application version is given as "<application>:<version>".
 func RetryVersion(ctx context.Context, s *state.State, version string) error {
+	err := releaseVersion(ctx, s, version)
+	if err != nil {
+		return err
+	}
+
+	CheckNow(s)
+
+	return nil
+}
+
+func releaseVersion(ctx context.Context, s *state.State, version string) error {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
 	h := &s.UpdateHealth
 
 	_, isOS := h.FailedVersions[version]
@@ -146,6 +180,7 @@ func RetryVersion(ctx context.Context, s *state.State, version string) error {
 
 	if isOS {
 		delete(h.FailedVersions, version)
+		util.SetFailedBootVersions(FailedVersions(s))
 
 		err := util.ResetUKITries(version)
 		if err != nil {
@@ -159,14 +194,34 @@ func RetryVersion(ctx context.Context, s *state.State, version string) error {
 
 	slog.InfoContext(ctx, "Failed version released by the owner", "version", version)
 
-	err := s.SaveDurable()
-	if err != nil {
-		return err
+	return s.SaveDurable()
+}
+
+// ApplyConfig sets a new update configuration from the API. Turning automatic updates back on
+// clears a "Needs you" pause.
+func ApplyConfig(s *state.State, cfg api.SystemUpdateConfig) {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	if !cfg.AutoUpdatesOff {
+		s.UpdateHealth.NeedsOwner = ""
 	}
 
-	CheckNow(s)
+	s.System.Update.Config = cfg
+}
 
-	return nil
+// RecordCleanStop notes that incus-osd stops cleanly in this boot, so the next boot is a planned one.
+func RecordCleanStop(ctx context.Context, s *state.State) {
+	id, err := (&liveMachine{s: s}).bootID()
+	if err != nil {
+		slog.WarnContext(ctx, "Clean stop could not be recorded", "error", err)
+
+		return
+	}
+
+	s.LockUpdateHealth()
+	s.UpdateHealth.CleanStopBootID = id
+	s.UnlockUpdateHealth()
 }
 
 // CheckNow asks the daemon for an update check, without waiting for it.

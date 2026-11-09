@@ -1666,6 +1666,19 @@ definitions:
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateBake:
         properties:
+            boot_id:
+                type: string
+                x-go-name: BootID
+            boot_started:
+                type: string
+                x-go-name: BootStarted
+            boots:
+                description: |-
+                    Boots counts the boots of the version; Unplanned those that followed a boot that did not
+                    stop cleanly. The bake clock restarts in each boot, at BootStarted (RFC 3339) of boot BootID.
+                format: int64
+                type: integer
+                x-go-name: Boots
             last_failure:
                 type: string
                 x-go-name: LastFailure
@@ -1701,6 +1714,10 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: Strikes
+            unplanned:
+                format: int64
+                type: integer
+                x-go-name: Unplanned
             version:
                 type: string
                 x-go-name: Version
@@ -1749,6 +1766,9 @@ definitions:
                 x-go-name: Addresses
             bake:
                 $ref: '#/definitions/SystemUpdateBake'
+            clean_stop_boot_id:
+                type: string
+                x-go-name: CleanStopBootID
             current_version:
                 type: string
                 x-go-name: CurrentVersion
@@ -1777,6 +1797,20 @@ definitions:
                     type: string
                 type: array
                 x-go-name: Instances
+            kept_applications:
+                additionalProperties:
+                    type: string
+                description: |-
+                    KeptApplications maps an application to the version that ran before an automatic OS rollback;
+                    the rolled back OS keeps it rather than going back to an older one.
+                type: object
+                x-go-name: KeptApplications
+            last_boot_id:
+                description: |-
+                    LastBootID is the boot incus-osd last started in; CleanStopBootID the last boot it stopped
+                    cleanly in. UnplannedBoot is set when this boot followed one that did not stop cleanly.
+                type: string
+                x-go-name: LastBootID
             last_reason:
                 type: string
                 x-go-name: LastReason
@@ -1790,6 +1824,10 @@ definitions:
             next_window:
                 type: string
                 x-go-name: NextWindow
+            nvidia_was_active:
+                description: NVIDIAWasActive is set when the NVIDIA driver ran before the update restart.
+                type: boolean
+                x-go-name: NVIDIAWasActive
             pending_version:
                 type: string
                 x-go-name: PendingVersion
@@ -1806,6 +1844,9 @@ definitions:
                 description: RollbackBootID is the boot an automatic rollback reboot was issued from; there is one per boot.
                 type: string
                 x-go-name: RollbackBootID
+            unplanned_boot:
+                type: boolean
+                x-go-name: UnplannedBoot
             waiting:
                 type: string
                 x-go-name: Waiting

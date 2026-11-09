@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
@@ -40,6 +41,9 @@ func rememberPreviousApplication(s *state.State, name string, previous string, v
 	if previous == "" || previous == version {
 		return
 	}
+
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
 
 	h := &s.UpdateHealth
 	if h.PreviousApplications == nil {
@@ -91,33 +95,31 @@ func verifyApplication(ctx context.Context, s *state.State, ops appOps, name str
 		return
 	}
 
-	h := &s.UpdateHealth
-
 	app, err := ops.load(ctx, s, name)
 	if err != nil {
 		return
 	}
 
+	// The record is locked only while it changes; the waits and the switch run unlocked.
 	reason := waitHealthy(ctx, ops, app)
 	if reason == "" {
-		h.LastResult = "Application " + name + " updated to " + version
-		_ = ops.save(s)
+		withRecord(s, ops.save, func(h *api.SystemUpdateHealth) { h.LastResult = "Application " + name + " updated to " + version })
 
 		return
 	}
 
-	if h.FailedApplications == nil {
-		h.FailedApplications = map[string]string{}
-	}
+	previous := ""
 
-	h.FailedApplications[name+":"+version] = reason
-	h.LastReason = reason
+	withRecord(s, ops.save, func(h *api.SystemUpdateHealth) {
+		h.FailedApplications = addFailed(h.FailedApplications, name+":"+version, reason)
+		h.LastReason = reason
+		previous = h.PreviousApplications[name]
+	})
 
 	slog.ErrorContext(ctx, "Application update failed its health check; going back", "app", name, "version", version, "reason", reason)
 
-	previous := h.PreviousApplications[name]
 	if previous == "" || previous == version {
-		pauseForOwner(ctx, s, ops.save, "application "+name+" version "+version+" failed ("+reason+") and there is no previous version to go back to")
+		lockedPause(ctx, s, ops.save, "application "+name+" version "+version+" failed ("+reason+") and there is no previous version to go back to")
 
 		return
 	}
@@ -132,22 +134,44 @@ func verifyApplication(ctx context.Context, s *state.State, ops appOps, name str
 	}
 
 	if err != nil {
-		pauseForOwner(ctx, s, ops.save, "application "+name+" version "+version+" failed ("+reason+") and going back to "+previous+" failed: "+err.Error())
+		lockedPause(ctx, s, ops.save, "application "+name+" version "+version+" failed ("+reason+") and going back to "+previous+" failed: "+err.Error())
 
 		return
 	}
 
 	after := waitHealthy(ctx, ops, app)
 	if after != "" {
-		pauseForOwner(ctx, s, ops.save, "application "+name+" went back to "+previous+" after "+version+" failed, and it is still not healthy: "+after)
+		lockedPause(ctx, s, ops.save, "application "+name+" went back to "+previous+" after "+version+" failed, and it is still not healthy: "+after)
 
 		return
 	}
 
-	h.LastResult = "Application " + name + " version " + version + " failed; went back to " + previous
-	_ = ops.save(s)
+	withRecord(s, ops.save, func(h *api.SystemUpdateHealth) {
+		h.LastResult = "Application " + name + " version " + version + " failed; went back to " + previous
+	})
 
 	slog.WarnContext(ctx, "Application went back to its previous version", "app", name, "version", previous)
+}
+
+// withRecord changes the update record with it locked, then saves it.
+func withRecord(s *state.State, save func(*state.State) error, change func(h *api.SystemUpdateHealth)) {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	change(&s.UpdateHealth)
+
+	err := save(s)
+	if err != nil {
+		slog.Warn("Update record could not be saved", "error", err)
+	}
+}
+
+// lockedPause is pauseForOwner for a caller that doesn't hold the update record.
+func lockedPause(ctx context.Context, s *state.State, save func(*state.State) error, reason string) {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	pauseForOwner(ctx, s, save, reason)
 }
 
 // pauseForOwner stops automatic recovery and pauses automatic updates until the owner acts.

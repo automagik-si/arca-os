@@ -11,6 +11,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
 // The automatic updater's limits.
@@ -18,6 +19,10 @@ const (
 	defaultBakeTime = 15 * time.Minute
 	maxStrikes      = 3
 	maxStarts       = 3
+	maxUnplanned    = 2
+	maxBoots        = 5
+	maxFailed       = 20
+	readyDeadline   = 10 * time.Minute
 	deferGrace      = 2 * time.Hour
 	tickEvery       = time.Minute
 )
@@ -39,10 +44,19 @@ type probe interface {
 	busy(ctx context.Context) string
 	// health returns the checks that fail, in plain words.
 	health(ctx context.Context, h *api.SystemUpdateHealth) []string
-	runningInstances(ctx context.Context) ([]string, error)
+	// snapshot reads what the health check compares against after the restart.
+	snapshot(ctx context.Context) restartSnapshot
+	// applications returns the installed application versions the OS rollback keeps.
+	applications(ctx context.Context) map[string]string
 	startInstances(ctx context.Context, instances []string)
-	addresses(ctx context.Context) []string
 	save() error
+}
+
+// restartSnapshot is the machine as it was before an update restart.
+type restartSnapshot struct {
+	instances []string
+	addresses []string
+	nvidia    bool
 }
 
 // bootLoader changes boot entries and restarts the node.
@@ -145,6 +159,7 @@ func armBake(s *state.State, version string, bootID string) {
 	h := &s.UpdateHealth
 	h.Bake = &api.SystemUpdateBake{Version: version, Previous: s.OS.RunningRelease, StagedBootID: bootID}
 	h.PendingVersion = version
+	h.KeptApplications = nil
 	h.LastResult = "Version " + version + " is installed and waits for its restart"
 	h.LastReason = ""
 }
@@ -158,27 +173,25 @@ func (a *auto) reconcileBoot(ctx context.Context) string {
 
 	id, idErr := a.m.bootID()
 
+	newBoot := idErr == nil && id != h.LastBootID
+	if newBoot {
+		h.UnplannedBoot = h.LastBootID != "" && h.CleanStopBootID != h.LastBootID
+		h.LastBootID = id
+	}
+
+	// incus-osd runs again: only a clean stop later in this boot ends it cleanly.
+	h.CleanStopBootID = ""
+
+	reason := ""
+
 	b := h.Bake
-	if b != nil && !b.Rollback && running == b.Version {
-		if b.Started == "" {
-			b.Started = stamp(a.m.now())
-			h.PendingVersion = ""
-			h.PreviousVersion = b.Previous
-			h.LastResult = "Version " + running + " started; checking its health"
-			slog.InfoContext(ctx, "Update health check started", "version", running, "previous", b.Previous)
-		}
+	if b != nil && running == b.Version {
+		reason = a.countBoot(ctx, id, idErr, newBoot)
+	}
 
-		if idErr == nil {
-			if b.StartsBootID == id {
-				b.Starts++
-			} else {
-				b.Starts, b.StartsBootID = 1, id
-			}
-		}
-
-		if b.Starts > maxStarts {
-			return "incus-osd did not finish starting after " + strconv.Itoa(maxStarts) + " attempts"
-		}
+	if reason != "" && b.Rollback {
+		a.needsOwner(ctx, "after going back to "+b.Version+", "+reason)
+		reason = ""
 	}
 
 	if b != nil && !b.Rollback && running != b.Version && idErr == nil && b.StagedBootID != "" && b.StagedBootID != id {
@@ -199,14 +212,8 @@ func (a *auto) reconcileBoot(ctx context.Context) string {
 		slog.WarnContext(ctx, "Update rolled back by the boot loader", "version", b.Version, "reason", reason)
 	}
 
-	if b != nil && b.Rollback {
-		if running == b.Version {
-			if b.Started == "" {
-				b.Started = stamp(a.m.now())
-			}
-		} else {
-			a.needsOwner(ctx, "the rollback to "+b.Version+" did not start; the machine runs "+running)
-		}
+	if b != nil && b.Rollback && running != b.Version {
+		a.needsOwner(ctx, "the rollback to "+b.Version+" did not start; the machine runs "+running)
 	}
 
 	// Leave a rolled back or failed next release, so the machine doesn't run as a "backup" boot.
@@ -214,8 +221,8 @@ func (a *auto) reconcileBoot(ctx context.Context) string {
 		a.s.OS.NextRelease = running
 	}
 
-	if h.Bake == nil && IsFailedVersion(a.s, running) && h.NeedsOwner == "" {
-		return "version " + running + " failed before: " + h.FailedVersions[running]
+	if reason == "" && h.Bake == nil && IsFailedVersion(a.s, running) && h.NeedsOwner == "" {
+		reason = "version " + running + " failed before: " + h.FailedVersions[running]
 	}
 
 	err := a.m.save()
@@ -223,7 +230,81 @@ func (a *auto) reconcileBoot(ctx context.Context) string {
 		slog.WarnContext(ctx, "Update record could not be saved", "error", err)
 	}
 
+	return reason
+}
+
+// countBoot counts a start of the version being checked. A new boot restarts the bake clock; one
+// that followed a boot that did not stop cleanly is a failed check. It returns a reason to stop.
+func (a *auto) countBoot(ctx context.Context, id string, idErr error, newBoot bool) string {
+	h := &a.s.UpdateHealth
+	b := h.Bake
+	now := stamp(a.m.now())
+
+	if b.Started == "" {
+		b.Started = now
+
+		if !b.Rollback {
+			h.PendingVersion = ""
+			h.PreviousVersion = b.Previous
+			h.LastResult = "Version " + b.Version + " started; checking its health"
+			slog.InfoContext(ctx, "Update health check started", "version", b.Version, "previous", b.Previous)
+		}
+	}
+
+	switch {
+	case idErr != nil:
+		b.Strikes++
+		b.LastFailure = "this boot could not be identified"
+	case newBoot || b.BootID == "":
+		b.Boots++
+		b.BootID, b.BootStarted, b.Passes = id, now, 0
+		b.Starts, b.StartsBootID = 1, id
+
+		if h.UnplannedBoot && b.Boots > 1 {
+			b.Unplanned++
+			b.Strikes++
+			b.LastFailure = "the machine restarted unexpectedly during the health check"
+			slog.WarnContext(ctx, "Update health check failed", "version", b.Version, "strike", b.Strikes, "reason", b.LastFailure)
+		}
+	default:
+		b.Starts++
+	}
+
+	switch {
+	case b.Boots > maxBoots:
+		return "the machine restarted " + strconv.Itoa(b.Boots-1) + " times before the health check could pass"
+	case b.Unplanned >= maxUnplanned:
+		return "the machine restarted unexpectedly " + strconv.Itoa(b.Unplanned) + " times during the health check"
+	case b.Starts > maxStarts:
+		return "incus-osd did not finish starting after " + strconv.Itoa(maxStarts) + " attempts"
+	case b.Strikes >= maxStrikes:
+		return strconv.Itoa(b.Strikes) + " health checks failed, last: " + b.LastFailure
+	}
+
 	return ""
+}
+
+// notReady counts a start that did not reach "system ready" in time as a failed check.
+func (a *auto) notReady(ctx context.Context) {
+	b := a.s.UpdateHealth.Bake
+	if b == nil || b.Started == "" || b.Version != a.s.OS.RunningRelease {
+		return
+	}
+
+	b.Strikes++
+	b.LastFailure = "incus-osd did not get ready within " + readyDeadline.String()
+	slog.WarnContext(ctx, "Update health check failed", "version", b.Version, "strike", b.Strikes, "reason", b.LastFailure)
+
+	if b.Strikes >= maxStrikes {
+		a.bakeFailed(ctx, strconv.Itoa(b.Strikes)+" health checks failed, last: "+b.LastFailure)
+
+		return
+	}
+
+	err := a.m.save()
+	if err != nil {
+		slog.WarnContext(ctx, "Update record could not be saved", "error", err)
+	}
 }
 
 // ready runs once the system is ready: it blesses a boot that isn't being checked.
@@ -231,7 +312,8 @@ func (a *auto) ready(ctx context.Context) {
 	h := &a.s.UpdateHealth
 	running := a.s.OS.RunningRelease
 
-	if h.Bake == nil || h.Bake.Version != running || h.Bake.Rollback {
+	// A boot that followed one that didn't stop cleanly is never blessed.
+	if !h.UnplannedBoot && (h.Bake == nil || h.Bake.Version != running || h.Bake.Rollback) {
 		err := a.m.markGood(running)
 		if err != nil {
 			slog.DebugContext(ctx, "Boot entry not blessed", "version", running, "error", err)
@@ -277,7 +359,12 @@ func (a *auto) bake(ctx context.Context) {
 		b.LastFailure = ""
 	}
 
-	started, ok := parseStamp(b.Started)
+	// The bake clock restarts in each boot of the version.
+	started, ok := parseStamp(b.BootStarted)
+	if !ok {
+		started, ok = parseStamp(b.Started)
+	}
+
 	over := !ok || now.Sub(started) >= BakeTime(a.s.System.Update.Config)
 
 	switch {
@@ -299,16 +386,26 @@ func (a *auto) bakePassed(ctx context.Context) {
 	h := &a.s.UpdateHealth
 	b := h.Bake
 
-	if b.Rollback {
+	switch {
+	case b.Rollback:
 		h.LastResult = "Rolled back to " + b.Version + "; it is healthy"
 		slog.InfoContext(ctx, "Rollback health check passed", "version", b.Version)
-	} else {
+	case h.UnplannedBoot:
+		// Marked good, but its boot entry is blessed only by a boot that followed a clean stop.
+		h.PreviousVersion = b.Previous
+		h.KeptApplications = nil
+		h.LastResult = "Version " + b.Version + " passed its health check and is marked good; its boot entry is blessed after a clean restart"
+		h.LastReason = ""
+
+		slog.InfoContext(ctx, "Update health check passed after an unexpected restart; boot entry not blessed yet", "version", b.Version)
+	default:
 		err := a.m.markGood(b.Version)
 		if err != nil {
 			slog.WarnContext(ctx, "Boot entry could not be blessed", "version", b.Version, "error", err)
 		}
 
 		h.PreviousVersion = b.Previous
+		h.KeptApplications = nil
 		h.LastResult = "Version " + b.Version + " passed its health check and is marked good"
 		h.LastReason = ""
 
@@ -363,7 +460,11 @@ func (a *auto) rollback(ctx context.Context, version string, previous string, re
 	}
 
 	h.RollbackBootID = id
+	h.CleanStopBootID = id
 	h.Bake = &api.SystemUpdateBake{Version: previous, Previous: version, Rollback: true}
+
+	// The applications keep the versions that ran here; going back could meet a newer database.
+	h.KeptApplications = a.m.applications(ctx)
 	h.LastResult = "Version " + version + " failed; going back to " + previous
 
 	err = a.m.save()
@@ -395,11 +496,42 @@ func (a *auto) rollback(ctx context.Context, version string, previous string, re
 
 func (a *auto) failed(version string, reason string) {
 	h := &a.s.UpdateHealth
-	if h.FailedVersions == nil {
-		h.FailedVersions = map[string]string{}
+	h.FailedVersions = addFailed(h.FailedVersions, version, reason)
+
+	util.SetFailedBootVersions(FailedVersions(a.s))
+}
+
+// addFailed records a failed version and keeps only the newest maxFailed ones.
+func addFailed(failed map[string]string, key string, reason string) map[string]string {
+	if failed == nil {
+		failed = map[string]string{}
 	}
 
-	h.FailedVersions[version] = reason
+	failed[key] = reason
+
+	for len(failed) > maxFailed {
+		oldest := ""
+
+		for k := range failed {
+			if oldest == "" || failedVersionPart(k) < failedVersionPart(oldest) {
+				oldest = k
+			}
+		}
+
+		delete(failed, oldest)
+	}
+
+	return failed
+}
+
+// failedVersionPart is the version of an OS version or an "<application>:<version>" key.
+func failedVersionPart(key string) string {
+	_, version, found := strings.Cut(key, ":")
+	if !found {
+		return key
+	}
+
+	return version
 }
 
 // needsOwner stops automatic recovery and pauses automatic updates until the owner acts.
@@ -463,24 +595,19 @@ func (a *auto) restart(ctx context.Context) {
 		return
 	}
 
-	instances, err := a.m.runningInstances(ctx)
-	if err != nil {
-		slog.WarnContext(ctx, "Running instances could not be listed before the update restart", "error", err)
-	}
-
-	h.Instances = instances
-	h.Addresses = a.m.addresses(ctx)
+	snap := a.m.snapshot(ctx)
+	h.Instances, h.Addresses, h.NVIDIAWasActive = snap.instances, snap.addresses, snap.nvidia
 	h.Waiting, h.DeferUntil = "", ""
 	h.LastResult = "Restarting into version " + pending
 
-	err = a.m.save()
+	err := a.m.save()
 	if err != nil {
 		slog.WarnContext(ctx, "Update record could not be saved; not restarting", "error", err)
 
 		return
 	}
 
-	slog.InfoContext(ctx, "Restarting into the update", "version", pending, "instances", len(instances))
+	slog.InfoContext(ctx, "Restarting into the update", "version", pending, "instances", len(snap.instances))
 
 	err = a.m.reboot(ctx)
 	if err != nil {

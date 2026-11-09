@@ -2,11 +2,63 @@ package rest
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"time"
 
+	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/rest/response"
+	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/update"
 )
+
+// withUpdateHealth returns the system update state with the automatic updater's record.
+func withUpdateHealth(s *state.State) api.SystemUpdate {
+	ret := s.System.Update
+	ret.State.Health = update.Health(s, time.Now())
+
+	return ret
+}
+
+// decodeUpdateConfig decodes a PUT body. The automatic updater's settings a client leaves out keep
+// their current values, so an older client never turns automatic updates back on by accident.
+func decodeUpdateConfig(body io.Reader, out *api.SystemUpdate, current api.SystemUpdateConfig) error {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(raw, out)
+	if err != nil {
+		return err
+	}
+
+	sent := struct {
+		Config map[string]json.RawMessage `json:"config"`
+	}{}
+
+	err = json.Unmarshal(raw, &sent)
+	if err != nil {
+		return err
+	}
+
+	_, ok := sent.Config["auto_updates_off"]
+	if !ok {
+		out.Config.AutoUpdatesOff = current.AutoUpdatesOff
+	}
+
+	_, ok = sent.Config["restart_window"]
+	if !ok {
+		out.Config.RestartWindow = current.RestartWindow
+	}
+
+	_, ok = sent.Config["bake_time"]
+	if !ok {
+		out.Config.BakeTime = current.BakeTime
+	}
+
+	return nil
+}
 
 // swagger:operation POST /1.0/system/update/:retry system system_post_update_retry
 //

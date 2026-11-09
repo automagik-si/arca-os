@@ -2,7 +2,6 @@ package api
 
 import (
 	"errors"
-	"slices"
 	"time"
 )
 
@@ -68,30 +67,13 @@ func (c *SystemUpdateConfig) Validate() error {
 		}
 	}
 
-	if c.BakeTime != "" {
-		bake, err := time.ParseDuration(c.BakeTime)
-		if err != nil {
-			return errors.New("invalid bake time: " + err.Error())
-		}
-
-		if bake < time.Minute {
-			return errors.New("invalid bake time: must be at least one minute")
-		}
-	}
-
-	windows := slices.Clone(c.MaintenanceWindows)
-
-	if c.RestartWindow != nil {
-		w := c.RestartWindow
-		if w.StartHour < 0 || w.StartHour > 23 || w.EndHour < 0 || w.EndHour > 23 || w.StartMinute < 0 || w.StartMinute > 59 || w.EndMinute < 0 || w.EndMinute > 59 {
-			return errors.New("invalid restart window: hours must be 0-23 and minutes 0-59")
-		}
-
-		windows = append(windows, *w)
+	err := c.validateAutomatic()
+	if err != nil {
+		return err
 	}
 
 	// Basic maintenance window validation.
-	for _, mw := range windows {
+	for _, mw := range c.MaintenanceWindows {
 		// To simplify logic, we don't allow a week-long migration window
 		// to start and end on the same day.
 		if mw.StartDayOfWeek != NONE && mw.StartDayOfWeek == mw.EndDayOfWeek {

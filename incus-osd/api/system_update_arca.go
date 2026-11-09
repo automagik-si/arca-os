@@ -1,5 +1,43 @@
 package api
 
+import (
+	"errors"
+	"time"
+)
+
+// validateAutomatic checks the automatic updater's settings.
+func (c *SystemUpdateConfig) validateAutomatic() error {
+	if c.BakeTime != "" {
+		bake, err := time.ParseDuration(c.BakeTime)
+		if err != nil {
+			return errors.New("invalid bake time: " + err.Error())
+		}
+
+		if bake < time.Minute {
+			return errors.New("invalid bake time: must be at least one minute")
+		}
+	}
+
+	w := c.RestartWindow
+	if w == nil {
+		return nil
+	}
+
+	if w.StartHour < 0 || w.StartHour > 23 || w.EndHour < 0 || w.EndHour > 23 || w.StartMinute < 0 || w.StartMinute > 59 || w.EndMinute < 0 || w.EndMinute > 59 {
+		return errors.New("invalid restart window: hours must be 0-23 and minutes 0-59")
+	}
+
+	// The restart window follows the maintenance window rules.
+	windows := &SystemUpdateConfig{CheckFrequency: "never", MaintenanceWindows: []SystemUpdateMaintenanceWindow{*w}}
+
+	err := windows.Validate()
+	if err != nil {
+		return errors.New("invalid restart window: " + err.Error())
+	}
+
+	return nil
+}
+
 // SystemUpdateHealth tracks automatic OS and application updates: what is running, what was
 // marked good or failed, and any update waiting for its restart or being checked.
 type SystemUpdateHealth struct {
@@ -32,6 +70,19 @@ type SystemUpdateHealth struct {
 	// Addresses are the IPv4 addresses the machine had before the update restart.
 	Addresses []string `json:"addresses,omitempty" yaml:"addresses,omitempty"`
 
+	// NVIDIAWasActive is set when the NVIDIA driver ran before the update restart.
+	NVIDIAWasActive bool `json:"nvidia_was_active,omitempty" yaml:"nvidia_was_active,omitempty"`
+
+	// KeptApplications maps an application to the version that ran before an automatic OS rollback;
+	// the rolled back OS keeps it rather than going back to an older one.
+	KeptApplications map[string]string `json:"kept_applications,omitempty" yaml:"kept_applications,omitempty"`
+
+	// LastBootID is the boot incus-osd last started in; CleanStopBootID the last boot it stopped
+	// cleanly in. UnplannedBoot is set when this boot followed one that did not stop cleanly.
+	LastBootID      string `json:"last_boot_id,omitempty"       yaml:"last_boot_id,omitempty"`
+	CleanStopBootID string `json:"clean_stop_boot_id,omitempty" yaml:"clean_stop_boot_id,omitempty"`
+	UnplannedBoot   bool   `json:"unplanned_boot,omitempty"     yaml:"unplanned_boot,omitempty"`
+
 	// RollbackBootID is the boot an automatic rollback reboot was issued from; there is one per boot.
 	RollbackBootID string `json:"rollback_boot_id,omitempty" yaml:"rollback_boot_id,omitempty"`
 
@@ -50,6 +101,13 @@ type SystemUpdateBake struct {
 
 	// Started (RFC 3339) is when the version first ran; empty until then.
 	Started string `json:"started,omitempty" yaml:"started,omitempty"`
+
+	// Boots counts the boots of the version; Unplanned those that followed a boot that did not
+	// stop cleanly. The bake clock restarts in each boot, at BootStarted (RFC 3339) of boot BootID.
+	Boots       int    `json:"boots,omitempty"        yaml:"boots,omitempty"`
+	Unplanned   int    `json:"unplanned,omitempty"    yaml:"unplanned,omitempty"`
+	BootID      string `json:"boot_id,omitempty"      yaml:"boot_id,omitempty"`
+	BootStarted string `json:"boot_started,omitempty" yaml:"boot_started,omitempty"`
 
 	// Strikes counts failed checks, Passes passed ones; LastFailure says what failed last.
 	Strikes     int    `json:"strikes,omitempty"      yaml:"strikes,omitempty"`

@@ -90,7 +90,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 	// Symlink the best version of each application and ensure the application state
 	// reflects the selected on-disk version.
 	for app, version := range appVersions {
-		bestVersion := bestApplicationVersion(app.Name(), version, priorBootRelease, s.OS.RunningRelease)
+		bestVersion := pickApplicationVersion(s, app.Name(), version, bestApplicationVersion(app.Name(), version, priorBootRelease, s.OS.RunningRelease))
 
 		// Create the new symlink.
 		err := os.Symlink(filepath.Join(systemd.LocalExtensionsPath, bestVersion, app.Name()+".raw"), filepath.Join(systemd.SystemExtensionsPath, app.Name()+".raw"))
@@ -117,11 +117,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 			availableVersions = append(availableVersions, version.otherOSVersion)
 		}
 
-		// Keep the version an application update replaced, so it can go back to it.
-		previous := s.UpdateHealth.PreviousApplications[app.Name()]
-		if previous != "" && sysextImageExists(app.Name(), previous) {
-			availableVersions = append(availableVersions, previous)
-		}
+		availableVersions = keepApplicationVersions(s, app.Name(), availableVersions)
 
 		slices.Sort(availableVersions)
 		availableVersions = slices.Compact(availableVersions)
