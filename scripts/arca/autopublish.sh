@@ -254,7 +254,9 @@ if [ -n "$last_auto" ] && [ "$(verdict_of "$last_auto")" = pending ] && in_ch te
 	why="$last_auto is in testing with no canary verdict"
 elif [ "$target" != "$last_commit" ]; then
 	plan=publish
-	why="$branch moved to ${target:0:12} (last autopublished: ${last_commit:0:12}${last_commit:+ as $last_auto}${last_commit:-none})"
+	prev=none
+	if [ -n "$last_auto" ]; then prev="$last_auto from ${last_commit:0:12}"; fi
+	why="$branch moved to ${target:0:12} (last autopublished: $prev)"
 else
 	why="$branch at ${target:0:12} is already autopublished as $last_auto ($(verdict_of "$last_auto"))"
 fi
