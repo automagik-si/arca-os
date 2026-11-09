@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/lxc/incus/v7/shared/subprocess"
@@ -44,9 +45,12 @@ func (g *gpuSupport) SetFriendlyVersion(_ context.Context) error {
 	return nil
 }
 
-func (*gpuSupport) Start(ctx context.Context) error {
+func (g *gpuSupport) Start(ctx context.Context) error {
+	_, err := subprocess.RunCommandContext(ctx, "/sbin/modinfo", "nvidia")
+	modules := gpuSupportModules(err == nil, g.state.System.Kernel.Config.BlacklistModules)
+
 	// Reload the modules if loaded.
-	for _, module := range []string{"amdgpu", "i915", "intel_vpu", "nouveau", "xe"} {
+	for _, module := range modules {
 		// Check if loaded.
 		_, err := os.Stat("/sys/module/" + module)
 		if err != nil {
@@ -85,7 +89,7 @@ func (*gpuSupport) Start(ctx context.Context) error {
 		}
 
 		// Load the module back.
-		_, err = subprocess.RunCommandContext(ctx, "/sbin/modprobe", module)
+		_, err = subprocess.RunCommandContext(ctx, "/sbin/modprobe", "--use-blacklist", module)
 		if err != nil {
 			slog.Warn("Failed to load kernel module", "module", module)
 
@@ -94,4 +98,19 @@ func (*gpuSupport) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func gpuSupportModules(nvidiaAvailable bool, blacklist []string) []string {
+	nvidiaModule := "nouveau"
+	if nvidiaAvailable {
+		nvidiaModule = "nvidia"
+	}
+
+	modules := []string{"amdgpu", "i915", "intel_vpu", nvidiaModule, "xe"}
+
+	return slices.DeleteFunc(modules, func(module string) bool {
+		return slices.ContainsFunc(blacklist, func(blocked string) bool {
+			return strings.ReplaceAll(blocked, "-", "_") == module
+		})
+	})
 }
