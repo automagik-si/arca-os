@@ -23,3 +23,17 @@ mkosi.conf
 # NVMe health in the storage document.
 incus-osd/api/system_storage.go
 incus-osd/internal/storage/storage.go
+# The NVIDIA driver application (boot-selected sysext, driver switching).
+doc/reference/applications/gpu-support.md
+doc/reference/applications/non-primary.md
+doc/reference/system/kernel.md
+incus-osd/internal/applications/app_gpu_support.go
+incus-osd/internal/applications/sysext.go
+incus-osd/internal/kernel/kernel.go
+incus-osd/internal/rest/api_applications.go
+incus-osd/internal/rest/api_system_kernel.go
+incus-osd/internal/state/file.go
+incus-osd/internal/systemd/sysext.go
+incus-osd/internal/update/update.go
+incus-osd/tests/incusos_tests/tests_incusos_api_applications.py
+mkosi.images/base/mkosi.extra/usr/lib/systemd/system/incus-osd.service

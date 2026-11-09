@@ -10,14 +10,15 @@
 # The allowlist is read as committed at HEAD, so a working-tree edit cannot
 # admit a path. A commit in the range can still admit one, so every path the
 # range adds to the allowlist is printed as "admitted <path>" for review. It prints one row per non-owned path, "<added> <deleted>
-# <path> <class>", then "total <n>/250", where n sums added and deleted lines
+# <path> <class>", then "total <n>/<cap>", where n sums added and deleted lines
 # over the non-owned paths. Binary paths count as zero lines.
 #
-# Exit codes: 0 when nothing is REFUSED and n <= 250; 1 otherwise; 2 on usage
+# Exit codes: 0 when nothing is REFUSED and n <= the cap (900); 1 otherwise; 2 on usage
 # or an unknown base ref.
 set -euo pipefail
 
-CAP=250
+# Arca + NVIDIA edits to upstream files; was 250 before the NVIDIA line joined.
+CAP=900
 ALLOWLIST=scripts/arca/patch-allowlist.txt
 
 usage() {
@@ -37,6 +38,27 @@ owned() {
 	[[ $1 =~ ^mkosi\.sandbox/etc/apt/[^/]+/arca[^/]*$ ]] && return 0
 	[[ $1 =~ ^incus-osd/internal/applications/app_arca[^/]*\.go$ ]] && return 0
 	[[ $1 =~ ^mkosi\.images/(base|debug)/(.*/)?arca-[^/]*$ ]] && return 0
+	nvidia_owned "$1" && return 0
+	return 1
+}
+
+# nvidia_owned <path>: returns 0 for the NVIDIA driver line's own files.
+nvidia_owned() {
+	case "$1" in
+	doc/reference/applications/nvidia.md | incus-osd/api/application_nvidia.go) return 0 ;;
+	incus-osd/internal/applications/nvidia_sysext_test.go | incus-osd/internal/applications/testdata/nvidia-firmware.txt) return 0 ;;
+	incus-osd/internal/applications/app_gpu_support_test.go | incus-osd/internal/update/nvidia_test.go) return 0 ;;
+	incus-osd/internal/kernel/validate.go | incus-osd/internal/kernel/passthrough_test.go) return 0 ;;
+	incus-osd/internal/rest/api_system_kernel_test.go | incus-osd/internal/state/persistence_test.go) return 0 ;;
+	incus-osd/internal/systemd/nvidia.go | incus-osd/internal/systemd/nvidia_test.go) return 0 ;;
+	incus-osd/internal/systemd/module_signature.go | incus-osd/internal/systemd/module_signature_test.go) return 0 ;;
+	mkosi.images/nvidia/* | mkosi.images/nvidia-lts/*) return 0 ;;
+	mkosi.images/base/mkosi.extra/usr/lib/modprobe.d/50-gpu-boot.conf) return 0 ;;
+	mkosi.images/base/mkosi.extra/usr/lib/systemd/system/nvidia-prepare.service) return 0 ;;
+	mkosi.images/base/mkosi.extra/usr/lib/systemd/system/sysinit.target.wants/nvidia-prepare.service) return 0 ;;
+	mkosi.images/base/mkosi.extra/usr/lib/systemd/system/systemd-sysext.service.d/nvidia.conf) return 0 ;;
+	esac
+	[[ $1 =~ ^incus-osd/internal/applications/app_nvidia[^/]*\.go$ ]] && return 0
 	return 1
 }
 
