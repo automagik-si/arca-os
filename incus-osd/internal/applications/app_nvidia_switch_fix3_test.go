@@ -102,7 +102,7 @@ func TestNVIDIANouveauOwnershipDefersWithoutDetach(t *testing.T) {
 			require.True(t, s.NeedsReboot)
 			require.Equal(t, nvidiaLTS, s.RequestedBranch)
 			require.Equal(t, "002", s.Version)
-			require.Empty(t, *commands)
+			require.Equal(t, []string{"systemd-dissect --copy-from " + n.path(filepath.Join(systemd.LocalExtensionsPath, "002", nvidiaLTS+".raw")) + " /usr/share/nvidia/supported-gpus"}, *commands)
 			require.Empty(t, s.BadBuilds)
 		})
 	}

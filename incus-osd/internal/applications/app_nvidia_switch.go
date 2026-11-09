@@ -35,6 +35,7 @@ var (
 	errNVIDIAHealth       = errors.New("NVIDIA health check failed")
 	errNVIDIARestore      = errors.New("the previous NVIDIA driver could not be reloaded; restart to restore it")
 	errNVIDIAOtherDriver  = errors.New("the card is using another driver; restart to switch it to NVIDIA")
+	errNVIDIANouveau      = errors.New("the Nouveau fallback driver could not take over the GPU; restart to finish")
 )
 
 func (n *nvidia) requestedBranch() string {
@@ -194,7 +195,7 @@ func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABu
 		return n.deferSwitch("NVIDIA modules are still in use; the driver switch will run at the next boot")
 	}
 
-	other, err := n.usingAnotherDriver()
+	other, err := n.usingAnotherDriver(ctx, target)
 	if err != nil {
 		return n.deferSwitch("GPU use could not be inspected; restart to apply the NVIDIA driver")
 	}
@@ -310,7 +311,8 @@ func (n *nvidia) restorePreviousBuild(ctx context.Context, previous api.Applicat
 	return n.checkBuild(repairCtx)
 }
 
-func (n *nvidia) usingAnotherDriver() (bool, error) {
+// usingAnotherDriver reports whether a card the target build supports is held by another driver.
+func (n *nvidia) usingAnotherDriver(ctx context.Context, target api.ApplicationNVIDIABuild) (bool, error) {
 	if n.state.Applications.NVIDIA.Config.Driver != "nvidia" {
 		return false, nil
 	}
@@ -320,6 +322,8 @@ func (n *nvidia) usingAnotherDriver() (bool, error) {
 		return false, err
 	}
 
+	others := []nvidiaCard{}
+
 	for _, card := range cards {
 		use := n.state.Applications.NVIDIA.Config.Cards[card.address]
 		if n.passthrough(card) || use == "off" || use == "vfio-pci" {
@@ -327,6 +331,24 @@ func (n *nvidia) usingAnotherDriver() (bool, error) {
 		}
 
 		if card.driver != "." && card.driver != "nvidia" {
+			others = append(others, card)
+		}
+	}
+
+	if len(others) == 0 {
+		return false, nil
+	}
+
+	// Older cards stay on Nouveau for good, so only the cards this build drives can need a restart.
+	image := n.path(filepath.Join(systemd.LocalExtensionsPath, target.Version, target.Branch+".raw"))
+
+	supported, err := n.command(ctx, "systemd-dissect", "--copy-from", image, "/usr/share/nvidia/supported-gpus")
+	if err != nil {
+		return false, err
+	}
+
+	for _, card := range others {
+		if slices.Contains(strings.Fields(supported), card.id) {
 			return true, nil
 		}
 	}
@@ -758,9 +780,7 @@ func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) e
 	}
 
 	if n.busy() {
-		n.restoreNouveau(ctx, boot.Cards)
-
-		return n.deferRollback(ctx, reason, true)
+		return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, n.bootRebootDue())), true)
 	}
 
 	err = n.activateBuild(ctx, *s.Previous)
@@ -769,9 +789,7 @@ func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) e
 	}
 
 	if err != nil {
-		n.restoreNouveau(ctx, boot.Cards)
-
-		return n.deferRollback(ctx, reason, true)
+		return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, n.bootRebootDue())), true)
 	}
 
 	s.NeedsReboot, s.Reason = false, reason+"; restored the previous driver from disk"
@@ -779,21 +797,73 @@ func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) e
 	return n.state.SaveDurable()
 }
 
-func (n *nvidia) restoreNouveau(ctx context.Context, cards []string) {
+// bootRebootDue reports whether deferRollback will issue the bounded boot fallback reboot.
+func (n *nvidia) bootRebootDue() bool {
+	if n.state.OS.SystemIsReady || !n.bootRecovery {
+		return false
+	}
+
+	id, err := n.bootID()
+
+	return err == nil && n.state.Applications.NVIDIA.State.FallbackBootID != id
+}
+
+func withNVIDIANote(reason string, note string) string {
+	if note == "" {
+		return reason
+	}
+
+	return reason + "; " + note
+}
+
+// restoreNouveau hands the cards back to Nouveau and returns a plain reason when it could not.
+// When a reboot follows it only records the choice: after a GPU hang, unloading NVIDIA can block in
+// the kernel and would stop the reboot from ever being issued.
+func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, reboot bool) string {
+	n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
+	n.state.Applications.NVIDIA.State.DriverVersion = ""
+
+	failed := false
+
+	for _, address := range cards {
+		err := os.WriteFile(n.path("/sys/bus/pci/devices/"+address+"/driver_override"), []byte("nouveau"), 0o600)
+		if err != nil {
+			failed = true
+		}
+	}
+
+	if reboot {
+		return ""
+	}
+
 	repairCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	defer cancel()
 
-	for _, address := range cards {
-		_ = os.WriteFile(n.path("/sys/bus/pci/devices/"+address+"/driver_override"), []byte("nouveau"), 0o600)
+	_, err := n.unloadModules(repairCtx)
+	if err != nil {
+		return errNVIDIANouveau.Error()
 	}
 
-	_, _ = n.unloadModules(repairCtx)
 	if !gpuModuleBlacklisted("nouveau", n.state.System.Kernel.Config.BlacklistModules) {
-		_, _ = n.command(repairCtx, "/sbin/modprobe", "nouveau")
+		_, err = n.command(repairCtx, "/sbin/modprobe", "nouveau")
+		if err != nil {
+			return errNVIDIANouveau.Error()
+		}
+
+		// Nouveau is usually loaded already, so modprobe alone does not make it take the card.
+		for _, address := range cards {
+			err := os.WriteFile(n.path("/sys/bus/pci/drivers_probe"), []byte(address), 0o600)
+			if err != nil {
+				failed = true
+			}
+		}
 	}
 
-	n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
-	n.state.Applications.NVIDIA.State.DriverVersion = ""
+	if failed {
+		return errNVIDIANouveau.Error()
+	}
+
+	return ""
 }
 
 func (n *nvidia) recoveryReason() string {

@@ -522,11 +522,16 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 		s.BadBuilds = map[string]string{}
 	}
 
-	s.BadVersions[n.attemptKey(boot.Version)] = reason
-
 	build := n.activeBuild()
 	if build.Version == "" {
 		build = api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: n.appState.Version}
+	}
+
+	// A good previous build may be a rebuilt pack of the same driver version, so quarantining the
+	// whole version would also block the rollback target. Only the failed build is quarantined then.
+	goodPrevious := s.Previous != nil && s.Previous.Version != "" && *s.Previous != build && s.BadBuilds[n.buildKey(*s.Previous)] == ""
+	if !goodPrevious {
+		s.BadVersions[n.attemptKey(boot.Version)] = reason
 	}
 
 	if build.Version != "" {
@@ -544,20 +549,20 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 		return n.rollback(ctx, boot, reason)
 	}
 
-	n.restoreNouveau(ctx, boot.Cards)
+	id, idErr := n.bootID()
+	previous := s.FallbackBootID
+	reboot := idErr == nil && boot.Attempted && len(boot.Cards) > 0 && previous != id
 
-	s.ActiveDriver, s.DriverVersion, s.Reason = "nouveau", "", reason
+	note := n.restoreNouveau(ctx, boot.Cards, reboot)
 
-	id, err := n.bootID()
-	if err != nil {
+	s.ActiveDriver, s.DriverVersion, s.Reason = "nouveau", "", withNVIDIANote(reason, note)
+
+	if idErr != nil {
 		s.Reason = "NVIDIA recovery could not identify the current boot; reboot the host"
 
 		return n.state.SaveDurable()
 	}
 
-	previous := s.FallbackBootID
-
-	reboot := boot.Attempted && len(boot.Cards) > 0 && previous != id
 	if reboot {
 		s.FallbackBootID = id
 		s.NeedsReboot = true
