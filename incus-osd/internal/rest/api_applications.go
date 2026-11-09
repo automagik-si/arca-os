@@ -355,6 +355,9 @@ func (s *Server) apiApplicationsEndpoint(w http.ResponseWriter, r *http.Request)
 		case api.ApplicationOpenFGA:
 			r.State.IsPrimary = app.IsPrimary()
 			resp = r
+		case api.ApplicationNVIDIA:
+			r.State.IsPrimary = app.IsPrimary()
+			resp = r
 		default:
 			_ = response.InternalError(fmt.Errorf("unrecognized application type %T", resp)).Render(w)
 

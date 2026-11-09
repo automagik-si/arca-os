@@ -23,59 +23,24 @@ import (
 // ApplyKernelConfiguration updates various parts of the kernel configuration. A reboot
 // may be required to fully apply the changes.
 func ApplyKernelConfiguration(ctx context.Context, config api.SystemKernelConfig) error {
-	// Update the list of blacklisted kernel modules.
-	err := updateBlacklistModules(config.BlacklistModules)
-	if err != nil {
-		return err
+	errs := []error{
+		updateBlacklistModules(config.BlacklistModules),
+		updateSysctlConfig(ctx, config.Network, config.Memory),
+		updateZFSConfig(config.ZFS),
 	}
-
-	// Update network sysctl configuration.
-	err = updateSysctlConfig(ctx, config.Network, config.Memory)
-	if err != nil {
-		return err
-	}
-
-	// Update ZFS module configuration.
-	err = updateZFSConfig(config.ZFS)
-	if err != nil {
-		return err
-	}
-
-	// Update the list of PCI(e) pass-throughs.
 	if config.PCI != nil {
-		err := updatePCIPassthroughs(ctx, config.PCI.Passthrough)
-		if err != nil {
-			return err
-		}
-
-		err = ApplySRIOV(config.PCI.SRIOV)
-		if err != nil {
-			return err
-		}
+		errs = append(errs, updatePCIPassthroughs(ctx, config.PCI.Passthrough), ApplySRIOV(config.PCI.SRIOV))
 	}
 
-	// Enable zram swap, if configured.
 	if config.Memory != nil {
-		err := EnableZramSwap(ctx, config.Memory.ZramSwapSize)
-		if err != nil {
-			return err
-		}
+		errs = append(errs, EnableZramSwap(ctx, config.Memory.ZramSwapSize))
 	}
 
-	// Apply the CPU scaling governor, if configured.
 	if config.CPU != nil {
-		err := ApplyCPUScalingGovernor(config.CPU.ScalingGovernor)
-		if err != nil {
-			return err
-		}
-
-		err = ApplyThermalProtection(!config.CPU.DisableThermalProtection)
-		if err != nil {
-			return err
-		}
+		errs = append(errs, ApplyCPUScalingGovernor(config.CPU.ScalingGovernor), ApplyThermalProtection(!config.CPU.DisableThermalProtection))
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // sriovLinkUpDrivers lists the network drivers that require the physical link to be
@@ -559,84 +524,78 @@ func updateSysctlConfig(ctx context.Context, netConfig *api.SystemKernelConfigNe
 }
 
 func updatePCIPassthroughs(ctx context.Context, config []api.SystemKernelConfigPCIPassthrough) error {
-	// Verify that Vendor and Device IDs look plausible.
+	return updatePCIPassthroughsAt(ctx, config, "", subprocess.RunCommandContext)
+}
+
+func updatePCIPassthroughsAt(ctx context.Context, config []api.SystemKernelConfigPCIPassthrough, root string, run func(context.Context, string, ...string) (string, error)) error {
+	errs := []error{}
+	pciIDs := []string{}
 	isHex := regexp.MustCompile(`^[0-9A-Fa-f]+$`)
+	isAddress := regexp.MustCompile(`^[[:xdigit:]]{4}:[[:xdigit:]]{2}:[[:xdigit:]]{2}\.[0-7]$`)
+
 	for _, c := range config {
-		if !isHex.MatchString(c.VendorID) {
-			return errors.New("Vendor ID '" + c.VendorID + "' is invalid")
+		if !isHex.MatchString(c.VendorID) || !isHex.MatchString(c.ProductID) {
+			errs = append(errs, errors.New("a PCI passthrough vendor or device ID is invalid"))
+
+			continue
 		}
 
-		if !isHex.MatchString(c.ProductID) {
-			return errors.New("Product ID '" + c.ProductID + "' is invalid")
+		if c.PCIAddress == "" {
+			pciIDs = append(pciIDs, strings.ToLower(c.VendorID+":"+c.ProductID))
+
+			continue
+		}
+
+		if !isAddress.MatchString(c.PCIAddress) {
+			errs = append(errs, errors.New("a PCI passthrough address is invalid"))
+
+			continue
+		}
+
+		address := strings.ToLower(c.PCIAddress)
+
+		err := assignPCIPassthrough(ctx, root, address, run)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("PCI passthrough for %s could not be applied: %w", address, err))
 		}
 	}
 
-	// Remove the existing configuration file, if it exists.
-	err := os.Remove("/etc/modprobe.d/99-local-device-passthrough.conf")
-	if err != nil && !os.IsNotExist(err) {
+	directory := filepath.Join(root, "/etc/modprobe.d")
+
+	err := os.MkdirAll(directory, 0o755)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+
+	err = os.WriteFile(filepath.Join(directory, "99-local-device-passthrough.conf"), []byte("options vfio-pci ids="+strings.Join(pciIDs, ",")+"\n"), 0o600)
+
+	return errors.Join(append(errs, err)...)
+}
+
+func assignPCIPassthrough(ctx context.Context, root string, address string, run func(context.Context, string, ...string) (string, error)) error {
+	path := filepath.Join(root, "/sys/bus/pci/devices", address)
+
+	err := os.WriteFile(filepath.Join(path, "driver_override"), []byte("vfio-pci"), 0o600)
+	if err != nil {
 		return err
 	}
 
-	// If no passthroughs are specified, there's nothing else to do.
-	if len(config) == 0 {
+	_, err = run(ctx, "/sbin/modprobe", "vfio-pci")
+	if err != nil {
+		return err
+	}
+
+	driver, _ := os.Readlink(filepath.Join(path, "driver"))
+	if filepath.Base(driver) == "vfio-pci" {
 		return nil
 	}
 
-	// Ensure the modprobe.d directory exists.
-	err = os.MkdirAll("/etc/modprobe.d/", 0o755)
-	if err != nil {
-		return err
-	}
-
-	// Create the new configuration file.
-	fd, err := os.Create("/etc/modprobe.d/99-local-device-passthrough.conf")
-	if err != nil {
-		return err
-	}
-	defer fd.Close()
-
-	pciIDs := []string{}
-
-	for _, c := range config {
-		if c.PCIAddress == "" {
-			pciIDs = append(pciIDs, c.VendorID+":"+c.ProductID)
-
-			continue
-		}
-
-		// An address-specific assignment must not claim other cards with the same device ID.
-		path := filepath.Join("/sys/bus/pci/devices", c.PCIAddress)
-
-		err := os.WriteFile(filepath.Join(path, "driver_override"), []byte("vfio-pci"), 0o600)
-		if err != nil {
-			return err
-		}
-
-		_, err = subprocess.RunCommandContext(ctx, "/sbin/modprobe", "vfio-pci")
-		if err != nil {
-			return err
-		}
-
-		driver, _ := os.Readlink(filepath.Join(path, "driver"))
-		if filepath.Base(driver) == "vfio-pci" {
-			continue
-		}
-
-		if driver != "" {
-			err = os.WriteFile(filepath.Join(path, "driver/unbind"), []byte(c.PCIAddress), 0o600)
-			if err != nil {
-				return err
-			}
-		}
-
-		err = os.WriteFile("/sys/bus/pci/drivers/vfio-pci/bind", []byte(c.PCIAddress), 0o600)
+	if driver != "" {
+		err = os.WriteFile(filepath.Join(path, "driver/unbind"), []byte(address), 0o600)
 		if err != nil {
 			return err
 		}
 	}
 
-	// Write the file contents.
-	_, err = fd.WriteString("options vfio-pci ids=" + strings.Join(pciIDs, ",") + "\n")
-
-	return err
+	return os.WriteFile(filepath.Join(root, "/sys/bus/pci/drivers/vfio-pci/bind"), []byte(address), 0o600)
 }

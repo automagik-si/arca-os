@@ -26,15 +26,19 @@ var priorBootRelease string
 
 // RefreshExtensions causes systemd-sysext to re-scan and reload the system extensions.
 func RefreshExtensions(ctx context.Context, s *state.State) error {
+	refreshNVIDIAExtension(ctx, s)
+
 	// Get currently installed applications.
 	apps, err := GetInstalled(ctx, s)
 	if err != nil {
 		return err
 	}
 
+	apps = slices.DeleteFunc(apps, func(app Application) bool { return app.Name() == nvidiaStable })
+
 	// If no applications are defined, there's nothing to do.
 	if len(apps) == 0 {
-		return nil
+		return refreshExtensionsWithNVIDIA(ctx, s)
 	}
 
 	// Remove any corrupt sysext images that exist on disk.
@@ -57,20 +61,6 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 		priorBootRelease = util.PriorBootRelease(ctx)
 	}
 
-	// Check kernel-specific images before replacing any currently working extension links.
-	for app, version := range appVersions {
-		if app.Name() != nvidiaStable {
-			continue
-		}
-
-		bestVersion := bestApplicationVersion(app.Name(), version, priorBootRelease, s.OS.RunningRelease)
-
-		err := systemd.ValidateNVIDIAExtension(ctx, filepath.Join(systemd.LocalExtensionsPath, bestVersion, app.Name()+".raw"))
-		if err != nil {
-			return err
-		}
-	}
-
 	// Ensure /var/lib/extensions/ exists.
 	err = os.MkdirAll(systemd.SystemExtensionsPath, 0o700)
 	if err != nil {
@@ -88,7 +78,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 		// in a situation where only an unversioned sysext image exists under
 		// /var/lib/extensions/ we don't wipe it which could potentially brick
 		// IncusOS if that image happened to be a primary application.
-		if file.Type()&fs.ModeSymlink != 0 {
+		if file.Type()&fs.ModeSymlink != 0 && file.Name() != nvidiaStable+".raw" {
 			err := os.Remove(filepath.Join(systemd.SystemExtensionsPath, file.Name()))
 			if err != nil {
 				return err
@@ -133,7 +123,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 	}
 
 	// Reload the extensions.
-	err = systemd.RefreshExtensions(ctx)
+	err = refreshExtensionsWithNVIDIA(ctx, s)
 	if err != nil {
 		return err
 	}
@@ -162,7 +152,7 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 func RemoveExtension(ctx context.Context, app Application) error {
 	// Remove symlink from /var/lib/extensions/.
 	err := os.Remove(filepath.Join(systemd.SystemExtensionsPath, app.Name()+".raw"))
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 
@@ -376,6 +366,44 @@ func removeCorruptSysextImages(ctx context.Context, appName string, currentVersi
 			// Opportunistically attempt to remove the directory. This will fail
 			// if it is non-empty, which is OK.
 			_ = os.Remove(filepath.Join(systemd.LocalExtensionsPath, entry.Name()))
+		}
+	}
+
+	return nil
+}
+
+func refreshNVIDIAExtension(ctx context.Context, s *state.State) {
+	app := &s.Applications.NVIDIA
+	if app.State.Version == "" && !app.State.Initialized {
+		return
+	}
+
+	version, versions, reason := systemd.SelectNVIDIAExtension(ctx, app.State.Version, app.Config.PinCurrentVersions)
+	app.State.AvailableVersions = versions
+
+	app.State.Reason = reason
+
+	app.State.ActiveExtensionVersion = version
+	if version == "" {
+		app.State.ActiveDriver = "nouveau"
+	}
+	// Keep all NVIDIA builds until their matching OS has booted, including a pre-downloaded update.
+	err := s.Save()
+	if err != nil {
+		slog.Warn("NVIDIA selection could not be saved; other applications will still start")
+	}
+}
+
+func refreshExtensionsWithNVIDIA(ctx context.Context, s *state.State) error {
+	err := systemd.RefreshExtensions(ctx)
+	if err != nil {
+		return err
+	}
+
+	if s.Applications.NVIDIA.State.Version != "" {
+		app, err := Load(ctx, s, nvidiaStable)
+		if err == nil {
+			_ = app.SetFriendlyVersion(ctx)
 		}
 	}
 

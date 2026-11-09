@@ -6,6 +6,7 @@ Before=incus-osd.service sysinit.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=120
 ExecStart=/usr/local/bin/incus-osd --prepare-gpu
 RemainAfterExit=yes
 

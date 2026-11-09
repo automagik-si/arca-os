@@ -300,7 +300,7 @@ func reloadApplication(ctx context.Context, s *state.State, appName string, appV
 	}
 
 	// Start/reload the application.
-	if app.IsRunning(ctx) {
+	if app.IsRunning(ctx) || (app.Name() == "nvidia" && app.IsInitialized()) {
 		slog.InfoContext(ctx, "Reloading application", "name", appName, "version", appVersion)
 
 		err := app.Update(ctx)
@@ -449,8 +449,12 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 		}
 
 		updateNeeded = update.Version() != app.Version()
+		if appName == "nvidia" {
+			_, err := os.Stat(filepath.Join(systemd.LocalExtensionsPath, app.Version(), appName+".raw"))
+			updateNeeded = updateNeeded || errors.Is(err, os.ErrNotExist)
+		}
 
-		if updateNeeded && app.Version() != "" && !update.IsNewerThan(app.Version()) {
+		if updateNeeded && app.Version() != "" && update.Version() != app.Version() && !update.IsNewerThan(app.Version()) {
 			return "", errors.New("local application " + appName + " version (" + app.Version() + ") is newer than available update (" + update.Version() + "); skipping")
 		}
 	default:

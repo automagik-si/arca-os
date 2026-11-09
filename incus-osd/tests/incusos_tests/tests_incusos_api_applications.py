@@ -473,8 +473,8 @@ def TestIncusOSAPIApplicationsNVIDIA(install_image):
         state = result["metadata"]["state"]
         if state["active_driver"] != "nouveau" or state["reason"] != "no NVIDIA GPU":
             raise IncusOSException("NVIDIA did not fall back cleanly without a GPU")
-        if not state["bad_versions"]:
-            raise IncusOSException("failed NVIDIA version was not quarantined")
+        if state.get("bad_versions"):
+            raise IncusOSException("a host without NVIDIA GPUs must not quarantine a driver")
 
         vm.RunCommand("test", "-x", "/usr/bin/nvidia-smi")
         vm.RunCommand("test", "-x", "/usr/bin/nvidia-container-cli")

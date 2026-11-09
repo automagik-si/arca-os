@@ -1239,26 +1239,34 @@ func startApplications(ctx context.Context, s *state.State) error {
 
 		// If the application has been initialized, but isn't installed, attempt to
 		// re-download it.
-		if app.IsInitialized() && !app.IsInstalled() {
-			// The Incus application is a bit special, since it can be either the
-			// monthly stable or LTS release. We don't want to try to install both,
-			// so skip incorrect name/version pairs.
-			if strings.HasPrefix(app.Name(), "incus") {
-				if app.Name() == "incus" && strings.Contains(app.FriendlyVersion(), ".0.") {
-					continue
-				}
+		if !app.IsInitialized() || app.IsInstalled() {
+			continue
+		}
 
-				if app.Name() != "incus" && !strings.Contains(app.FriendlyVersion(), ".0.") {
-					continue
-				}
+		// The Incus application is a bit special, since it can be either the
+		// monthly stable or LTS release. We don't want to try to install both,
+		// so skip incorrect name/version pairs.
+		if strings.HasPrefix(app.Name(), "incus") {
+			if app.Name() == "incus" && strings.Contains(app.FriendlyVersion(), ".0.") {
+				continue
 			}
 
-			slog.WarnContext(ctx, "Application "+app.Name()+" should be installed, but doesn't exist on disk; attempting to re-download")
-
-			err := update.CheckApplications(ctx, s, []string{app.Name()}, true, true)
-			if err != nil {
-				return err
+			if app.Name() != "incus" && !strings.Contains(app.FriendlyVersion(), ".0.") {
+				continue
 			}
+		}
+
+		slog.WarnContext(ctx, "Application "+app.Name()+" should be installed, but doesn't exist on disk; attempting to re-download")
+
+		err = update.CheckApplications(ctx, s, []string{app.Name()}, true, true)
+		if err != nil {
+			if app.Name() == "nvidia" {
+				slog.Warn("The NVIDIA driver could not be downloaded; continuing startup")
+
+				continue
+			}
+
+			return err
 		}
 	}
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
 
 const nvidiaStable = "nvidia"
@@ -25,16 +26,19 @@ const nvidiaBootFile = "/run/incus-os/nvidia-boot.json"
 type nvidia struct {
 	common
 
-	variant    string
-	sysroot    string
-	runCommand func(context.Context, string, ...string) (string, error)
+	variant      string
+	sysroot      string
+	runCommand   func(context.Context, string, ...string) (string, error)
+	verifyModule func(string) error
 }
 
 type nvidiaBoot struct {
-	Config  api.ApplicationNVIDIAConfig `json:"config"`
-	Version string                      `json:"version"`
-	Cards   []string                    `json:"cards"`
-	Reason  string                      `json:"reason"`
+	Config    api.ApplicationNVIDIAConfig `json:"config"`
+	Version   string                      `json:"version"`
+	Cards     []string                    `json:"cards"`
+	Reason    string                      `json:"reason"`
+	Failure   bool                        `json:"failure,omitempty"`
+	Attempted bool                        `json:"attempted,omitempty"`
 }
 
 func (n *nvidia) Name() string {
@@ -54,7 +58,7 @@ func (*nvidia) GetDependencies() []string {
 }
 
 func (n *nvidia) IsInstalled() bool {
-	return isInstalled(n.Name(), n.Version())
+	return n.Version() != ""
 }
 
 func (n *nvidia) IsRunning(_ context.Context) bool {
@@ -68,11 +72,19 @@ func (*nvidia) StartupWeight() int {
 func (n *nvidia) SetFriendlyVersion(_ context.Context) error {
 	version, err := os.ReadFile(n.path("/usr/share/nvidia/version"))
 	if err != nil {
-		return err
+		n.state.Applications.NVIDIA.State.Reason = systemd.NVIDIAMissingReason
+
+		return errors.New(systemd.NVIDIAMissingReason)
 	}
 
 	n.state.Applications.NVIDIA.State.DriverVersion = strings.TrimSpace(string(version))
-	n.appState.FriendlyVersion = strings.TrimSpace(string(version)) + " [" + n.Version() + "]"
+
+	active := n.state.Applications.NVIDIA.State.ActiveExtensionVersion
+	if active == "" {
+		active = n.Version()
+	}
+
+	n.appState.FriendlyVersion = strings.TrimSpace(string(version)) + " [" + active + "]"
 
 	return nil
 }
@@ -87,6 +99,8 @@ func (n *nvidia) UpdateConfig(_ context.Context, req any) error {
 		return errors.New("driver must be nvidia or off")
 	}
 
+	cards := map[string]string{}
+
 	for address, use := range app.Config.Cards {
 		if !regexp.MustCompile(`^[[:xdigit:]]{4}:[[:xdigit:]]{2}:[[:xdigit:]]{2}\.[0-7]$`).MatchString(address) {
 			return fmt.Errorf("invalid PCI address %q", address)
@@ -95,6 +109,23 @@ func (n *nvidia) UpdateConfig(_ context.Context, req any) error {
 		if use != "nvidia" && use != "vfio-pci" && use != "off" {
 			return fmt.Errorf("invalid use %q for %s", use, address)
 		}
+
+		canonical := normaliseNVIDIAAddress(address)
+
+		_, exists := cards[canonical]
+		if exists {
+			return fmt.Errorf("duplicate PCI address %q", canonical)
+		}
+
+		cards[canonical] = use
+	}
+
+	app.Config.Cards = cards
+	if app.Config.ResetBadVersions {
+		clear(n.state.Applications.NVIDIA.State.BadVersions)
+		n.state.Applications.NVIDIA.State.PendingAttempt = ""
+		n.state.Applications.NVIDIA.State.AttemptBootID = ""
+		app.Config.ResetBadVersions = false
 	}
 
 	n.state.Applications.NVIDIA.Config = app.Config
@@ -117,6 +148,12 @@ func (n *nvidia) Stop(_ context.Context) error {
 }
 
 func (n *nvidia) Update(_ context.Context) error {
+	if n.state.Applications.NVIDIA.State.ActiveExtensionVersion != n.Version() {
+		return n.state.SaveDurable()
+	}
+
+	n.clearBadVersion()
+
 	return n.requireReboot()
 }
 
@@ -149,20 +186,20 @@ func (n *nvidia) Start(ctx context.Context) error {
 		}
 	}
 
-	if boot.Reason != "" {
+	if boot.Failure {
 		return n.fallback(ctx, boot, boot.Reason)
 	}
 
-	if boot.Version == "" && n.state.Applications.NVIDIA.Config.Driver == "nvidia" {
-		n.state.Applications.NVIDIA.State.Reason = "Reboot required to apply the NVIDIA driver choice"
+	if boot.Reason != "" || len(boot.Cards) == 0 {
+		n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
+		n.state.Applications.NVIDIA.State.Reason = boot.Reason
 
-		return n.requireReboot()
+		return n.state.SaveDurable()
 	}
 
-	if boot.Version == "" {
-		n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
-
-		return n.state.Save()
+	reason := n.state.Applications.NVIDIA.State.BadVersions[n.attemptKey(boot.Version)]
+	if reason != "" {
+		return n.fallback(ctx, boot, reason)
 	}
 
 	err = n.health(ctx, boot.Cards)
@@ -170,10 +207,13 @@ func (n *nvidia) Start(ctx context.Context) error {
 		return n.fallback(ctx, boot, err.Error())
 	}
 
+	n.state.Applications.NVIDIA.State.PendingAttempt = ""
+	n.state.Applications.NVIDIA.State.AttemptBootID = ""
+
 	n.state.Applications.NVIDIA.State.ActiveDriver = "nvidia"
 	n.state.Applications.NVIDIA.State.Reason = ""
 
-	return n.state.Save()
+	return n.state.SaveDurable()
 }
 
 func (n *nvidia) path(path string) string {
@@ -191,7 +231,7 @@ func (n *nvidia) command(ctx context.Context, name string, args ...string) (stri
 func (n *nvidia) requireReboot() error {
 	n.state.System.Update.State.NeedsReboot = true
 
-	return n.state.Save()
+	return n.state.SaveDurable()
 }
 
 func (n *nvidia) health(ctx context.Context, cards []string) error {
@@ -230,39 +270,126 @@ func normaliseNVIDIAAddress(address string) string {
 	return address
 }
 
+func (n *nvidia) clearBadVersion() {
+	s := &n.state.Applications.NVIDIA.State
+	key := n.attemptKey(s.DriverVersion)
+	delete(s.BadVersions, key)
+
+	id, err := n.bootID()
+	if err == nil && s.PendingAttempt == key && s.AttemptBootID != id {
+		s.PendingAttempt = ""
+		s.AttemptBootID = ""
+	}
+}
+
+func (n *nvidia) attemptKey(version string) string {
+	return n.state.OS.RunningRelease + ":" + version
+}
+
+func (n *nvidia) bootID() (string, error) {
+	body, err := os.ReadFile(n.path("/proc/sys/kernel/random/boot_id"))
+	if err != nil || strings.TrimSpace(string(body)) == "" {
+		return "", errors.New("the current boot could not be identified")
+	}
+
+	return strings.TrimSpace(string(body)), nil
+}
+
+func (n *nvidia) saveAttempt(version string) error {
+	id, err := n.bootID()
+	if err != nil {
+		return err
+	}
+
+	s := &n.state.Applications.NVIDIA.State
+	previousAttempt, previousBoot := s.PendingAttempt, s.AttemptBootID
+	s.PendingAttempt = n.attemptKey(version)
+	s.AttemptBootID = id
+
+	err = n.state.SaveDurable()
+	if err != nil {
+		s.PendingAttempt, s.AttemptBootID = previousAttempt, previousBoot
+
+		return errors.New("NVIDIA startup could not be recorded safely")
+	}
+
+	return nil
+}
+
+func (n *nvidia) checkPreviousAttempt() string {
+	s := &n.state.Applications.NVIDIA.State
+	if s.PendingAttempt == "" {
+		return ""
+	}
+
+	id, err := n.bootID()
+	if err != nil {
+		return "the previous NVIDIA startup could not be checked"
+	}
+
+	if id == s.AttemptBootID {
+		return "NVIDIA startup is already in progress"
+	}
+
+	if s.BadVersions == nil {
+		s.BadVersions = map[string]string{}
+	}
+
+	s.BadVersions[s.PendingAttempt] = "NVIDIA did not complete its previous startup"
+	s.PendingAttempt = ""
+	s.AttemptBootID = ""
+
+	err = n.state.SaveDurable()
+	if err != nil {
+		return "NVIDIA recovery state could not be saved"
+	}
+
+	return ""
+}
+
 func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) error {
 	s := &n.state.Applications.NVIDIA.State
 	if s.BadVersions == nil {
 		s.BadVersions = map[string]string{}
 	}
 
-	if boot.Version != "" {
-		s.BadVersions[n.state.OS.RunningRelease+":"+boot.Version] = reason
-	}
-
+	s.BadVersions[n.attemptKey(boot.Version)] = reason
 	s.ActiveDriver = "nouveau"
 	s.Reason = reason
+	s.PendingAttempt = ""
+	s.AttemptBootID = ""
 
-	err := n.state.Save()
+	id, err := n.bootID()
 	if err != nil {
-		return err
+		s.Reason = "NVIDIA recovery could not identify the current boot; reboot the host"
+
+		return n.state.SaveDurable()
 	}
 
-	// A reboot releases DRM consoles safely and applies the fallback before any driver probes.
-	if len(boot.Cards) > 0 {
-		err = n.requireReboot()
-		if err != nil {
-			return err
-		}
+	previous := s.FallbackBootID
 
+	reboot := boot.Attempted && len(boot.Cards) > 0 && previous != id
+	if reboot {
+		s.FallbackBootID = id
+		n.state.System.Update.State.NeedsReboot = true
+	}
+
+	err = n.state.SaveDurable()
+	if err != nil {
+		s.FallbackBootID = previous
+		s.Reason = "NVIDIA recovery state could not be saved; reboot the host"
+
+		return errors.New(s.Reason)
+	}
+
+	if reboot {
 		_, err = n.command(ctx, "systemctl", "--no-block", "reboot")
-
-		return err
+		if err != nil {
+			s.Reason = "NVIDIA recovery needs a reboot"
+		}
 	}
 
-	_, err = n.command(ctx, "/sbin/modprobe", "nouveau")
-
-	return err
+	return nil
 }
 
 // PrepareGPUs applies per-address ownership before explicitly loading Nouveau or NVIDIA.

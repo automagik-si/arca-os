@@ -49,7 +49,7 @@ func TestNVIDIABootAndHealth(t *testing.T) {
 		{name: "missing firmware", firmwareFail: true, wantReason: "firmware is missing"},
 		{name: "mismatched module version", versionFail: true, wantReason: "does not match its userspace"},
 		{name: "only one GPU initialises", partialHealth: true, wantCards: 2, wantReason: "health check failed for 0000:02:00.0"},
-		{name: "kernel mismatch", kernel: "different-kernel", wantReason: "does not match the running kernel"},
+		{name: "kernel mismatch", kernel: "different-kernel", wantReason: "the NVIDIA driver for this Arca OS version is not installed yet"},
 		{name: "bind fails after module load", bindFail: true, wantCards: 2, wantReason: "failed to bind"},
 		{name: "health failure reverts", healthFail: true, wantCards: 2, wantReason: "health check"},
 		{name: "no GPU falls back cleanly", noGPU: true, wantReason: "no NVIDIA GPU"},
@@ -60,79 +60,9 @@ func TestNVIDIABootAndHealth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			root := t.TempDir()
-			s, err := state.LoadOrCreate(filepath.Join(root, "state.txt"))
-			require.NoError(t, err)
-
-			s.OS.RunningRelease = "test-release"
-
-			s.Applications.NVIDIA.Config.Driver = "nvidia"
-			if tt.choice != "" {
-				s.Applications.NVIDIA.Config.Driver = tt.choice
-			}
-
-			firmware, err := os.ReadFile("testdata/nvidia-firmware.txt")
-			require.NoError(t, err)
-
-			version := strings.Split(strings.Fields(string(firmware))[0], "/")[1]
-			writeGPUFixtureFile(t, root, "usr/share/nvidia/version", version)
-			writeGPUFixtureFile(t, root, "usr/share/nvidia/kernel", "test-kernel")
-			writeGPUFixtureFile(t, root, "usr/share/nvidia/supported-gpus", "1e04\n")
-
-			for name := range strings.FieldsSeq(string(firmware)) {
-				writeGPUFixtureFile(t, root, "usr/lib/firmware/"+name, "firmware")
-			}
-
-			if tt.firmwareFail {
-				require.NoError(t, os.Remove(filepath.Join(root, "usr/lib/firmware", strings.Fields(string(firmware))[0])))
-			}
-
-			if tt.badVersion {
-				s.Applications.NVIDIA.State.BadVersions = map[string]string{"test-release:" + version: "previous failure"}
-			}
-
-			for _, driver := range []string{"nvidia", "nouveau", "vfio-pci"} {
-				for _, action := range []string{"bind", "unbind"} {
-					writeGPUFixtureFile(t, root, "sys/bus/pci/drivers/"+driver+"/"+action, "untouched")
-				}
-			}
-
-			addresses := []string{"0000:01:00.0", "0000:02:00.0"}
-
-			require.NoError(t, os.MkdirAll(filepath.Join(root, "sys/bus/pci/devices"), 0o755))
-
-			if !tt.noGPU {
-				for i, address := range addresses {
-					base := "sys/bus/pci/devices/" + address
-					writeGPUFixtureFile(t, root, base+"/vendor", "0x10de")
-					writeGPUFixtureFile(t, root, base+"/device", "0x1e04")
-
-					class := "0x030000"
-					if i == 1 {
-						class = "0x030200"
-					}
-
-					writeGPUFixtureFile(t, root, base+"/class", class)
-					writeGPUFixtureFile(t, root, base+"/driver_override", "untouched")
-				}
-			}
-
-			if tt.cardUse != "" {
-				s.Applications.NVIDIA.Config.Cards = map[string]string{addresses[1]: tt.cardUse}
-			}
-
-			if tt.passthrough {
-				s.System.Kernel.Config.PCI = &api.SystemKernelConfigPCI{Passthrough: []api.SystemKernelConfigPCIPassthrough{{VendorID: "10de", ProductID: "1e04", PCIAddress: addresses[1]}}}
-			}
-
-			if tt.bound != "" {
-				require.NoError(t, os.Symlink(filepath.Join(root, "sys/bus/pci/drivers", tt.bound), filepath.Join(root, "sys/bus/pci/devices", addresses[1], "driver")))
-			}
-
-			var commands []string
-
-			n := &nvidia{common: common{state: s, appState: &s.Applications.NVIDIA.State.ApplicationState}, variant: nvidiaStable, sysroot: root}
-			n.runCommand = nvidiaTestCommand(t, root, tt, firmware, version, addresses, &commands)
+			n, commands, version := newNVIDIAFixture(t, tt)
+			root := n.sysroot
+			s := n.state
 
 			require.NoError(t, n.prepare(t.Context(), true))
 
@@ -151,10 +81,15 @@ func TestNVIDIABootAndHealth(t *testing.T) {
 
 			if tt.wantReason != "" {
 				require.Contains(t, s.Applications.NVIDIA.State.Reason, tt.wantReason)
-				require.Contains(t, s.Applications.NVIDIA.State.BadVersions, "test-release:"+version)
+
+				if tt.bindFail || tt.healthFail || tt.partialHealth || tt.badVersion {
+					require.Contains(t, s.Applications.NVIDIA.State.BadVersions, "test-release:"+version)
+				} else {
+					require.Empty(t, s.Applications.NVIDIA.State.BadVersions)
+				}
 
 				if tt.wantCards > 0 {
-					require.Contains(t, commands, "systemctl --no-block reboot")
+					require.Contains(t, *commands, "systemctl --no-block reboot")
 				}
 			} else if tt.wantCards > 0 {
 				require.Equal(t, "nvidia", s.Applications.NVIDIA.State.ActiveDriver)
@@ -173,8 +108,8 @@ func TestNVIDIABootAndHealth(t *testing.T) {
 			}
 
 			if tt.wantCards == 0 {
-				require.NotContains(t, strings.Join(commands, "\n"), "/sbin/insmod")
-				require.NotContains(t, commands, "/sbin/modprobe vfio-pci")
+				require.NotContains(t, strings.Join(*commands, "\n"), "/sbin/insmod")
+				require.NotContains(t, *commands, "/sbin/modprobe vfio-pci")
 			}
 		})
 	}
@@ -235,4 +170,85 @@ func nvidiaTestCommand(t *testing.T, root string, tt nvidiaBootTest, firmware []
 
 		return "", nil
 	}
+}
+
+func newNVIDIAFixture(t *testing.T, tt nvidiaBootTest) (*nvidia, *[]string, string) {
+	t.Helper()
+	root := t.TempDir()
+	writeGPUFixtureFile(t, root, "proc/sys/kernel/random/boot_id", "boot-one")
+	s, err := state.LoadOrCreate(filepath.Join(root, "state.txt"))
+	require.NoError(t, err)
+
+	s.OS.RunningRelease = "test-release"
+
+	s.Applications.NVIDIA.Config.Driver = "nvidia"
+	if tt.choice != "" {
+		s.Applications.NVIDIA.Config.Driver = tt.choice
+	}
+
+	firmware, err := os.ReadFile("testdata/nvidia-firmware.txt")
+	require.NoError(t, err)
+
+	version := strings.Split(strings.Fields(string(firmware))[0], "/")[1]
+	writeGPUFixtureFile(t, root, "usr/share/nvidia/version", version)
+	writeGPUFixtureFile(t, root, "usr/share/nvidia/kernel", "test-kernel")
+	writeGPUFixtureFile(t, root, "usr/share/nvidia/supported-gpus", "1e04\n")
+
+	for name := range strings.FieldsSeq(string(firmware)) {
+		writeGPUFixtureFile(t, root, "usr/lib/firmware/"+name, "firmware")
+	}
+
+	if tt.firmwareFail {
+		require.NoError(t, os.Remove(filepath.Join(root, "usr/lib/firmware", strings.Fields(string(firmware))[0])))
+	}
+
+	if tt.badVersion {
+		s.Applications.NVIDIA.State.BadVersions = map[string]string{"test-release:" + version: "previous failure"}
+	}
+
+	for _, driver := range []string{"nvidia", "nouveau", "vfio-pci"} {
+		for _, action := range []string{"bind", "unbind"} {
+			writeGPUFixtureFile(t, root, "sys/bus/pci/drivers/"+driver+"/"+action, "untouched")
+		}
+	}
+
+	addresses := []string{"0000:01:00.0", "0000:02:00.0"}
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "sys/bus/pci/devices"), 0o755))
+
+	if !tt.noGPU {
+		for i, address := range addresses {
+			base := "sys/bus/pci/devices/" + address
+			writeGPUFixtureFile(t, root, base+"/vendor", "0x10de")
+			writeGPUFixtureFile(t, root, base+"/device", "0x1e04")
+
+			class := "0x030000"
+			if i == 1 {
+				class = "0x030200"
+			}
+
+			writeGPUFixtureFile(t, root, base+"/class", class)
+			writeGPUFixtureFile(t, root, base+"/driver_override", "untouched")
+		}
+	}
+
+	if tt.cardUse != "" {
+		s.Applications.NVIDIA.Config.Cards = map[string]string{addresses[1]: tt.cardUse}
+	}
+
+	if tt.passthrough {
+		s.System.Kernel.Config.PCI = &api.SystemKernelConfigPCI{Passthrough: []api.SystemKernelConfigPCIPassthrough{{VendorID: "10de", ProductID: "1e04", PCIAddress: addresses[1]}}}
+	}
+
+	if tt.bound != "" {
+		require.NoError(t, os.Symlink(filepath.Join(root, "sys/bus/pci/drivers", tt.bound), filepath.Join(root, "sys/bus/pci/devices", addresses[1], "driver")))
+	}
+
+	var commands []string
+
+	n := &nvidia{common: common{state: s, appState: &s.Applications.NVIDIA.State.ApplicationState}, variant: nvidiaStable, sysroot: root}
+	n.verifyModule = func(string) error { return nil }
+	n.runCommand = nvidiaTestCommand(t, root, tt, firmware, version, addresses, &commands)
+
+	return n, &commands, version
 }
