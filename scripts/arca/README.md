@@ -211,6 +211,15 @@ stick). Valid check frequencies are `never` or any positive Go duration (`30m`, 
 `publish-build.sh` is the builder-side half that `publish-update.sh` runs through `in-builder.sh`; it signs and
 verifies the tree inside the builder. Keep the served tree and the persistent CA backed up together.
 
+### Automatic publishing
+
+`autopublish.sh` runs this on its own: when the publish branch moves, it builds the new commit, publishes it into the
+`testing` channel with release notes, proves it on a canary VM installed from the current `stable` release
+(`canary.sh`), and then promotes the same signed release to `stable` (`release-tree.sh`), or marks it failed with the
+reason. `autopublish.sh --dry-run` prints the plan. `scripts/arca/units/` holds a user timer that runs it every 30
+minutes, and `scripts/arca/test/autopublish.sh` tests its decisions with stubs. See
+[doc/reference/arca-publishing.md](../../doc/reference/arca-publishing.md).
+
 ## Migrating a node without reinstalling
 
 A node installed from a build whose CA no longer exists cannot verify any signed update, so it can never be updated
@@ -276,6 +285,7 @@ prove the node picks it up on its own.
 |---|---|
 | Builder, toolchain, stock build and boot | `scripts/arca/{provision-builder,dev-vm,in-builder,build,vm-test}.sh` |
 | A test-signed USB installer | `scripts/arca/tracer-installer.sh` |
+| Automatic publishing, canary and promotion | `scripts/arca/{autopublish,canary,release-tree,publish-update,publish-build}.sh`, `scripts/arca/units/`, `doc/reference/arca-publishing.md` |
 | Binder kernel from Zabbly's tree | `kernel/`, `mkosi.sandbox/etc/apt/preferences.d/arca-kernel.pref` |
 | `arca` as an IncusOS application | `incus-osd/internal/applications/app_arca*.go`, `mkosi.images/arca/`, `scripts/arca/{build-arca.sh,arca.version,arca.commit}` |
 | Name, update URL, notice, patch-stack guard | `NOTICE`, `scripts/arca/PATCHES.md`, `scripts/arca/check-patch-stack.sh` |

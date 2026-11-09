@@ -30,6 +30,7 @@ usage() {
 owned() {
 	case "$1" in
 	scripts/arca/* | kernel/* | mkosi.images/arca/* | incus-osd/internal/arca/* | NOTICE) return 0 ;;
+	doc/reference/arca-*.md) return 0 ;;
 	incus-osd/api/images/update_file_component_arca_test.go) return 0 ;;
 	incus-osd/api/system_network_arca_wifi.go | incus-osd/internal/tui/arca_overlay.go | incus-osd/internal/tui/arca_overlay_test.go) return 0 ;;
 	incus-osd/internal/tui/arca_console.go | incus-osd/internal/tui/arca_console_test.go) return 0 ;;

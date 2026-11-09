@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the OS image in the builder (as root, from the top of a checkout).
 #
-#   build.sh [--local-kernel <dir>] [--iso]
+#   build.sh [--local-kernel <dir>] [--iso] [--no-latest]
 #
 # It removes mkosi.output/arca* first, because upstream's build target cleans
 # only base*, debug* and incus*, so a stale arca sysext would otherwise ship.
@@ -15,7 +15,8 @@
 # sysext .raw, the manifests and the .iso if built) are copied to
 # /srv/artifacts/os/<version>/, with this tree's test/metadata.tar.xz for
 # vm-test.sh, the kernel's BUILDINFO as kernel.BUILDINFO with --local-kernel,
-# and /srv/artifacts/os/latest points there.
+# and /srv/artifacts/os/latest points there, unless --no-latest (unattended
+# builds leave the image vm-test.sh boots by default alone).
 # It also copies the base image's Wi-Fi firmware list (usr/share/arca-wifi/
 # firmware.txt in the base tree) there as wifi-firmware.txt and the GPU
 # firmware list (usr/share/arca-gpu/firmware.txt) as gpu-firmware.txt, and
@@ -32,14 +33,16 @@ ARTIFACTS=/srv/artifacts/os
 USR_MAX_MIB=900
 target=build
 kdir=''
+set_latest=1
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'build: %s\n' "$*" >&2; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--iso) target=build-iso; shift ;;
+	--no-latest) set_latest=0; shift ;;
 	--local-kernel)
 		[ $# -ge 2 ] || usage
 		kdir=$(readlink -f -- "$2") || die "no kernel directory $2"
@@ -161,7 +164,9 @@ if [ -n "$kdir" ]; then
 fi
 rm -rf "$dest"
 mv "$dest.tmp" "$dest"
-ln -sfn "$version" "$ARTIFACTS/latest"
+if [ "$set_latest" -eq 1 ]; then
+	ln -sfn "$version" "$ARTIFACTS/latest"
+fi
 
 end=$(date +%s)
 echo "build-seconds: $((end - start))"
