@@ -35,6 +35,7 @@ var (
 	errNVIDIAHealth       = errors.New("NVIDIA health check failed")
 	errNVIDIARestore      = errors.New("the previous NVIDIA driver could not be reloaded; restart to restore it")
 	errNVIDIAOtherDriver  = errors.New("the card is using another driver; restart to switch it to NVIDIA")
+	errNVIDIANouveau      = errors.New("the Nouveau fallback driver could not take over the GPU; restart to finish")
 )
 
 func (n *nvidia) requestedBranch() string {
@@ -194,7 +195,7 @@ func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABu
 		return n.deferSwitch("NVIDIA modules are still in use; the driver switch will run at the next boot")
 	}
 
-	other, err := n.usingAnotherDriver()
+	other, err := n.usingAnotherDriver(ctx, target)
 	if err != nil {
 		return n.deferSwitch("GPU use could not be inspected; restart to apply the NVIDIA driver")
 	}
@@ -310,7 +311,8 @@ func (n *nvidia) restorePreviousBuild(ctx context.Context, previous api.Applicat
 	return n.checkBuild(repairCtx)
 }
 
-func (n *nvidia) usingAnotherDriver() (bool, error) {
+// usingAnotherDriver reports whether a card the target build supports is held by another driver.
+func (n *nvidia) usingAnotherDriver(ctx context.Context, target api.ApplicationNVIDIABuild) (bool, error) {
 	if n.state.Applications.NVIDIA.Config.Driver != "nvidia" {
 		return false, nil
 	}
@@ -320,6 +322,8 @@ func (n *nvidia) usingAnotherDriver() (bool, error) {
 		return false, err
 	}
 
+	others := []nvidiaCard{}
+
 	for _, card := range cards {
 		use := n.state.Applications.NVIDIA.Config.Cards[card.address]
 		if n.passthrough(card) || use == "off" || use == "vfio-pci" {
@@ -327,6 +331,24 @@ func (n *nvidia) usingAnotherDriver() (bool, error) {
 		}
 
 		if card.driver != "." && card.driver != "nvidia" {
+			others = append(others, card)
+		}
+	}
+
+	if len(others) == 0 {
+		return false, nil
+	}
+
+	// Older cards stay on Nouveau for good, so only the cards this build drives can need a restart.
+	image := n.path(filepath.Join(systemd.LocalExtensionsPath, target.Version, target.Branch+".raw"))
+
+	supported, err := n.command(ctx, "systemd-dissect", "--copy-from", image, "/usr/share/nvidia/supported-gpus")
+	if err != nil {
+		return false, err
+	}
+
+	for _, card := range others {
+		if slices.Contains(strings.Fields(supported), card.id) {
 			return true, nil
 		}
 	}
@@ -492,7 +514,7 @@ func (n *nvidia) activateBuild(ctx context.Context, build api.ApplicationNVIDIAB
 				}
 
 				if restoreErr != nil {
-					state.PendingAttempt, state.AttemptBootID, state.PendingHealth, state.HealthBootID = "", "", "", ""
+					clearNVIDIAAttempts(state)
 					state.NeedsReboot, state.Reason = true, errNVIDIARestore.Error()
 					n.state.System.Update.State.NeedsReboot = true
 					restoreErr = errors.Join(errNVIDIARestore, restoreErr, n.state.SaveDurable())
@@ -733,6 +755,7 @@ func (n *nvidia) checkBuild(ctx context.Context) error {
 	}
 
 	s.PendingHealth, s.HealthBootID = "", ""
+	forgetNVIDIAAttemptBuild(s)
 
 	n.clearBadVersion()
 
@@ -741,10 +764,10 @@ func (n *nvidia) checkBuild(ctx context.Context) error {
 	return nil
 }
 
+// rollback runs only during boot recovery. It selects the previous build for the next boot instead of
+// restoring it live: after a GPU hang, unloading NVIDIA can block in the kernel and stop the reboot.
+// Live restores, which unload the modules, stay limited to runtime switches.
 func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) error {
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
 	s := &n.state.Applications.NVIDIA.State
 	if s.BadBuilds == nil {
 		s.BadBuilds = map[string]string{}
@@ -757,51 +780,97 @@ func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) e
 		return err
 	}
 
-	if n.busy() {
-		n.restoreNouveau(ctx, boot.Cards)
+	s.Recovery = &api.ApplicationNVIDIARecovery{Build: *s.Previous, Reason: "the NVIDIA driver " + nvidiaBuildLabel(n.activeBuild()) + " failed at startup; Arca went back to " + nvidiaBuildLabel(*s.Previous)}
+	s.RequestedBranch, s.Version = s.Previous.Branch, s.Previous.Version
 
-		return n.deferRollback(ctx, reason, true)
-	}
-
-	err = n.activateBuild(ctx, *s.Previous)
-	if err == nil {
-		err = n.checkBuild(ctx)
-	}
-
-	if err != nil {
-		n.restoreNouveau(ctx, boot.Cards)
-
-		return n.deferRollback(ctx, reason, true)
-	}
-
-	s.NeedsReboot, s.Reason = false, reason+"; restored the previous driver from disk"
-
-	return n.state.SaveDurable()
+	return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, true)), true)
 }
 
-func (n *nvidia) restoreNouveau(ctx context.Context, cards []string) {
+func nvidiaBuildLabel(build api.ApplicationNVIDIABuild) string {
+	return build.Branch + " " + build.Version
+}
+
+func withNVIDIANote(reason string, note string) string {
+	if note == "" {
+		return reason
+	}
+
+	return reason + "; " + note
+}
+
+// restoreNouveau hands the cards back to Nouveau and returns a plain reason when it could not.
+// With keepModules it only records the choice, for a reboot that follows: after a GPU hang,
+// unloading NVIDIA can block in the kernel and would stop the reboot from ever being issued.
+func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, keepModules bool) string {
+	n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
+	n.state.Applications.NVIDIA.State.DriverVersion = ""
+
+	failed := false
+
+	for _, address := range cards {
+		err := os.WriteFile(n.path("/sys/bus/pci/devices/"+address+"/driver_override"), []byte("nouveau"), 0o600)
+		if err != nil {
+			failed = true
+		}
+	}
+
+	if keepModules {
+		return ""
+	}
+
 	repairCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	defer cancel()
 
-	for _, address := range cards {
-		_ = os.WriteFile(n.path("/sys/bus/pci/devices/"+address+"/driver_override"), []byte("nouveau"), 0o600)
+	_, err := n.unloadModules(repairCtx)
+	if err != nil {
+		return n.nouveauFailed()
 	}
 
-	_, _ = n.unloadModules(repairCtx)
 	if !gpuModuleBlacklisted("nouveau", n.state.System.Kernel.Config.BlacklistModules) {
-		_, _ = n.command(repairCtx, "/sbin/modprobe", "nouveau")
+		_, err = n.command(repairCtx, "/sbin/modprobe", "nouveau")
+		if err != nil {
+			return n.nouveauFailed()
+		}
+
+		// Nouveau is usually loaded already, so modprobe alone does not make it take the card.
+		for _, address := range cards {
+			err := os.WriteFile(n.path("/sys/bus/pci/drivers_probe"), []byte(address), 0o600)
+			if err != nil {
+				failed = true
+			}
+		}
 	}
 
-	n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
-	n.state.Applications.NVIDIA.State.DriverVersion = ""
+	if failed {
+		return n.nouveauFailed()
+	}
+
+	return ""
+}
+
+// nouveauFailed asks for the restart that the "restart to finish" reason promises.
+func (n *nvidia) nouveauFailed() string {
+	n.state.Applications.NVIDIA.State.NeedsReboot = true
+	n.state.System.Update.State.NeedsReboot = true
+
+	return errNVIDIANouveau.Error()
 }
 
 func (n *nvidia) recoveryReason() string {
 	s := &n.state.Applications.NVIDIA.State
 	requested := api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version}
 
+	// A boot-time return to the previous build stays explained while that build is requested and running.
+	if s.Recovery != nil && s.Recovery.Build != requested {
+		s.Recovery = nil
+	}
+
+	if s.Recovery != nil && n.activeBuild() == s.Recovery.Build && s.ActiveDriver == "nvidia" {
+		return s.Recovery.Reason
+	}
+
 	reason := s.BadBuilds[n.buildKey(requested)]
-	if reason != "" && s.Previous != nil && n.activeBuild() == *s.Previous && s.ActiveExtensionVersion != "" {
+	if reason != "" && s.Previous != nil && n.activeBuild() == *s.Previous && s.ActiveExtensionVersion != "" && s.ActiveDriver == "nvidia" {
 		return reason + "; restored the previous driver from disk"
 	}
 
@@ -833,7 +902,8 @@ func (n *nvidia) deferRollback(ctx context.Context, reason string, boot bool) (r
 
 		s := &n.state.Applications.NVIDIA.State
 
-		s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+		clearNVIDIAAttempts(s)
+
 		if s.Previous != nil {
 			s.RequestedBranch, s.Version = s.Previous.Branch, s.Previous.Version
 

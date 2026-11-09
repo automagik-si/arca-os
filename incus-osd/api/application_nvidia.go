@@ -16,6 +16,12 @@ type ApplicationNVIDIABuild struct {
 	Version string `json:"version" yaml:"version"`
 }
 
+// ApplicationNVIDIARecovery explains a boot-time return to a previous build.
+type ApplicationNVIDIARecovery struct {
+	Build  ApplicationNVIDIABuild `json:"build"  yaml:"build"`
+	Reason string                 `json:"reason" yaml:"reason"`
+}
+
 // ApplicationNVIDIAState records health failures for each OS release and driver version.
 type ApplicationNVIDIAState struct {
 	ApplicationState `yaml:",inline"`
@@ -25,6 +31,10 @@ type ApplicationNVIDIAState struct {
 	FallbackBootID string `json:"fallback_boot_id,omitempty" yaml:"fallback_boot_id,omitempty"`
 	PendingHealth  string `json:"pending_health,omitempty"   yaml:"pending_health,omitempty"`
 	HealthBootID   string `json:"health_boot_id,omitempty"   yaml:"health_boot_id,omitempty"`
+
+	// AttemptBuild is the build the pending startup or health markers refer to.
+	AttemptBuild *ApplicationNVIDIABuild    `json:"attempt_build,omitempty" yaml:"attempt_build,omitempty"`
+	Recovery     *ApplicationNVIDIARecovery `json:"recovery,omitempty"      yaml:"recovery,omitempty"`
 
 	RequestedBranch string                  `json:"requested_branch,omitempty" yaml:"requested_branch,omitempty"`
 	ActiveBranch    string                  `json:"active_branch,omitempty"    yaml:"active_branch,omitempty"`

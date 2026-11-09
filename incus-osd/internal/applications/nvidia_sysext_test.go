@@ -111,7 +111,7 @@ func TestNVIDIABindingCompleteBeforeHealthStarts(t *testing.T) {
 	require.Empty(t, n.state.Applications.NVIDIA.State.PendingAttempt)
 	require.Empty(t, n.state.Applications.NVIDIA.State.PendingHealth)
 	writeGPUFixtureFile(t, n.sysroot, "proc/sys/kernel/random/boot_id", "boot-two")
-	require.Empty(t, n.checkPreviousAttempt())
+	require.Empty(t, n.checkPreviousAttempt(t.Context()))
 	require.Empty(t, n.state.Applications.NVIDIA.State.BadVersions)
 	require.Empty(t, n.state.Applications.NVIDIA.State.PendingHealth)
 }
@@ -136,7 +136,7 @@ func TestNVIDIAInterruptedHealthIsQuarantined(t *testing.T) {
 	require.Empty(t, persisted.Applications.NVIDIA.State.PendingAttempt)
 	require.Equal(t, "test-release:"+version, persisted.Applications.NVIDIA.State.PendingHealth)
 	writeGPUFixtureFile(t, n.sysroot, "proc/sys/kernel/random/boot_id", "boot-two")
-	require.Empty(t, n.checkPreviousAttempt())
+	require.Empty(t, n.checkPreviousAttempt(t.Context()))
 	require.Contains(t, n.state.Applications.NVIDIA.State.BadVersions["test-release:"+version], "previous health check")
 }
 

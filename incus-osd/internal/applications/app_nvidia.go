@@ -144,10 +144,8 @@ func (n *nvidia) UpdateConfig(_ context.Context, req any) error {
 	if app.Config.ResetBadVersions {
 		clear(n.state.Applications.NVIDIA.State.BadVersions)
 		clear(n.state.Applications.NVIDIA.State.BadBuilds)
-		n.state.Applications.NVIDIA.State.PendingAttempt = ""
-		n.state.Applications.NVIDIA.State.AttemptBootID = ""
-		n.state.Applications.NVIDIA.State.PendingHealth = ""
-		n.state.Applications.NVIDIA.State.HealthBootID = ""
+		clearNVIDIAAttempts(&n.state.Applications.NVIDIA.State)
+		n.state.Applications.NVIDIA.State.Recovery = nil
 		app.Config.ResetBadVersions = false
 	}
 
@@ -284,10 +282,7 @@ func (n *nvidia) Start(ctx context.Context) error {
 		return n.fallback(ctx, boot, err.Error())
 	}
 
-	n.state.Applications.NVIDIA.State.PendingAttempt = ""
-	n.state.Applications.NVIDIA.State.AttemptBootID = ""
-	n.state.Applications.NVIDIA.State.PendingHealth = ""
-	n.state.Applications.NVIDIA.State.HealthBootID = ""
+	clearNVIDIAAttempts(&n.state.Applications.NVIDIA.State)
 
 	n.state.Applications.NVIDIA.State.ActiveDriver = "nvidia"
 	n.state.Applications.NVIDIA.State.Reason = n.recoveryReason()
@@ -396,6 +391,30 @@ func (n *nvidia) clearBadDriverVersion(version string) {
 		s.PendingHealth = ""
 		s.HealthBootID = ""
 	}
+
+	forgetNVIDIAAttemptBuild(s)
+}
+
+// clearNVIDIAAttempts forgets the startup and health markers and the build they refer to.
+func clearNVIDIAAttempts(s *api.ApplicationNVIDIAState) {
+	s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+	s.AttemptBuild = nil
+}
+
+func forgetNVIDIAAttemptBuild(s *api.ApplicationNVIDIAState) {
+	if s.PendingAttempt == "" && s.PendingHealth == "" {
+		s.AttemptBuild = nil
+	}
+}
+
+// attemptedBuild is the linked build a startup or health marker is about to cover.
+func (n *nvidia) attemptedBuild() *api.ApplicationNVIDIABuild {
+	build := n.activeBuild()
+	if build.Version == "" {
+		return nil
+	}
+
+	return &build
 }
 
 func (n *nvidia) attemptKey(version string) string {
@@ -418,13 +437,14 @@ func (n *nvidia) saveAttempt(version string) error {
 	}
 
 	s := &n.state.Applications.NVIDIA.State
-	previousAttempt, previousBoot := s.PendingAttempt, s.AttemptBootID
+	previousAttempt, previousBoot, previousBuild := s.PendingAttempt, s.AttemptBootID, s.AttemptBuild
 	s.PendingAttempt = n.attemptKey(version)
 	s.AttemptBootID = id
+	s.AttemptBuild = n.attemptedBuild()
 
 	err = n.state.SaveDurable()
 	if err != nil {
-		s.PendingAttempt, s.AttemptBootID = previousAttempt, previousBoot
+		s.PendingAttempt, s.AttemptBootID, s.AttemptBuild = previousAttempt, previousBoot, previousBuild
 
 		return errors.New("NVIDIA startup could not be recorded safely")
 	}
@@ -435,6 +455,7 @@ func (n *nvidia) saveAttempt(version string) error {
 func (n *nvidia) markBound() error {
 	s := &n.state.Applications.NVIDIA.State
 	s.PendingAttempt, s.AttemptBootID = "", ""
+	forgetNVIDIAAttemptBuild(s)
 
 	return n.state.SaveDurable()
 }
@@ -446,12 +467,12 @@ func (n *nvidia) saveHealthAttempt(version string) error {
 	}
 
 	s := &n.state.Applications.NVIDIA.State
-	previousHealth, previousBoot := s.PendingHealth, s.HealthBootID
-	s.PendingHealth, s.HealthBootID = n.attemptKey(version), id
+	previousHealth, previousBoot, previousBuild := s.PendingHealth, s.HealthBootID, s.AttemptBuild
+	s.PendingHealth, s.HealthBootID, s.AttemptBuild = n.attemptKey(version), id, n.attemptedBuild()
 
 	err = n.state.SaveDurable()
 	if err != nil {
-		s.PendingHealth, s.HealthBootID = previousHealth, previousBoot
+		s.PendingHealth, s.HealthBootID, s.AttemptBuild = previousHealth, previousBoot, previousBuild
 
 		return errors.New("NVIDIA health check could not be recorded safely")
 	}
@@ -459,7 +480,7 @@ func (n *nvidia) saveHealthAttempt(version string) error {
 	return nil
 }
 
-func (n *nvidia) checkPreviousAttempt() string {
+func (n *nvidia) checkPreviousAttempt(ctx context.Context) string {
 	s := &n.state.Applications.NVIDIA.State
 	if s.PendingAttempt == "" && s.PendingHealth == "" {
 		return ""
@@ -486,19 +507,27 @@ func (n *nvidia) checkPreviousAttempt() string {
 		s.BadVersions = map[string]string{}
 	}
 
-	s.BadVersions[key] = reason
-	if s.Previous != nil {
-		if s.BadBuilds == nil {
-			s.BadBuilds = map[string]string{}
-		}
-
-		s.BadBuilds[n.buildKey(api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version})] = reason
+	if s.BadBuilds == nil {
+		s.BadBuilds = map[string]string{}
 	}
 
-	s.PendingAttempt = ""
-	s.AttemptBootID = ""
-	s.PendingHealth = ""
-	s.HealthBootID = ""
+	// The interrupted attempt may have been the previous build that the boot guard picked because
+	// the requested one was quarantined, so the marker names the build that was actually attempted.
+	attempted := s.AttemptBuild
+	if attempted == nil || attempted.Version == "" {
+		// Markers written before the attempted build was recorded keep their earlier meaning.
+		s.BadVersions[key] = reason
+		if s.Previous != nil {
+			s.BadBuilds[n.buildKey(api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version})] = reason
+		}
+	} else {
+		s.BadBuilds[n.buildKey(*attempted)] = reason
+		if !n.otherBuildShipsVersion(ctx, *attempted, strings.TrimPrefix(key, n.state.OS.RunningRelease+":")) {
+			s.BadVersions[key] = reason
+		}
+	}
+
+	clearNVIDIAAttempts(s)
 
 	err = n.state.SaveDurable()
 	if err != nil {
@@ -506,6 +535,40 @@ func (n *nvidia) checkPreviousAttempt() string {
 	}
 
 	return ""
+}
+
+// otherBuildShipsVersion reports whether another known, unquarantined build carries the failed
+// build's driver version. That build may be a rebuilt pack and the rollback target, so only the
+// failed build is quarantined then; otherwise the driver version is quarantined too.
+func (n *nvidia) otherBuildShipsVersion(ctx context.Context, failed api.ApplicationNVIDIABuild, version string) bool {
+	if version == "" {
+		return false
+	}
+
+	s := &n.state.Applications.NVIDIA.State
+
+	candidates := []api.ApplicationNVIDIABuild{{Branch: n.requestedBranch(), Version: s.Version}}
+	if s.Previous != nil {
+		candidates = append(candidates, *s.Previous)
+	}
+
+	for _, build := range candidates {
+		if build.Version == "" || build == failed || s.BadBuilds[n.buildKey(build)] != "" {
+			continue
+		}
+
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		image := n.path(filepath.Join(systemd.LocalExtensionsPath, build.Version, build.Branch+".raw"))
+		driver, err := n.command(readCtx, "systemd-dissect", "--copy-from", image, "/usr/share/nvidia/version")
+
+		cancel()
+
+		if err == nil && strings.TrimSpace(driver) == version {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) error {
@@ -522,18 +585,20 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 		s.BadBuilds = map[string]string{}
 	}
 
-	s.BadVersions[n.attemptKey(boot.Version)] = reason
-
 	build := n.activeBuild()
 	if build.Version == "" {
 		build = api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: n.appState.Version}
+	}
+
+	if build.Version == "" || !n.otherBuildShipsVersion(ctx, build, boot.Version) {
+		s.BadVersions[n.attemptKey(boot.Version)] = reason
 	}
 
 	if build.Version != "" {
 		s.BadBuilds[n.buildKey(build)] = reason
 	}
 
-	s.PendingAttempt, s.AttemptBootID, s.PendingHealth, s.HealthBootID = "", "", "", ""
+	clearNVIDIAAttempts(s)
 
 	err := n.state.SaveDurable()
 	if err != nil {
@@ -544,20 +609,20 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 		return n.rollback(ctx, boot, reason)
 	}
 
-	n.restoreNouveau(ctx, boot.Cards)
+	id, idErr := n.bootID()
+	previous := s.FallbackBootID
+	reboot := idErr == nil && boot.Attempted && len(boot.Cards) > 0 && previous != id
 
-	s.ActiveDriver, s.DriverVersion, s.Reason = "nouveau", "", reason
+	note := n.restoreNouveau(ctx, boot.Cards, reboot)
 
-	id, err := n.bootID()
-	if err != nil {
+	s.ActiveDriver, s.DriverVersion, s.Reason = "nouveau", "", withNVIDIANote(reason, note)
+
+	if idErr != nil {
 		s.Reason = "NVIDIA recovery could not identify the current boot; reboot the host"
 
 		return n.state.SaveDurable()
 	}
 
-	previous := s.FallbackBootID
-
-	reboot := boot.Attempted && len(boot.Cards) > 0 && previous != id
 	if reboot {
 		s.FallbackBootID = id
 		s.NeedsReboot = true
