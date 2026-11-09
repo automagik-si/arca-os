@@ -103,6 +103,7 @@ fails=0
 created=0
 work=''
 alias=canary-$vm
+fp=''
 
 result() { # <PASS|FAIL> <check> [detail]
 	results+=("$1 $2${3:+ $3}")
@@ -130,6 +131,7 @@ cleanup() {
 		incus delete "${P[@]}" --force "$vm" </dev/null >/dev/null 2>&1 || true
 	fi
 	incus image delete "${P[@]}" "$alias" </dev/null >/dev/null 2>&1 || true
+	if [ -n "$fp" ]; then incus image delete "${P[@]}" "$fp" </dev/null >/dev/null 2>&1 || true; fi
 	if [ -n "$work" ]; then rm -rf "$work"; fi
 	if [ -n "$builder" ] && [ -n "${bout:-}" ]; then
 		if [ "$(instance_state "$builder")" = RUNNING ]; then
@@ -187,14 +189,24 @@ avail=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo)
 [ "$avail" -ge "$MIN_MEM_GIB" ] || finish inconclusive "MemAvailable is $avail GiB, below $MIN_MEM_GIB GiB"
 
 incus image delete "${P[@]}" "$alias" </dev/null >/dev/null 2>&1 || true
-incus image import -q "${P[@]}" "$work/metadata.tar.xz" "$work/os.qcow2" --alias "$alias" </dev/null \
-	|| finish inconclusive "could not import the $base disk"
+# A split image's fingerprint is the sha256 of its metadata and disk; with it, an
+# import whose client timed out while the server finished is found and used, and
+# never left behind.
+fp=$(cat "$work/metadata.tar.xz" "$work/os.qcow2" | sha256sum | cut -d' ' -f1)
+image_there() { incus image info "${P[@]}" "$fp" </dev/null >/dev/null 2>&1; }
+if ! incus image import -q "${P[@]}" "$work/metadata.tar.xz" "$work/os.qcow2" --alias "$alias" </dev/null; then
+	log "the import of the $base disk did not answer; waiting for the server to finish it"
+	t0=$(date +%s)
+	until image_there || [ $(($(date +%s) - t0)) -ge 600 ]; do sleep 10; done
+	image_there || finish inconclusive "could not import the $base disk"
+	incus image alias create "${P[@]}" "$alias" "$fp" </dev/null >/dev/null 2>&1 || true
+fi
 rm -f "$work/os.qcow2"
 created=1
-incus create -q --vm "${P[@]}" "$alias" "$vm" -c security.secureboot=false -c limits.cpu="$VM_CPUS" \
+incus create -q --vm "${P[@]}" "$fp" "$vm" -c security.secureboot=false -c limits.cpu="$VM_CPUS" \
 	-c limits.memory="$VM_MEMORY" -d "root,size=$VM_ROOT,limits.read=$DISK_READ,limits.write=$DISK_WRITE" </dev/null \
 	|| finish inconclusive "could not create $vm"
-incus image delete "${P[@]}" "$alias" </dev/null
+incus image delete "${P[@]}" "$fp" </dev/null
 incus config device add -q "${P[@]}" "$vm" vtpm tpm </dev/null
 incus config set "${P[@]}" "$vm" systemd.credential.fully-enable-incus-agent=true </dev/null
 log "starting $vm on $base (cpu $VM_CPUS, root read $DISK_READ / write $DISK_WRITE)"
