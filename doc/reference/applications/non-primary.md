@@ -13,6 +13,7 @@ You can install any of the non-primary applications on an IncusOS system by runn
 
 Debug </reference/applications/debug>
 GPU Support </reference/applications/gpu-support>
+NVIDIA </reference/applications/nvidia>
 Incus-Ceph </reference/applications/incus-ceph>
 Incus-Linstor </reference/applications/incus-linstor>
 OpenFGA </reference/applications/openfga>

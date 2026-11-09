@@ -1,7 +1,7 @@
 [Unit]
 Description=IncusOS - management daemon
 Documentation=https://github.com/lxc/incus-os/
-After=systemd-udevd.service
+After=systemd-udevd.service nvidia-prepare.service
 Before=network-pre.target
 Wants=network-pre.target
 Requires=boot.mount

@@ -43,7 +43,7 @@ func ApplyKernelConfiguration(ctx context.Context, config api.SystemKernelConfig
 
 	// Update the list of PCI(e) pass-throughs.
 	if config.PCI != nil {
-		err := updatePCIPassthroughs(config.PCI.Passthrough)
+		err := updatePCIPassthroughs(ctx, config.PCI.Passthrough)
 		if err != nil {
 			return err
 		}
@@ -558,7 +558,7 @@ func updateSysctlConfig(ctx context.Context, netConfig *api.SystemKernelConfigNe
 	return systemd.RestartUnit(ctx, "systemd-sysctl.service")
 }
 
-func updatePCIPassthroughs(config []api.SystemKernelConfigPCIPassthrough) error {
+func updatePCIPassthroughs(ctx context.Context, config []api.SystemKernelConfigPCIPassthrough) error {
 	// Verify that Vendor and Device IDs look plausible.
 	isHex := regexp.MustCompile(`^[0-9A-Fa-f]+$`)
 	for _, c := range config {
@@ -596,34 +596,42 @@ func updatePCIPassthroughs(config []api.SystemKernelConfigPCIPassthrough) error 
 	defer fd.Close()
 
 	pciIDs := []string{}
+
 	for _, c := range config {
-		pciIDs = append(pciIDs, c.VendorID+":"+c.ProductID)
+		if c.PCIAddress == "" {
+			pciIDs = append(pciIDs, c.VendorID+":"+c.ProductID)
 
-		// If a specific PCI address is provided, attempt to opportunistically unbind/bind that specific device.
-		if c.PCIAddress != "" {
-			// Unbind.
-			oldFd, err := os.Open("/sys/bus/pci/devices/" + c.PCIAddress + "/driver/unbind")
-			if err != nil {
-				continue
-			}
-			defer oldFd.Close() //nolint:revive
+			continue
+		}
 
-			_, err = oldFd.WriteString(c.PCIAddress + "\n")
-			if err != nil {
-				continue
-			}
+		// An address-specific assignment must not claim other cards with the same device ID.
+		path := filepath.Join("/sys/bus/pci/devices", c.PCIAddress)
 
-			// Attempt to bind all VendorID:ProductID devices to vfio-pci.
-			newFd, err := os.Open("/sys/bus/pci/drivers/vfio-pci/new_id")
-			if err != nil {
-				continue
-			}
-			defer newFd.Close() //nolint:revive
+		err := os.WriteFile(filepath.Join(path, "driver_override"), []byte("vfio-pci"), 0o600)
+		if err != nil {
+			return err
+		}
 
-			_, err = newFd.WriteString(c.VendorID + " " + c.ProductID + "\n")
+		_, err = subprocess.RunCommandContext(ctx, "/sbin/modprobe", "vfio-pci")
+		if err != nil {
+			return err
+		}
+
+		driver, _ := os.Readlink(filepath.Join(path, "driver"))
+		if filepath.Base(driver) == "vfio-pci" {
+			continue
+		}
+
+		if driver != "" {
+			err = os.WriteFile(filepath.Join(path, "driver/unbind"), []byte(c.PCIAddress), 0o600)
 			if err != nil {
-				continue
+				return err
 			}
+		}
+
+		err = os.WriteFile("/sys/bus/pci/drivers/vfio-pci/bind", []byte(c.PCIAddress), 0o600)
+		if err != nil {
+			return err
 		}
 	}
 

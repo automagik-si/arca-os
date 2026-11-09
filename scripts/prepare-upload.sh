@@ -17,6 +17,7 @@ cp incus-osd/flasher-tool upload/
 
 cp mkosi.output/debug.raw upload/
 cp mkosi.output/gpu-support.raw upload/
+cp mkosi.output/nvidia.raw upload/
 cp mkosi.output/incus.raw upload/
 cp mkosi.output/incus-lts-7.0.raw upload/
 cp mkosi.output/incus-ceph.raw upload/

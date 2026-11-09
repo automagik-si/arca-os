@@ -55,6 +55,7 @@ type State struct {
 	Applications struct {
 		Debug            api.Application        `json:"debug"`
 		GPUSupport       api.Application        `json:"gpu_support"`
+		NVIDIA           api.ApplicationNVIDIA  `json:"nvidia"`
 		Incus            api.ApplicationIncus   `json:"incus"`
 		IncusCeph        api.Application        `json:"incus_ceph"`
 		IncusLinstor     api.Application        `json:"incus_linstor"`

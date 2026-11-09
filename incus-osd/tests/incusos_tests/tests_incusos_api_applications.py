@@ -452,3 +452,37 @@ def TestIncusOSAPIApplicationsIncusUpgrade(install_image):
 
         if result["metadata"][0] != "/1.0/applications/incus":
             raise IncusOSException("expected the incus application to be installed")
+
+def TestIncusOSAPIApplicationsNVIDIA(install_image):
+    test_seed = {
+        "install.json": "{}",
+        "applications.json": '{"applications":[{"name":"incus"},{"name":"nvidia"}]}',
+    }
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
+
+    with IncusTestVM(os_name, "incusos-api-applications-nvidia", test_image, client_cert_name) as vm:
+        vm.WaitSystemReady(os_version)
+        vm.StopVM()
+        vm.StartVM()
+        vm.WaitAgentRunning()
+        vm.WaitExpectedLog("incus-osd", "System is ready version=" + os_version)
+
+        result = vm.APIRequest("/1.0/applications/nvidia")
+        if result["status_code"] != 200:
+            raise IncusOSException("NVIDIA application was not installed")
+        state = result["metadata"]["state"]
+        if state["active_driver"] != "nouveau" or state["reason"] != "no NVIDIA GPU":
+            raise IncusOSException("NVIDIA did not fall back cleanly without a GPU")
+        if not state["bad_versions"]:
+            raise IncusOSException("failed NVIDIA version was not quarantined")
+
+        vm.RunCommand("test", "-x", "/usr/bin/nvidia-smi")
+        vm.RunCommand("test", "-x", "/usr/bin/nvidia-container-cli")
+        vm.RunCommand("sh", "-c", "grep -q '\\[integrity\\]' /sys/kernel/security/lockdown")
+        vm.RunCommand("sh", "-c", 'test "$(modinfo -F version /usr/lib/modules/$(uname -r)/nvidia/nvidia.ko)" = "$(cat /usr/share/nvidia/version)"')
+
+        result = vm.APIRequest("/1.0/applications/nvidia", method="DELETE")
+        if result["status_code"] != 200:
+            raise IncusOSException("NVIDIA application could not be removed")
+        if vm.RunCommand("test", "-e", "/usr/bin/nvidia-smi", check=False).returncode == 0:
+            raise IncusOSException("NVIDIA extension is still merged after removal")

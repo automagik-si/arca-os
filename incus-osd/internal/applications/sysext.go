@@ -57,6 +57,20 @@ func RefreshExtensions(ctx context.Context, s *state.State) error {
 		priorBootRelease = util.PriorBootRelease(ctx)
 	}
 
+	// Check kernel-specific images before replacing any currently working extension links.
+	for app, version := range appVersions {
+		if app.Name() != nvidiaStable {
+			continue
+		}
+
+		bestVersion := bestApplicationVersion(app.Name(), version, priorBootRelease, s.OS.RunningRelease)
+
+		err := systemd.ValidateNVIDIAExtension(ctx, filepath.Join(systemd.LocalExtensionsPath, bestVersion, app.Name()+".raw"))
+		if err != nil {
+			return err
+		}
+	}
+
 	// Ensure /var/lib/extensions/ exists.
 	err = os.MkdirAll(systemd.SystemExtensionsPath, 0o700)
 	if err != nil {

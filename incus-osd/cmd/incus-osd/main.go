@@ -55,6 +55,16 @@ var jobScheduler scheduling.Scheduler
 func main() {
 	ctx := context.Background()
 
+	if len(os.Args) == 2 && os.Args[1] == "--check-gpu-extension" {
+		err := systemd.ValidateNVIDIAExtensions(ctx)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+
+		return
+	}
+
 	// Get the OS name and version from /lib/os-release.
 	osName, osRelease, err := systemd.GetCurrentRelease(ctx)
 	if err != nil {
@@ -89,6 +99,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Record the OS name and version in the state.
+	s.OS.Name = osName
+	s.OS.RunningRelease = osRelease
+
+	if len(os.Args) == 2 && os.Args[1] == "--prepare-gpu" {
+		err := applications.PrepareGPUs(ctx, s)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+
+		return
+	}
+
 	jobScheduler, err = scheduling.NewScheduler()
 	if err != nil {
 		tui.EarlyError("unable to create scheduler: "+err.Error(), osName)
@@ -103,10 +127,6 @@ func main() {
 		tui.EarlyError("unable to configure console baud rates: "+err.Error(), osName)
 		os.Exit(1)
 	}
-
-	// Record the OS name and version in the state.
-	s.OS.Name = osName
-	s.OS.RunningRelease = osRelease
 
 	// Configure incus-agent.
 	err = configureIncusAgent(ctx, s)

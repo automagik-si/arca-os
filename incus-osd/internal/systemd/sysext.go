@@ -92,7 +92,12 @@ func VerifyExtension(ctx context.Context, extensionFile string) error {
 
 // RefreshExtensions refreshes the installed sysext images.
 func RefreshExtensions(ctx context.Context) error {
-	_, err := subprocess.RunCommandContext(ctx, "systemd-sysext", "refresh")
+	err := ValidateNVIDIAExtensions(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, err = subprocess.RunCommandContext(ctx, "systemd-sysext", "refresh")
 	if err != nil {
 		// Check if we encountered a corrupt sysext image.
 		corruptSysextRegex := regexp.MustCompile(`Failed to read metadata for image (.+): Package not installed`)
