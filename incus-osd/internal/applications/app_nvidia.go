@@ -486,13 +486,17 @@ func (n *nvidia) checkPreviousAttempt() string {
 		s.BadVersions = map[string]string{}
 	}
 
-	s.BadVersions[key] = reason
+	build := api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version}
+	if !n.goodPrevious(build) {
+		s.BadVersions[key] = reason
+	}
+
 	if s.Previous != nil {
 		if s.BadBuilds == nil {
 			s.BadBuilds = map[string]string{}
 		}
 
-		s.BadBuilds[n.buildKey(api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: s.Version})] = reason
+		s.BadBuilds[n.buildKey(build)] = reason
 	}
 
 	s.PendingAttempt = ""
@@ -506,6 +510,15 @@ func (n *nvidia) checkPreviousAttempt() string {
 	}
 
 	return ""
+}
+
+// goodPrevious reports whether a different, unquarantined previous build can replace the failed one.
+// That build may be a rebuilt pack of the same driver version, so quarantining the whole version
+// would also block the rollback target; only the failed build is quarantined then.
+func (n *nvidia) goodPrevious(failed api.ApplicationNVIDIABuild) bool {
+	s := &n.state.Applications.NVIDIA.State
+
+	return s.Previous != nil && s.Previous.Version != "" && *s.Previous != failed && s.BadBuilds[n.buildKey(*s.Previous)] == ""
 }
 
 func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) error {
@@ -527,10 +540,7 @@ func (n *nvidia) fallback(ctx context.Context, boot nvidiaBoot, reason string) e
 		build = api.ApplicationNVIDIABuild{Branch: n.requestedBranch(), Version: n.appState.Version}
 	}
 
-	// A good previous build may be a rebuilt pack of the same driver version, so quarantining the
-	// whole version would also block the rollback target. Only the failed build is quarantined then.
-	goodPrevious := s.Previous != nil && s.Previous.Version != "" && *s.Previous != build && s.BadBuilds[n.buildKey(*s.Previous)] == ""
-	if !goodPrevious {
+	if !n.goodPrevious(build) {
 		s.BadVersions[n.attemptKey(boot.Version)] = reason
 	}
 

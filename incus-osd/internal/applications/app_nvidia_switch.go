@@ -763,10 +763,10 @@ func (n *nvidia) checkBuild(ctx context.Context) error {
 	return nil
 }
 
+// rollback runs only during boot recovery. It selects the previous build for the next boot instead of
+// restoring it live: after a GPU hang, unloading NVIDIA can block in the kernel and stop the reboot.
+// Live restores, which unload the modules, stay limited to runtime switches.
 func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) error {
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
 	s := &n.state.Applications.NVIDIA.State
 	if s.BadBuilds == nil {
 		s.BadBuilds = map[string]string{}
@@ -779,33 +779,9 @@ func (n *nvidia) rollback(ctx context.Context, boot nvidiaBoot, reason string) e
 		return err
 	}
 
-	if n.busy() {
-		return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, n.bootRebootDue())), true)
-	}
+	s.RequestedBranch, s.Version = s.Previous.Branch, s.Previous.Version
 
-	err = n.activateBuild(ctx, *s.Previous)
-	if err == nil {
-		err = n.checkBuild(ctx)
-	}
-
-	if err != nil {
-		return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, n.bootRebootDue())), true)
-	}
-
-	s.NeedsReboot, s.Reason = false, reason+"; restored the previous driver from disk"
-
-	return n.state.SaveDurable()
-}
-
-// bootRebootDue reports whether deferRollback will issue the bounded boot fallback reboot.
-func (n *nvidia) bootRebootDue() bool {
-	if n.state.OS.SystemIsReady || !n.bootRecovery {
-		return false
-	}
-
-	id, err := n.bootID()
-
-	return err == nil && n.state.Applications.NVIDIA.State.FallbackBootID != id
+	return n.deferRollback(ctx, withNVIDIANote(reason, n.restoreNouveau(ctx, boot.Cards, true)), true)
 }
 
 func withNVIDIANote(reason string, note string) string {
@@ -817,9 +793,9 @@ func withNVIDIANote(reason string, note string) string {
 }
 
 // restoreNouveau hands the cards back to Nouveau and returns a plain reason when it could not.
-// When a reboot follows it only records the choice: after a GPU hang, unloading NVIDIA can block in
-// the kernel and would stop the reboot from ever being issued.
-func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, reboot bool) string {
+// With keepModules it only records the choice, for a reboot that follows: after a GPU hang,
+// unloading NVIDIA can block in the kernel and would stop the reboot from ever being issued.
+func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, keepModules bool) string {
 	n.state.Applications.NVIDIA.State.ActiveDriver = "nouveau"
 	n.state.Applications.NVIDIA.State.DriverVersion = ""
 
@@ -832,7 +808,7 @@ func (n *nvidia) restoreNouveau(ctx context.Context, cards []string, reboot bool
 		}
 	}
 
-	if reboot {
+	if keepModules {
 		return ""
 	}
 
