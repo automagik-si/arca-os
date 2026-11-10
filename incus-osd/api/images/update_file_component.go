@@ -45,6 +45,8 @@ var UpdateFileComponents = map[UpdateFileComponent]struct{}{
 	UpdateFileComponentIncusCeph:        {},
 	UpdateFileComponentIncusLinstor:     {},
 	UpdateFileComponentMigrationManager: {},
+	UpdateFileComponentNVIDIA:           {},
+	UpdateFileComponentNVIDIALTS:        {},
 	UpdateFileComponentOpenFGA:          {},
 	UpdateFileComponentOperationsCenter: {},
 }
