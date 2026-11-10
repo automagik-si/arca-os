@@ -145,10 +145,8 @@ for t in update-efi update-usr update-usr-verity update-usr-verity-signature; do
 		|| die "the published update is missing a file of type $t"
 done
 # Every --apps application must be in the update, or no node ever gets it.
-for a in "${apps[@]}"; do
-	jq -e --arg v "$version" --arg f "$a.raw.gz" '.updates[] | select(.version==$v) | any(.files[]; .type=="application" and (.filename | split("/") | last) == $f)' "$idx" >/dev/null \
-		|| die "the published update is missing the application $a (image-publisher did not publish $a.raw.gz)"
-done
+missing=$(scripts/arca/published-apps.sh "$idx" "$version" "${apps[@]}") \
+	|| die "the published update is missing applications image-publisher did not publish: $(printf '%s' "$missing" | sed 's/^missing //' | paste -sd' ' -)"
 
 nfiles=$(jq -r --arg v "$version" '.updates[] | select(.version==$v) | .files | length' "$idx")
 log "published $version: $nfiles files in channel $channel at $out"
