@@ -179,6 +179,7 @@ func pauseForOwner(ctx context.Context, s *state.State, save func(*state.State) 
 	h := &s.UpdateHealth
 	h.NeedsOwner = reason
 	h.Bake = nil
+	h.NVIDIAWasActive = false
 	h.LastResult = "Needs you: " + reason
 	s.System.Update.Config.AutoUpdatesOff = true
 

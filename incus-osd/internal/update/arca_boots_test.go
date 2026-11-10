@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	incusapi "github.com/lxc/incus/v7/shared/api"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lxc/incus-os/incus-osd/api"
+	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
 
 func TestCrashRebootsDuringBakeRollBack(t *testing.T) {
@@ -204,9 +206,35 @@ func TestRollbackKeepsApplicationVersions(t *testing.T) {
 	require.Equal(t, 1, m.reboots)
 	require.Equal(t, map[string]string{"incus": "202611020000"}, a.s.UpdateHealth.KeptApplications)
 
-	// A newer OS version installed later lets the applications follow it again.
-	armBake(a.s, "202611030000", "boot-3")
+	// Once the version it went back to passes its check, the applications follow updates again.
+	a.s.UpdateHealth.NVIDIAWasActive = true
+	m.fails = nil
+	require.Empty(t, bootNew(a, m, "202611010000", "boot-3"))
+
+	for i := 4; i <= 20; i++ {
+		m.clock = at(14, i)
+
+		a.tick(ctx)
+	}
+
+	require.Equal(t, "Rolled back to 202611010000; it is healthy", a.s.UpdateHealth.LastResult)
 	require.Nil(t, a.s.UpdateHealth.KeptApplications)
+	require.False(t, a.s.UpdateHealth.NVIDIAWasActive)
+}
+
+func TestCleanStopIsSavedAtOnce(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.txt")
+	s, err := state.LoadOrCreate(path)
+	require.NoError(t, err)
+
+	RecordCleanStop(context.Background(), s)
+
+	saved, err := state.LoadOrCreate(path)
+	require.NoError(t, err)
+	require.NotEmpty(t, saved.UpdateHealth.CleanStopBootID)
+	require.Equal(t, s.UpdateHealth.CleanStopBootID, saved.UpdateHealth.CleanStopBootID)
 }
 
 func TestRestartRecordsNVIDIA(t *testing.T) {

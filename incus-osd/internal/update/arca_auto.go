@@ -204,6 +204,7 @@ func (a *auto) reconcileBoot(ctx context.Context) string {
 		a.failed(b.Version, reason)
 
 		h.Bake = nil
+		h.NVIDIAWasActive = false
 		h.PendingVersion = ""
 		h.LastResult = "Rolled back to " + running
 		h.LastReason = reason
@@ -393,7 +394,6 @@ func (a *auto) bakePassed(ctx context.Context) {
 	case h.UnplannedBoot:
 		// Marked good, but its boot entry is blessed only by a boot that followed a clean stop.
 		h.PreviousVersion = b.Previous
-		h.KeptApplications = nil
 		h.LastResult = "Version " + b.Version + " passed its health check and is marked good; its boot entry is blessed after a clean restart"
 		h.LastReason = ""
 
@@ -405,7 +405,6 @@ func (a *auto) bakePassed(ctx context.Context) {
 		}
 
 		h.PreviousVersion = b.Previous
-		h.KeptApplications = nil
 		h.LastResult = "Version " + b.Version + " passed its health check and is marked good"
 		h.LastReason = ""
 
@@ -414,7 +413,8 @@ func (a *auto) bakePassed(ctx context.Context) {
 
 	h.GoodVersion = b.Version
 	h.Bake = nil
-	h.Instances, h.Addresses = nil, nil
+	h.KeptApplications = nil
+	h.Instances, h.Addresses, h.NVIDIAWasActive = nil, nil, false
 
 	err := a.m.save()
 	if err != nil {

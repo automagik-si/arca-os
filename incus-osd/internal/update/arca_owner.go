@@ -220,8 +220,24 @@ func RecordCleanStop(ctx context.Context, s *state.State) {
 	}
 
 	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	// Saved at once: a stop that outlasts its timeout is killed before the final save.
 	s.UpdateHealth.CleanStopBootID = id
-	s.UnlockUpdateHealth()
+
+	err = s.SaveDurable()
+	if err != nil {
+		slog.WarnContext(ctx, "Clean stop could not be saved", "error", err)
+	}
+}
+
+// LoadFailedBootVersions hands the recorded failed OS versions to the next-boot choice, before
+// anything (the REST API among them) can choose a next boot.
+func LoadFailedBootVersions(s *state.State) {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	util.SetFailedBootVersions(FailedVersions(s))
 }
 
 // CheckNow asks the daemon for an update check, without waiting for it.

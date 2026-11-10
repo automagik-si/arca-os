@@ -7,7 +7,8 @@
 # given a 12-digit version, and is published, in order, into one private tree. The tree after each
 # publish is copied to <snapshot-dir>/t1, t2, ... The VM image (<snapshot-dir>/vm) is made from the
 # first one, with a seed that installs incus, arca and debug and points the images provider at the
-# host's proof server (PROOF_ADDR:PROOF_PORT, default 10.10.10.1:18095). version-<name>.txt and
+# host's proof server, PROOF_ADDR:PROOF_PORT (required; e.g. PROOF_ADDR=192.0.2.1 PROOF_PORT=8095,
+# the host's address on the VMs' bridge). version-<name>.txt and
 # the logs go to <evidence-dir>. Takes the builder lock unless ARCA_BUILDER_LOCK_HELD=1; restores
 # the artifacts' latest link, removes the tree and stops the builder at the end.
 set -uo pipefail
@@ -23,7 +24,7 @@ P=(--project "${ARCA_PROJECT:-arcaos-dev}")
 B=arcaos-builder
 TREE=/srv/artifacts/proof-updates
 IB=("$WT/scripts/arca/in-builder.sh")
-SERVER=http://${PROOF_ADDR:-10.10.10.1}:${PROOF_PORT:-18095}
+SERVER=http://${PROOF_ADDR:?set PROOF_ADDR to the host address the VM reaches}:${PROOF_PORT:?set PROOF_PORT}
 
 mkdir -p "$EV" "$SNAP"
 log() { printf '%s updates-build: %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$EV/updates-build.log" >&2; }

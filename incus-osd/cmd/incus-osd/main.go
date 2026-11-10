@@ -104,6 +104,7 @@ func main() {
 	// Record the OS name and version in the state.
 	s.OS.Name = osName
 	s.OS.RunningRelease = osRelease
+	update.LoadFailedBootVersions(s)
 
 	if len(os.Args) == 2 && os.Args[1] == "--prepare-gpu" {
 		err := applications.PrepareGPUs(ctx, s)

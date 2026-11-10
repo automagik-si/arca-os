@@ -8,9 +8,10 @@
 # keeps Y from applying; On, Y restarts in the window, bakes and is marked good; Z rolls back by
 # itself with one reboot and is never applied again; an API reboot then stays on Y; C rolls back
 # after two unplanned boots, with no loop. "crash" needs Y C and runs only that last case, from Y.
-# The VM has cpu 2 and the builder's disk caps, and is deleted at the end with its image. Prints
-# PASS/FAIL lines to <evidence-dir>/vm-proof.results; exits 1 when any case fails. Takes the
-# builder lock unless ARCA_BUILDER_LOCK_HELD=1.
+# The update server listens on PROOF_ADDR:PROOF_PORT (required, the values updates-build.sh got;
+# e.g. 192.0.2.1 and 8095). The VM has cpu 2 and the builder's disk caps, and is deleted at the
+# end with its image. Prints PASS/FAIL lines to <evidence-dir>/vm-proof.results; exits 1 when any
+# case fails. Takes the builder lock unless ARCA_BUILDER_LOCK_HELD=1.
 set -uo pipefail
 
 [ $# -ge 2 ] || {
@@ -20,8 +21,8 @@ set -uo pipefail
 EV=$1 SNAP=$2 MODE=${3:-all}
 VM=arcaos-updates-proof
 P=(--project "${ARCA_PROJECT:-arcaos-dev}")
-ADDR=${PROOF_ADDR:-10.10.10.1}
-PORT=${PROOF_PORT:-18095}
+ADDR=${PROOF_ADDR:?set PROOF_ADDR to the host address the VM reaches}
+PORT=${PROOF_PORT:?set PROOF_PORT}
 SERVE=$SNAP/serve
 OSD=/run/incus-os/unix.socket
 Y=$(cat "$EV/version-Y.txt") C=$(cat "$EV/version-C.txt")
