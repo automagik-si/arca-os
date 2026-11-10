@@ -53,6 +53,8 @@ printf 'k1\0' >"${*: -1}"
 EOF
 cat >"$t/bin/systemd-dissect" <<'EOF'
 #!/usr/bin/env bash
+[ "$SYSTEMD_DISSECT_VERITY_SIGNATURE" = 0 ] || sleep 30
+[ "$(cat "$2")" != hangs ] || sleep 30
 [ "$(cat "$2")" != unreadable ] || exit 1
 cat "$2"
 EOF
@@ -69,6 +71,8 @@ echo k0 >"$b/nvidia-lts.raw"
 check nvidia-packs "a matching and a mismatched pack" runs 0 $'nvidia ok k1\nnvidia-lts kernel k0 k1\ngpu-support ok' "$np" "$b"
 echo unreadable >"$b/nvidia-lts.raw"
 check nvidia-packs "an unreadable pack is an error, not missing" runs 0 $'nvidia ok k1\nnvidia-lts error its kernel stamp cannot be read\ngpu-support ok' "$np" "$b"
+echo hangs >"$b/nvidia-lts.raw"
+check nvidia-packs "a read that hangs times out as an error" runs 0 $'nvidia ok k1\nnvidia-lts error its kernel stamp cannot be read\ngpu-support ok' env NVIDIA_PACKS_TIMEOUT=2 "$np" "$b"
 : >"$b/nvidia-lts.raw"
 check nvidia-packs "an empty stamp never matches" runs 0 $'nvidia ok k1\nnvidia-lts kernel none k1\ngpu-support ok' "$np" "$b"
 touch "$t/uki-broken"

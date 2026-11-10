@@ -9,7 +9,8 @@
 #   <app> ok <kernel>              <app>.raw is built for the build's kernel
 #   <app> missing                  the build made no <app>.raw
 #   <app> kernel <pack> <build>    <app>.raw is built for another kernel
-#   <app> error <reason>           <app>.raw could not be read
+#   <app> error <reason>           <app>.raw could not be read, or not within
+#                                  $NVIDIA_PACKS_TIMEOUT seconds (120)
 # and then "gpu-support ok" or "gpu-support missing".
 #
 # Exit codes: 0 when it printed every line; 1 when the build's kernel cannot be
@@ -35,7 +36,8 @@ for a in nvidia nvidia-lts; do
 		echo "$a missing"
 		continue
 	fi
-	if ! pack=$(systemd-dissect --copy-from "$raw" /usr/share/nvidia/kernel 2>/dev/null); then
+	# The builder's kernel lacks the pack signing key, and a signed verity setup then hangs; the node checks the signature.
+	if ! pack=$(SYSTEMD_DISSECT_VERITY_SIGNATURE=0 timeout "${NVIDIA_PACKS_TIMEOUT:-120}" systemd-dissect --copy-from "$raw" /usr/share/nvidia/kernel 2>/dev/null); then
 		echo "$a error its kernel stamp cannot be read"
 		continue
 	fi
