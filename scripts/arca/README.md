@@ -285,6 +285,7 @@ prove the node picks it up on its own.
 |---|---|
 | Builder, toolchain, stock build and boot | `scripts/arca/{provision-builder,dev-vm,in-builder,build,vm-test}.sh` |
 | A test-signed USB installer | `scripts/arca/tracer-installer.sh` |
+| Automatic updates and rollback on the node | `incus-osd/internal/update/arca_*.go`, `doc/reference/system/arca-updates.md`, `scripts/arca/test/updates-{build,vm}.sh` (VM proof) |
 | Automatic publishing, canary and promotion | `scripts/arca/{autopublish,canary,release-tree,publish-update,publish-build}.sh`, `scripts/arca/units/`, `doc/reference/arca-publishing.md` |
 | Binder kernel from Zabbly's tree | `kernel/`, `mkosi.sandbox/etc/apt/preferences.d/arca-kernel.pref` |
 | `arca` as an IncusOS application | `incus-osd/internal/applications/app_arca*.go`, `mkosi.images/arca/`, `scripts/arca/{build-arca.sh,arca.version,arca.commit}` |
