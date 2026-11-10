@@ -115,9 +115,13 @@ which other work on the build host takes around each builder use, and the defaul
 `CANARY_TRIES`, `CANARY_BAKE_JQ` and `STATE_DIR`. Flags on the command
 line win over the file.
 
-Without `APPS`, a release carries the `incus` and `arca` applications and the NVIDIA drivers (`nvidia`, `nvidia-lts`)
-when the build made them, so a node with an NVIDIA driver installed updates it from the same server. The canary has no
-GPU and installs only `incus` and `arca`. With `APPS`, a release carries exactly the applications it names.
+Without `APPS`, a release carries the `incus` and `arca` applications and each NVIDIA driver (`nvidia`,
+`nvidia-lts`) that the build made for its own kernel, so a node updates the driver branch it runs from the same server.
+`scripts/arca/nvidia-packs.sh` decides in the builder: it compares each pack's `/usr/share/nvidia/kernel` with the
+kernel of the build's UKI. A pack built for another kernel, or one that cannot be checked, is left out, and the run log
+and `notes.json` say why. With a driver, the release also carries `gpu-support`, the firmware for the Nouveau fallback
+that the drivers depend on. The canary has no GPU and installs only `incus` and `arca`. With `APPS`, a release carries
+exactly the applications it names, unchecked.
 
 `autopublish.sh --dry-run` prints what a run would do, including the release notes and what retention would remove,
 and changes nothing.
