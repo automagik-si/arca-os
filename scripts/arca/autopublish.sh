@@ -53,8 +53,10 @@
 # PROJECT, BUILDER, CANARY_VM, NODES, APPS, KEEP_STABLE, BUILD_ARGS,
 # BUILD_TRIES, MIN_BUILDER_FREE_GIB, MIN_POOL_FREE_GIB, CANARY_TIMEOUT,
 # CANARY_TRIES, CANARY_BAKE_JQ, STATE_DIR. Flags win. Without APPS a release
-# carries incus,arca and the NVIDIA drivers (nvidia, nvidia-lts) the build made;
-# the canary installs only incus,arca, as it has no GPU. A node in NODES whose
+# carries incus,arca and each NVIDIA driver (nvidia, nvidia-lts) the build made
+# for its own kernel (nvidia-packs.sh), plus gpu-support with them; notes.json
+# says why a driver is left out. The canary installs only incus,arca, as it has
+# no GPU. A node in NODES whose
 # update channel is empty takes the newest release in any channel, testing
 # included; the run warns about it.
 #
@@ -89,6 +91,7 @@ builder_lock=${ARCA_BUILDER_LOCK:-$cache/arcaos-builder.lock}
 inbuilder_lock=${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock
 cargo_lock=$cache/arca-cargo.lock
 NVIDIA_APPS='nvidia nvidia-lts'
+declare -A nvidia_why=()
 
 log() { printf 'autopublish: %s\n' "$*" >&2; }
 die() { printf 'autopublish: %s\n' "$*" >&2; exit 1; }
@@ -276,13 +279,13 @@ retention() {
 	echo "prune $(all_versions | grep -vxF "$keep" | paste -sd' ' - || true)"
 }
 
-# notes_json <version> <apps>: the release notes for the target commit.
+# notes_json <version> <apps>: the release notes for the target commit; an
+# NVIDIA driver not in <apps> is listed as not included, with nvidia_why[<app>].
 notes_json() {
-	local range subjects a missing='' nv=''
+	local range subjects a nv=()
 	for a in $NVIDIA_APPS; do
-		case ",$2," in *",$a,"*) ;; *) missing+=${missing:+, }$a ;; esac
+		case ",$2," in *",$a,"*) ;; *) nv+=("The NVIDIA driver $a is not included in this release${nvidia_why[$a]:+: ${nvidia_why[$a]}}.") ;; esac
 	done
-	[ -z "$missing" ] || nv="NVIDIA drivers ($missing) are not included in this release."
 	if [ -n "$last_commit" ] && git -C "$git_dir" merge-base --is-ancestor "$last_commit" "$target" 2>/dev/null; then
 		range=("$last_commit..$target")
 	else
@@ -290,9 +293,10 @@ notes_json() {
 	fi
 	subjects=$(git -C "$git_dir" log --first-parent --format=%s "${range[@]}" 2>/dev/null | head -50 || true)
 	jq -n --arg v "$1" --arg c "$target" --arg p "$last_commit" --arg b "$branch" \
-		--arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$subjects" --arg nv "$nv" \
+		--arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$subjects" --arg nv "$(printf '%s\n' "${nv[@]}")" \
 		'{version: $v, commit: $c, previous_commit: $p, branch: $b, built_at: $t,
-		  changes: ($s | split("\n") | map(select(length > 0)))} + if $nv == "" then {} else {not_included: [$nv]} end'
+		  changes: ($s | split("\n") | map(select(length > 0)))}
+		 + ($nv | split("\n") | map(select(length > 0)) | if length > 0 then {not_included: .} else {} end)'
 }
 
 # ---- The plan ---------------------------------------------------------------
@@ -342,11 +346,12 @@ if [ "$dry_run" -eq 1 ]; then
 		say "check the builder caps (limits.cpu=4, root limits.read=150MB, limits.write=80MB)"
 		say "check free space: builder >= ${min_builder_free_gib} GiB, its pool >= ${min_pool_free_gib} GiB"
 		say "build: in-builder.sh --project $project --vm $builder $checkout -- scripts/arca/build.sh --no-latest $build_args"
-		extra=''
-		[ "$apps_given" -eq 1 ] || extra=" (plus ${NVIDIA_APPS// /, } if the build made them)"
-		say "publish: publish-update.sh --version <new> --channel testing --apps $apps$extra --serve-dir $serve_dir --builder-tree $builder_tree"
+		dry_apps=$apps
+		[ "$apps_given" -eq 1 ] || dry_apps+=,nvidia,nvidia-lts,gpu-support
+		say "publish: publish-update.sh --version <new> --channel testing --apps $dry_apps --serve-dir $serve_dir --builder-tree $builder_tree"
+		[ "$apps_given" -eq 1 ] || say "  (each NVIDIA driver only if the build made it for its own kernel, and gpu-support only with one; nvidia-packs.sh decides)"
 		say "notes: release-tree.sh notes --version <new> (signed notes.json), with:"
-		notes_json '<new>' "$apps" | sed 's/^/       /'
+		notes_json '<new>' "$dry_apps" | sed 's/^/       /'
 		;;
 	resume) say "no build: $last_auto is already published in testing" ;;
 	record) say "no build, no canary: apply the saved verdict to $last_auto: $(saved_field "$last_auto" state)${last_auto:+ }$(ever_failed "$last_auto" && echo '(it failed before, so failed)')" ;;
@@ -401,6 +406,8 @@ caps="$(incus config get --project "$project" "$builder" limits.cpu </dev/null) 
 
 in_builder() { used_builder=1; "$IN_BUILDER" --project "$project" --vm "$builder" "$@" >>"$run_log" 2>&1; }
 bexec() { incus exec --project "$project" "$builder" -- "$@" </dev/null; }
+# builder_out <cmd...>: runs a tools-checkout command in the builder and prints its output.
+builder_out() { used_builder=1; "$IN_BUILDER" --project "$project" --vm "$builder" "$tools_wt" -- "$@" 2>>"$run_log"; }
 tree_op() { in_builder "$tools_wt" -- scripts/arca/release-tree.sh --tree "$builder_tree" "$@"; }
 builder_up() { [ "$(instance_state "$builder")" = RUNNING ] || in_builder "$tools_wt" -- true; }
 # mirror: the builder's tree onto the served one, pruned versions included.
@@ -498,12 +505,33 @@ elif [ "$plan" = publish ]; then
 	[ -n "$version" ] || abandon "the build printed no version"
 	# Marked at once, so retention can remove it even if this run stops here.
 	bexec sh -c "printf '{}\n' >/srv/artifacts/os/$version/autopublish.json" || abandon "the build $version is not in /srv/artifacts/os"
-	# Unless APPS names the applications, the NVIDIA drivers the build made are published too.
+	# Unless APPS names the applications, each NVIDIA driver built for this
+	# build's kernel is published too, with gpu-support, its Nouveau fallback.
 	pub_apps=$apps
 	if [ "$apps_given" -eq 0 ]; then
+		if ! packs=$(builder_out scripts/arca/nvidia-packs.sh "/srv/artifacts/os/$version"); then
+			packs=''
+			log "warning: the NVIDIA driver packs of $version could not be checked; publishing without them"
+		fi
 		for a in $NVIDIA_APPS; do
-			if bexec test -f "/srv/artifacts/os/$version/$a.raw"; then pub_apps+=,$a; fi
+			read -r what one two < <(sed -n "s/^$a //p" <<<"$packs" | head -1) || what=''
+			case "$what" in
+			ok) pub_apps+=,$a ;;
+			missing) nvidia_why[$a]="this build did not make it" ;;
+			kernel) nvidia_why[$a]="it was built for kernel $one, not this release's $two" ;;
+			error) nvidia_why[$a]="its pack could not be read in the builder" ;;
+			*) nvidia_why[$a]="its pack could not be checked in the builder" ;;
+			esac
+			case "$what" in ok | missing) ;; *) log "warning: not publishing $a: ${nvidia_why[$a]}" ;; esac
 		done
+		case ",$pub_apps," in
+		*,nvidia,* | *,nvidia-lts,*)
+			if grep -qx 'gpu-support ok' <<<"$packs"; then
+				case ",$pub_apps," in *,gpu-support,*) ;; *) pub_apps+=,gpu-support ;; esac
+			else
+				log "warning: $version has NVIDIA drivers but no gpu-support; nodes keep the gpu-support they have"
+			fi ;;
+		esac
 	fi
 	log "built $version; publishing it into testing with $pub_apps"
 	"$PUBLISH_UPDATE" --version "$version" --serve-dir "$serve_dir" --channel testing --apps "$pub_apps" \
