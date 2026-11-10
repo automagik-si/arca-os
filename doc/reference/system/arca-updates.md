@@ -24,7 +24,7 @@ When the checks pass at the end of the bake time, the version is marked good and
 * incus-osd must reach "ready" within ten minutes of starting; each ten minutes it doesn't is a failed check;
 * after five restarts without passing, or when incus-osd keeps failing to start in one boot, the version fails too.
 
-The new entry keeps systemd-boot's boot counter until it is blessed, but IncusOS doesn't rely on it: with UKI profiles, systemd-boot may not count boots at all.
+The new entry keeps systemd-boot's boot counter until it is blessed, and systemd-boot counts it down on each boot, but IncusOS doesn't rely on that count: it counts the boots of the version itself.
 
 If three checks fail, or no check passes within the bake time, the version is marked failed, its boot entry is marked bad and IncusOS restarts into the previous version. That restart happens at most once per boot. The disks must unlock in the previous version: without Secure Boot they are first bound to its UKI, and when it is signed by another Secure Boot key, the TPM is enrolled for that key. When that can't be done, IncusOS doesn't restart; it asks the owner. A fall back done by systemd-boot alone still asks for the recovery passphrase on a system without Secure Boot.
 
