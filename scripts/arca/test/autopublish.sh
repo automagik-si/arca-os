@@ -7,7 +7,8 @@
 # that dies without a verdict or a failure the tree could not record is never
 # promoted later, a failed build or publish is removed and backed off, low
 # space refuses a build, builds never move the latest link, a busy builder
-# skips the run, and a dry run calls nothing.
+# skips the run, a dry run calls nothing, and the NVIDIA drivers the build
+# made are published unless APPS is set.
 #
 #   scripts/arca/test/autopublish.sh
 #
@@ -101,6 +102,7 @@ scripts/arca/build.sh)
 	v=$(cat "$T/next-version")
 	[ ! -e "$T/build-broken" ] || exit 1
 	mkdir -p "$B/srv/artifacts/os/$v"
+	[ ! -e "$T/build-nvidia" ] || touch "$B/srv/artifacts/os/$v/nvidia.raw" "$B/srv/artifacts/os/$v/nvidia-lts.raw"
 	echo "version: $v" ;;
 scripts/arca/release-tree.sh)
 	tree=$B$3 cmd=$4
@@ -136,7 +138,7 @@ set -euo pipefail
 declare -A o=()
 while [ $# -gt 0 ]; do o[$1]=$2; shift 2; done
 v=${o[--version]} tree=$T/builder${o[--builder-tree]}
-echo "publish-update $v ${o[--channel]}" >>"$T/calls"
+echo "publish-update $v ${o[--channel]} ${o[--apps]}" >>"$T/calls"
 mkdir -p "$tree/$v"
 jq -n --arg v "$v" --arg c "${o[--channel]}" '{format: "1.0", version: $v, channels: [$c], severity: "none", files: []}' >"$tree/$v/update.json"
 reindex "$tree"
@@ -218,7 +220,8 @@ check failed-canary "the builder is stopped" [ "$(cat "$t/builder.state")" = STO
 check failed-canary "notes.json lists the merge subject" jqe '.changes | index("merge: a change that breaks arca")' "$t/serve/202611100001/notes.json"
 check failed-canary "the build never moves the latest link" called "build.sh --no-latest"
 check failed-canary "the verdict is saved before the tree changes" [ "$(jq -r .state "$t/state/arca-os/autopublish/verdicts/202611100001.json")" = failed ]
-check failed-canary "notes.json says NVIDIA is not included" jqe '.not_included[0] | test("NVIDIA")' "$t/serve/202611100001/notes.json"
+check failed-canary "published without NVIDIA when the build made none" called "publish-update 202611100001 testing incus,arca$"
+check failed-canary "notes.json says NVIDIA is not included" jqe '.not_included[0] | test("NVIDIA drivers \\(nvidia, nvidia-lts\\)")' "$t/serve/202611100001/notes.json"
 
 # 2. The next run, with the canary now passing and no new commit: nothing.
 run pass 202611100002
@@ -369,5 +372,24 @@ run pass 202611100017
 echo 500 >"$t/pool-free-gib"
 check low-space "pool: refuses" grep -q "pool crucial 20 GiB free" <<<"$out"
 check low-space "pool: builds nothing" not_called "build.sh"
+
+# 15. The build made the NVIDIA drivers: they are published, the notes drop the line, the canary skips them.
+commit "merge: with NVIDIA drivers"
+touch "$t/build-nvidia"
+run pass 202611100018
+check nvidia "published with both drivers" called "publish-update 202611100018 testing incus,arca,nvidia,nvidia-lts$"
+check nvidia "notes.json has no not_included" jqe 'has("not_included") | not' "$t/serve/202611100018/notes.json"
+check nvidia "the canary installs only incus,arca" called "canary .*--target 202611100018 .*--apps incus,arca "
+check nvidia "promoted" [ "$(channels 202611100018)" = stable,testing ]
+
+# 16. APPS in the config names the applications exactly, NVIDIA built or not.
+commit "merge: with APPS set"
+cp "$t/config/arca-os/autopublish.conf" "$t/conf.saved"
+printf 'APPS=incus,arca\n' >>"$t/config/arca-os/autopublish.conf"
+run pass 202611100019
+cp "$t/conf.saved" "$t/config/arca-os/autopublish.conf"
+rm -f "$t/build-nvidia"
+check apps-config "publishes only APPS" called "publish-update 202611100019 testing incus,arca$"
+check apps-config "notes.json says NVIDIA is not included" jqe '.not_included[0] | test("NVIDIA")' "$t/serve/202611100019/notes.json"
 
 [ "$fails" -eq 0 ] || exit 1

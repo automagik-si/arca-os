@@ -52,7 +52,9 @@
 # lines, read as data: BRANCH, REMOTE, CHECKOUT, TOOLS_CHECKOUT, SERVE_DIR, BUILDER_TREE,
 # PROJECT, BUILDER, CANARY_VM, NODES, APPS, KEEP_STABLE, BUILD_ARGS,
 # BUILD_TRIES, MIN_BUILDER_FREE_GIB, MIN_POOL_FREE_GIB, CANARY_TIMEOUT,
-# CANARY_TRIES, CANARY_BAKE_JQ, STATE_DIR. Flags win. A node in NODES whose
+# CANARY_TRIES, CANARY_BAKE_JQ, STATE_DIR. Flags win. Without APPS a release
+# carries incus,arca and the NVIDIA drivers (nvidia, nvidia-lts) the build made;
+# the canary installs only incus,arca, as it has no GPU. A node in NODES whose
 # update channel is empty takes the newest release in any channel, testing
 # included; the run warns about it.
 #
@@ -75,7 +77,7 @@ tools_wt=$cache/arca-os/autopublish/arca-tools
 serve_dir=${ARCA_UPDATES_DIR:-$cache/arca-os/updates}
 builder_tree=/srv/artifacts/updates
 project=arcaos-dev builder=arcaos-builder canary_vm=arcaos-canary
-nodes='' apps=incus,arca keep_stable=3
+nodes='' apps=incus,arca apps_given=0 keep_stable=3
 build_args='--local-kernel /srv/artifacts/kernel/latest'
 canary_timeout=2700 canary_tries=3 canary_bake_jq=''
 build_tries=3 min_builder_free_gib=30 min_pool_free_gib=50
@@ -86,7 +88,7 @@ run_lock=$cache/arca-autopublish.lock
 builder_lock=${ARCA_BUILDER_LOCK:-$cache/arcaos-builder.lock}
 inbuilder_lock=${XDG_RUNTIME_DIR:-/tmp}/arcaos-builder.lock
 cargo_lock=$cache/arca-cargo.lock
-NVIDIA_NOTE='NVIDIA drivers (nvidia, nvidia-lts) are not included: the update publisher does not publish them yet.'
+NVIDIA_APPS='nvidia nvidia-lts'
 
 log() { printf 'autopublish: %s\n' "$*" >&2; }
 die() { printf 'autopublish: %s\n' "$*" >&2; exit 1; }
@@ -111,7 +113,7 @@ if [ -f "$config" ]; then
 		case "$key" in
 		BRANCH) branch=$val ;; REMOTE) remote=$val ;; CHECKOUT) checkout=$val ;; TOOLS_CHECKOUT) tools_wt=$val ;;
 		SERVE_DIR) serve_dir=$val ;; BUILDER_TREE) builder_tree=$val ;; PROJECT) project=$val ;;
-		BUILDER) builder=$val ;; CANARY_VM) canary_vm=$val ;; NODES) nodes=$val ;; APPS) apps=$val ;;
+		BUILDER) builder=$val ;; CANARY_VM) canary_vm=$val ;; NODES) nodes=$val ;; APPS) apps=$val apps_given=1 ;;
 		KEEP_STABLE) keep_stable=$val ;; BUILD_ARGS) build_args=$val ;; CANARY_TIMEOUT) canary_timeout=$val ;;
 		CANARY_TRIES) canary_tries=$val ;; CANARY_BAKE_JQ) canary_bake_jq=$val ;; STATE_DIR) state_dir=$val ;;
 		BUILD_TRIES) build_tries=$val ;; MIN_BUILDER_FREE_GIB) min_builder_free_gib=$val ;; MIN_POOL_FREE_GIB) min_pool_free_gib=$val ;;
@@ -274,9 +276,13 @@ retention() {
 	echo "prune $(all_versions | grep -vxF "$keep" | paste -sd' ' - || true)"
 }
 
-# notes_json <version>: the release notes for the target commit.
+# notes_json <version> <apps>: the release notes for the target commit.
 notes_json() {
-	local range subjects
+	local range subjects a missing='' nv=''
+	for a in $NVIDIA_APPS; do
+		case ",$2," in *",$a,"*) ;; *) missing+=${missing:+, }$a ;; esac
+	done
+	[ -z "$missing" ] || nv="NVIDIA drivers ($missing) are not included in this release."
 	if [ -n "$last_commit" ] && git -C "$git_dir" merge-base --is-ancestor "$last_commit" "$target" 2>/dev/null; then
 		range=("$last_commit..$target")
 	else
@@ -284,9 +290,9 @@ notes_json() {
 	fi
 	subjects=$(git -C "$git_dir" log --first-parent --format=%s "${range[@]}" 2>/dev/null | head -50 || true)
 	jq -n --arg v "$1" --arg c "$target" --arg p "$last_commit" --arg b "$branch" \
-		--arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$subjects" --arg nv "$NVIDIA_NOTE" \
+		--arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$subjects" --arg nv "$nv" \
 		'{version: $v, commit: $c, previous_commit: $p, branch: $b, built_at: $t,
-		  changes: ($s | split("\n") | map(select(length > 0))), not_included: [$nv]}'
+		  changes: ($s | split("\n") | map(select(length > 0)))} + if $nv == "" then {} else {not_included: [$nv]} end'
 }
 
 # ---- The plan ---------------------------------------------------------------
@@ -336,9 +342,11 @@ if [ "$dry_run" -eq 1 ]; then
 		say "check the builder caps (limits.cpu=4, root limits.read=150MB, limits.write=80MB)"
 		say "check free space: builder >= ${min_builder_free_gib} GiB, its pool >= ${min_pool_free_gib} GiB"
 		say "build: in-builder.sh --project $project --vm $builder $checkout -- scripts/arca/build.sh --no-latest $build_args"
-		say "publish: publish-update.sh --version <new> --channel testing --apps $apps --serve-dir $serve_dir --builder-tree $builder_tree"
+		extra=''
+		[ "$apps_given" -eq 1 ] || extra=" (plus ${NVIDIA_APPS// /, } if the build made them)"
+		say "publish: publish-update.sh --version <new> --channel testing --apps $apps$extra --serve-dir $serve_dir --builder-tree $builder_tree"
 		say "notes: release-tree.sh notes --version <new> (signed notes.json), with:"
-		notes_json '<new>' | sed 's/^/       /'
+		notes_json '<new>' "$apps" | sed 's/^/       /'
 		;;
 	resume) say "no build: $last_auto is already published in testing" ;;
 	record) say "no build, no canary: apply the saved verdict to $last_auto: $(saved_field "$last_auto" state)${last_auto:+ }$(ever_failed "$last_auto" && echo '(it failed before, so failed)')" ;;
@@ -490,11 +498,18 @@ elif [ "$plan" = publish ]; then
 	[ -n "$version" ] || abandon "the build printed no version"
 	# Marked at once, so retention can remove it even if this run stops here.
 	bexec sh -c "printf '{}\n' >/srv/artifacts/os/$version/autopublish.json" || abandon "the build $version is not in /srv/artifacts/os"
-	log "built $version; publishing it into testing"
-	"$PUBLISH_UPDATE" --version "$version" --serve-dir "$serve_dir" --channel testing --apps "$apps" \
+	# Unless APPS names the applications, the NVIDIA drivers the build made are published too.
+	pub_apps=$apps
+	if [ "$apps_given" -eq 0 ]; then
+		for a in $NVIDIA_APPS; do
+			if bexec test -f "/srv/artifacts/os/$version/$a.raw"; then pub_apps+=,$a; fi
+		done
+	fi
+	log "built $version; publishing it into testing with $pub_apps"
+	"$PUBLISH_UPDATE" --version "$version" --serve-dir "$serve_dir" --channel testing --apps "$pub_apps" \
 		--project "$project" --builder "$builder" --builder-tree "$builder_tree" --checkout "$tools_wt" >>"$run_log" 2>&1 \
 		|| abandon "publishing $version failed"
-	notes_json "$version" >"$state_dir/notes-$version.json"
+	notes_json "$version" "$pub_apps" >"$state_dir/notes-$version.json"
 	incus file push -q -p --project "$project" "$state_dir/notes-$version.json" "$builder/srv/artifacts/autopublish/notes-$version.json" </dev/null \
 		|| abandon "copying the notes for $version failed"
 	tree_op notes --version "$version" --file "/srv/artifacts/autopublish/notes-$version.json" || abandon "writing the notes for $version failed"
