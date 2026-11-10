@@ -102,6 +102,7 @@ func (s *Server) Serve() error {
 	router.HandleFunc("/1.0/system/storage/:rescan-scsi", s.apiSystemStorageRescanSCSI)
 	router.HandleFunc("/1.0/system/update", s.apiSystemUpdate)
 	router.HandleFunc("/1.0/system/update/:check", s.apiSystemUpdateCheck)
+	router.HandleFunc("/1.0/system/update/:retry", s.apiSystemUpdateRetry)
 
 	// Setup server.
 	server := &http.Server{

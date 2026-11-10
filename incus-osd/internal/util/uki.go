@@ -71,13 +71,11 @@ func GetUKIVersions() (UKIVersions, error) {
 			ret.CurrentVersion = versionGroup[1]
 			ret.CurrentFilepath = "/boot/EFI/Linux/" + uki.Name()
 		} else {
-			parts := strings.Split(uki.Name(), "_")
-
-			if len(parts) != 2 {
+			ret.OtherVersion = UKIFileVersion(uki.Name())
+			if ret.OtherVersion == "" {
 				continue
 			}
 
-			ret.OtherVersion = strings.TrimSuffix(parts[1], ".efi")
 			ret.OtherFilepath = "/boot/EFI/Linux/" + uki.Name()
 		}
 	}
@@ -112,7 +110,7 @@ func GetCurrentUKIProfile() (string, error) {
 // default the next time the system starts. This helps ensure the system consistently uses
 // the same UKI profile, which may influence kernel defaults or other system behavior.
 func SetNextBootID(ctx context.Context, bootID BootID) error {
-	rebootID, err := getNextBootID(ctx, bootID)
+	rebootID, err := nextBootID(ctx, bootID, "")
 	if err != nil {
 		return err
 	}
@@ -136,7 +134,7 @@ func SetNextBootID(ctx context.Context, bootID BootID) error {
 	return nil
 }
 
-func getNextBootID(ctx context.Context, bootID BootID) (string, error) {
+func getNextBootID(ctx context.Context, bootID BootID, allowed func(id string) bool) (string, error) {
 	type bootctlEntry struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
@@ -163,8 +161,9 @@ func getNextBootID(ctx context.Context, bootID BootID) (string, error) {
 			continue
 		}
 
-		if entry.ID != "" && targetRegex.FindString(entry.ID) != "" {
-			targets = append(targets, entry.ID)
+		id := bootEntryID(entry.ID)
+		if id != "" && targetRegex.FindString(id) != "" && allowed(id) {
+			targets = append(targets, id)
 		}
 	}
 

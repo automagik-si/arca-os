@@ -20,6 +20,15 @@ type SystemUpdateConfig struct {
 	Channel            string                          `json:"channel"                       yaml:"channel"`
 	CheckFrequency     string                          `json:"check_frequency"               yaml:"check_frequency"`
 	MaintenanceWindows []SystemUpdateMaintenanceWindow `json:"maintenance_windows,omitempty" yaml:"maintenance_windows,omitempty"`
+
+	// AutoUpdatesOff stops automatic checks, applies and restarts; a manual check still works.
+	AutoUpdatesOff bool `json:"auto_updates_off,omitempty" yaml:"auto_updates_off,omitempty"`
+
+	// RestartWindow is when an OS update may restart the machine; unset means 03:00 to 05:00.
+	RestartWindow *SystemUpdateMaintenanceWindow `json:"restart_window,omitempty" yaml:"restart_window,omitempty"`
+
+	// BakeTime is how long a new OS version must stay healthy before it is marked good; unset means 15m.
+	BakeTime string `json:"bake_time,omitempty" yaml:"bake_time,omitempty"`
 }
 
 // SystemUpdateState holds information about the current update state.
@@ -27,6 +36,8 @@ type SystemUpdateState struct {
 	LastCheck   time.Time `json:"last_check"   yaml:"last_check"` // In system's timezone.
 	Status      string    `json:"status"       yaml:"status"`
 	NeedsReboot bool      `json:"needs_reboot" yaml:"needs_reboot"`
+
+	Health *SystemUpdateHealth `json:"health,omitempty" yaml:"health,omitempty"`
 
 	PendingMaintenanceWindowCheck bool `json:"-"`
 }
@@ -54,6 +65,11 @@ func (c *SystemUpdateConfig) Validate() error {
 		if frequency < 0 {
 			return errors.New("invalid update check frequency: must be a positive value")
 		}
+	}
+
+	err := c.validateAutomatic()
+	if err != nil {
+		return err
 	}
 
 	// Basic maintenance window validation.

@@ -48,6 +48,8 @@ type sources struct {
 	ips       func(ctx context.Context) []string
 	online    func() Online
 	instances func() (instancesResult, error)
+	updates   func() Updates
+	actions   updateActions
 }
 
 // liveSources reads the running system.
@@ -62,6 +64,8 @@ func liveSources(s *state.State) sources {
 		ips:       func(ctx context.Context) []string { return readIPs(ctx, s) },
 		online:    func() Online { return readOnline(s) },
 		instances: r.read,
+		updates:   func() Updates { return liveUpdates(s) },
+		actions:   liveActions{s: s},
 	}
 }
 
@@ -164,6 +168,8 @@ func (c *console) collect(ctx context.Context) {
 
 		c.table.apply(&c.snap, res, err, now)
 	})
+
+	go c.every(ctx, updatesEvery, c.readUpdates)
 
 	c.every(ctx, clockEvery, func() {})
 }
