@@ -55,6 +55,11 @@ func (n *nvidia) Version() string {
 	return n.appState.Version
 }
 
+// IsInitialized is true only for the requested branch, as both branches share one state.
+func (n *nvidia) IsInitialized() bool {
+	return n.variant == n.requestedBranch() && n.common.IsInitialized()
+}
+
 func (n *nvidia) SetVersions(version string, versions []string) {
 	n.state.Applications.NVIDIA.State.RequestedBranch = n.variant
 	if n.state.Applications.NVIDIA.Config.Driver == "" {
