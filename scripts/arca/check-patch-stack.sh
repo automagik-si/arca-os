@@ -11,15 +11,19 @@
 # admit a path. A commit in the range can still admit one, so every path the
 # range adds to the allowlist is printed as "admitted <path>" for review. It prints one row per non-owned path, "<added> <deleted>
 # <path> <class>", then "total <n>/<cap>", where n sums added and deleted lines
-# over the non-owned paths. Binary paths count as zero lines.
+# over the non-owned paths except the generated REST API reference, which is counted on its own
+# "generated <n>/<cap> <path>" line. Binary paths count as zero lines.
 #
-# Exit codes: 0 when nothing is REFUSED and n <= the cap (900); 1 otherwise; 2 on usage
-# or an unknown base ref.
+# Exit codes: 0 when nothing is REFUSED and both counts are within their caps (900 and 400);
+# 1 otherwise; 2 on usage or an unknown base ref.
 set -euo pipefail
 
 # Arca + NVIDIA edits to upstream files; was 250 before the NVIDIA line joined.
 CAP=900
 ALLOWLIST=scripts/arca/patch-allowlist.txt
+# The generated REST API reference is counted on its own line, against its own cap.
+GENERATED=doc/rest-api.yaml
+GENERATED_CAP=400
 
 usage() {
 	echo "usage: check-patch-stack.sh <base-ref>" >&2
@@ -34,10 +38,13 @@ owned() {
 	incus-osd/api/images/update_file_component_arca_test.go) return 0 ;;
 	incus-osd/api/system_network_arca_wifi.go | incus-osd/internal/tui/arca_overlay.go | incus-osd/internal/tui/arca_overlay_test.go) return 0 ;;
 	incus-osd/internal/tui/arca_console.go | incus-osd/internal/tui/arca_console_test.go) return 0 ;;
+	incus-osd/api/system_update_arca.go) return 0 ;;
 	esac
 	[[ $1 =~ ^\.github/workflows/arca-[^/]*\.yml$ ]] && return 0
 	[[ $1 =~ ^mkosi\.sandbox/etc/apt/[^/]+/arca[^/]*$ ]] && return 0
 	[[ $1 =~ ^incus-osd/internal/applications/app_arca[^/]*\.go$ ]] && return 0
+	[[ $1 =~ ^incus-osd/internal/(update|util|rest|state|applications)/arca_[^/]*\.go$ ]] && return 0
+	[[ $1 =~ ^doc/reference/system/arca-[^/]*\.md$ ]] && return 0
 	[[ $1 =~ ^mkosi\.images/(base|debug)/(.*/)?arca-[^/]*$ ]] && return 0
 	nvidia_owned "$1" && return 0
 	return 1
@@ -75,6 +82,7 @@ allow=$(git show "HEAD:$ALLOWLIST" 2>/dev/null | sed -e 's/#.*//' -e 's/^[[:spac
 numstat=$(git -c core.quotePath=false diff --no-renames --numstat "$base..HEAD")
 
 total=0
+generated=0
 refused=0
 while IFS=$'\t' read -r added deleted path; do
 	[ -n "$path" ] || continue
@@ -86,7 +94,12 @@ while IFS=$'\t' read -r added deleted path; do
 		cls=REFUSED
 		refused=$((refused + 1))
 	fi
-	total=$((total + added + deleted))
+	if [ "$path" = "$GENERATED" ]; then
+		generated=$((added + deleted))
+		cls="$cls generated"
+	else
+		total=$((total + added + deleted))
+	fi
 	printf '%s %s %s %s\n' "$added" "$deleted" "$path" "$cls"
 done <<<"$numstat"
 
@@ -94,7 +107,8 @@ git diff -U0 "$base..HEAD" -- "$ALLOWLIST" | sed -n 's/^+\([^+]\)/\1/p' |
 	sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' |
 	while IFS= read -r path; do printf 'admitted %s\n' "$path"; done || true
 printf 'total %s/%s\n' "$total" "$CAP"
-if [ "$refused" -eq 0 ] && [ "$total" -le "$CAP" ]; then
+printf 'generated %s/%s %s\n' "$generated" "$GENERATED_CAP" "$GENERATED"
+if [ "$refused" -eq 0 ] && [ "$total" -le "$CAP" ] && [ "$generated" -le "$GENERATED_CAP" ]; then
 	exit 0
 fi
 exit 1

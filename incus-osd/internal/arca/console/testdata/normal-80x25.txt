@@ -22,4 +22,4 @@
  ▶ phone-1 · PHONE · example/phone · disk 9.6G · up 19h 12m
  ✓ No alerts
  —
- ↑↓ select  Tab next panel  Enter details  ? help  L upstream
+ ↑↓ select  Tab next panel  Enter details  U updates  ? help  L upstream

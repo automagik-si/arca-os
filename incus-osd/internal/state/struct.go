@@ -100,6 +100,9 @@ type State struct {
 	// the system is rebooted before the new configuration can be confirmed. This helps
 	// ensure IncusOS will always be able to boot up with a known good configuration.
 	PriorNetworkConfig *api.SystemNetworkConfig `json:"prior_network_config,omitempty"`
+
+	// UpdateHealth is the automatic updater's record, kept across reboots and rollbacks.
+	UpdateHealth api.SystemUpdateHealth `json:"update_health"`
 }
 
 // MachineID returns the system's persistent machine ID.

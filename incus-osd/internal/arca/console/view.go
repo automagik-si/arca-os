@@ -87,6 +87,8 @@ func (v *view) Draw(screen tcell.Screen) {
 		drawDetails(screen, v.snap, content)
 	case pageHelp:
 		drawHelp(screen, content)
+	case pageUpdates:
+		drawUpdates(screen, v.snap, content)
 	default:
 		v.drawDashboard(screen, l, x, y)
 	}
@@ -153,7 +155,7 @@ func (v *view) drawDashboard(screen tcell.Screen, l layout, x, y int) {
 		drawSummary(screen, v.snap, shift(l.Summary, x, y))
 	}
 
-	drawAlert(screen, shift(l.Alert, x, y))
+	drawAlert(screen, v.snap, shift(l.Alert, x, y))
 
 	if l.kind != layoutWide {
 		v.drawLastLog(screen, shift(l.Log, x, y))
@@ -262,10 +264,16 @@ func drawSummary(screen tcell.Screen, s Snapshot, r rect) {
 	tview.Print(screen, " "+strings.Join(parts, " · "), r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
 }
 
-// drawAlert draws the alert line. Alerts arrive with the live instance state; the
-// line shows that there is none.
-func drawAlert(screen tcell.Screen, r rect) {
+// drawAlert draws the alert line: an update that needs the owner or is under way, and
+// otherwise that there is no alert. Instance alerts arrive with the live instance state.
+func drawAlert(screen tcell.Screen, s Snapshot, r rect) {
 	if r.empty() {
+		return
+	}
+
+	if tag, text := updatesAlert(s.Updates); text != "" {
+		tview.Print(screen, " "+tag+safe(fit(printable(text), r.W-2))+tagReset, r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
+
 		return
 	}
 
@@ -279,7 +287,7 @@ func drawKeys(screen tcell.Screen, r rect) {
 	}
 
 	keys := []string{
-		"↑↓ select", "Tab next panel", "Enter details", "? help", "L upstream",
+		"↑↓ select", "Tab next panel", "Enter details", "U updates", "? help", "L upstream",
 	}
 
 	parts := make([]string, 0, len(keys))

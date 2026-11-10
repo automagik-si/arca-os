@@ -104,6 +104,7 @@ func main() {
 	// Record the OS name and version in the state.
 	s.OS.Name = osName
 	s.OS.RunningRelease = osRelease
+	update.LoadFailedBootVersions(s)
 
 	if len(os.Args) == 2 && os.Args[1] == "--prepare-gpu" {
 		err := applications.PrepareGPUs(ctx, s)
@@ -363,6 +364,9 @@ func run(ctx context.Context, s *state.State) error {
 	s.OS.SuccessfulBoot = true
 	s.OS.SystemIsReady = true
 
+	// Drive automatic OS updates: the health bake, rollback and restarts in the window.
+	update.Run(ctx, s)
+
 	err = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseSystemIsReady)
 	if err != nil {
 		return err
@@ -384,6 +388,7 @@ func shutdown(ctx context.Context, s *state.State) error {
 	modal := t.AddModal("System Shutdown", "shutdown")
 
 	slog.InfoContext(ctx, "System is shutting down", "version", s.OS.RunningRelease)
+	update.RecordCleanStop(ctx, s)
 	modal.Update("System is shutting down")
 
 	// Shutdown the job scheduler.
@@ -621,6 +626,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	// do so as part of the shutdown/reboot logic because an externally-triggered power cycle (such as a
 	// physical power button being pressed) may not permit us to properly set the underlying EFI variable
 	// since systemd will already be tearing down the system.
+	// Update the automatic updater's record first: it may have marked a version failed.
+	update.ReconcileBoot(ctx, s)
+
 	err = util.SetNextBootID(ctx, util.BootIDNewest)
 	if err != nil {
 		return err
@@ -794,7 +802,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 
 	// Honor a system's update check frequency being set to "never", unless no primary application is
 	// installed.
-	skipInitialUpdateCheck := s.System.Update.Config.CheckFrequency == "never"
+	skipInitialUpdateCheck := s.System.Update.Config.CheckFrequency == "never" || s.System.Update.Config.AutoUpdatesOff
 
 	_, err = applications.GetPrimary(ctx, s, false)
 	if err != nil {
