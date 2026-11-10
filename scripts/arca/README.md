@@ -217,7 +217,8 @@ verifies the tree inside the builder. Keep the served tree and the persistent CA
 `testing` channel with release notes, proves it on a canary VM installed from the current `stable` release
 (`canary.sh`), and then promotes the same signed release to `stable` (`release-tree.sh`), or marks it failed with the
 reason. `autopublish.sh --dry-run` prints the plan. `scripts/arca/units/` holds a user timer that runs it every 30
-minutes, and `scripts/arca/test/autopublish.sh` tests its decisions with stubs. See
+minutes, and `scripts/arca/test/autopublish.sh` tests its decisions with stubs
+(`scripts/arca/test/publish-guards.sh` tests the publishing checks). See
 [doc/reference/arca-publishing.md](../../doc/reference/arca-publishing.md).
 
 ## Migrating a node without reinstalling

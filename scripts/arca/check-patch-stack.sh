@@ -67,6 +67,7 @@ nvidia_owned() {
 	mkosi.images/base/mkosi.extra/usr/lib/systemd/system/systemd-sysext.service.d/nvidia.conf) return 0 ;;
 	esac
 	[[ $1 =~ ^incus-osd/internal/applications/app_nvidia[^/]*\.go$ ]] && return 0
+	[[ $1 =~ ^incus-osd/(api/images/update_file_component|cmd/image-publisher/main_sync)_nvidia(_test)?\.go$ ]] && return 0
 	return 1
 }
 

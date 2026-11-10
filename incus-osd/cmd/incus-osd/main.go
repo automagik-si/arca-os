@@ -1282,7 +1282,7 @@ func startApplications(ctx context.Context, s *state.State) error {
 
 		err = update.CheckApplications(ctx, s, []string{app.Name()}, true, true)
 		if err != nil {
-			if app.Name() == "nvidia" {
+			if strings.HasPrefix(app.Name(), "nvidia") {
 				slog.Warn("The NVIDIA driver could not be downloaded; continuing startup")
 
 				continue

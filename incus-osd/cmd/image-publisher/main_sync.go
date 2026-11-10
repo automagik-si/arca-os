@@ -499,6 +499,8 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 		case strings.HasSuffix(assetName, "operations-center.manifest.json.gz"):
 			assetComponent = apiupdate.UpdateFileComponentOperationsCenter
 			assetType = apiupdate.UpdateFileTypeImageManifest
+		case isNVIDIAAsset(assetName):
+			assetComponent, assetType = nvidiaAsset(assetName)
 		default:
 			slog.WarnContext(ctx, "Skipping unrecognized asset", "filename", assetName)
 

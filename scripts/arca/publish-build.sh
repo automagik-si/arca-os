@@ -22,7 +22,8 @@
 #
 # It reads the tree back as the node will: both signatures against the update
 # CA, exactly one release for <ver> in the channel, and each file's sha256 and
-# size. It fails if anything does not match.
+# size, and that every --apps application is in it. It fails if anything does
+# not match.
 set -euo pipefail
 
 CA_DIR=${ARCA_TEST_CA_DIR:-/srv/arca-test-ca}
@@ -143,6 +144,9 @@ for t in update-efi update-usr update-usr-verity update-usr-verity-signature; do
 	jq -e --arg v "$version" --arg t "$t" '.updates[] | select(.version==$v) | any(.files[]; .type==$t)' "$idx" >/dev/null \
 		|| die "the published update is missing a file of type $t"
 done
+# Every --apps application must be in the update, or no node ever gets it.
+missing=$(scripts/arca/published-apps.sh "$idx" "$version" "${apps[@]}") \
+	|| die "the published update is missing applications image-publisher did not publish: $(printf '%s' "$missing" | sed 's/^missing //' | paste -sd' ' -)"
 
 nfiles=$(jq -r --arg v "$version" '.updates[] | select(.version==$v) | .files | length' "$idx")
 log "published $version: $nfiles files in channel $channel at $out"
