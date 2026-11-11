@@ -43,7 +43,7 @@ trap 'rm -rf "$tmp"' EXIT
 # and the kernel build; gdisk by scripts/convert-img-to-iso.sh (build-iso).
 pkgs_upstream="binutils debian-archive-keyring devscripts libnbd-dev make mtools parted pigz pkgconf pipx qemu-utils zip"
 pkgs_kernel="bc bison cpio debhelper dpkg-dev flex git kmod libdw-dev libelf-dev libssl-dev rsync zstd pahole"
-pkgs_arca="equivs reprepro rclone gnupg efitools openssl jq curl musl-tools shellcheck sudo python3-requests ca-certificates file"
+pkgs_arca="equivs reprepro gnupg efitools openssl jq curl musl-tools shellcheck sudo python3-requests ca-certificates file"
 pkgs_extra="build-essential fakeroot patch gdisk xz-utils"
 
 log "apt: updating package lists"
@@ -60,6 +60,8 @@ for p in "$@"; do
 done
 log "apt: installing ${#want[@]} packages"
 apt-get install -y -q "${want[@]}"
+
+"$(dirname "$0")/provision-rclone.sh"
 
 # --- mkosi -----------------------------------------------------------------
 mkosi_want="${MKOSI_REF#v}"
