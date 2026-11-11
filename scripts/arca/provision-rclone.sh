@@ -30,12 +30,14 @@ if [ -x /usr/local/bin/rclone ] && [ "$(/usr/local/bin/rclone version | sed -n '
 	log "rclone v$version already installed"
 else
 	tmp=$(mktemp -d)
-	trap 'rm -rf "$tmp"' EXIT
+	new=/usr/local/bin/.rclone.new.$$
+	trap 'rm -rf "$tmp" "$new"' EXIT
 	log "installing rclone v$version (sha256 pinned)"
 	curl -fsSL "https://downloads.rclone.org/v$version/$archive" -o "$tmp/$archive"
 	printf '%s  %s\n' "$sha256" "$tmp/$archive" | sha256sum -c --quiet - || die "archive sha256 mismatch"
 	python3 -m zipfile -e "$tmp/$archive" "$tmp"
-	install -m 0755 "$tmp/rclone-v$version-linux-amd64/rclone" /usr/local/bin/rclone
+	install -m 0755 "$tmp/rclone-v$version-linux-amd64/rclone" "$new"
+	mv -f "$new" /usr/local/bin/rclone
 fi
 hash -r
 check

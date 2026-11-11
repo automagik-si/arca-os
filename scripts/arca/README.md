@@ -214,14 +214,17 @@ verifies the tree inside the builder. Keep the served tree and the persistent CA
 
 ### Uploading the published tree
 
-After `publish-update.sh` has produced the local tree, `upload-tree.sh` can mirror it to an S3-compatible bucket
-with rclone. No real bucket exists yet. Keep the configuration outside the checkout and use a dedicated bucket or
-prefix: files absent from the local tree are removed there. The source must be a complete, finished tree. Upload
-public update certificates only, never signing keys. An upload is refused while an automatic publishing run
-(`~/.cache/arca-autopublish.lock`) or another upload (`~/.cache/arca-upload-tree.lock`) holds its lock, and it holds
-both itself. It reads a hard-link snapshot taken next to the tree, and refuses when `index.json` lists a file that is
-missing from it or has another size; files rewritten in place are not protected, so do not edit the tree by hand
-during an upload.
+After `publish-update.sh` has produced the local tree, `upload-tree.sh` can mirror it to an S3-compatible bucket with
+rclone. No real bucket exists yet. Keep the configuration outside the checkout and use a dedicated bucket or prefix:
+files absent from the local tree are removed there. The source must be a complete, finished tree. Upload public update
+certificates only, never signing keys. Run it on the build host, as the user whose timer runs `autopublish.sh`, on the
+served copy: a tree owned by another user and the builder's `/srv/artifacts` tree are refused. An upload is refused
+while an automatic publishing run (`~/.cache/arca-autopublish.lock`) or another upload
+(`~/.cache/arca-upload-tree.lock`) holds its lock, and it holds both itself; `publish-update.sh` takes the upload lock
+and refuses during an upload. It reads a hard-link snapshot taken next to the tree, and refuses when `index.sjson`
+does not carry `index.json` or `index.json` lists a file that is missing from it or has another size. A signal stops
+rclone before the snapshot is removed; a snapshot left by a killed upload is removed by a later run after a day; files
+rewritten in place are not protected, so do not edit the tree by hand during an upload.
 
 ```sh
 scripts/arca/upload-tree.sh --tree <dir> --config <external-config> --dry-run
@@ -230,14 +233,16 @@ scripts/arca/upload-tree.sh --tree <dir> --config <external-config>
 
 The external config contains unquoted `key=value` lines: required `bucket`, `endpoint` (an HTTPS origin without
 credentials or a path; plain HTTP only for the loopback hosts `127.0.0.1`, `localhost` and `[::1]`), `region`
-(`auto` for R2), and optional `prefix` (relative path without a trailing slash).
+(`auto` for R2), and `prefix` (relative path without a trailing slash). `prefix` is required and may not be empty;
+the whole bucket becomes the mirror only with `mirror_bucket_root=yes` and no `prefix`.
 Blank lines and lines beginning with `#` are allowed. Credentials come only from exported `RCLONE_S3_ACCESS_KEY_ID`
 and `RCLONE_S3_SECRET_ACCESS_KEY`; `RCLONE_S3_SESSION_TOKEN` is optional. Never put credentials in the config,
 command line, or checkout. The script ignores ambient rclone configuration, filters and logging settings.
 
 Releases and public keys are copied and verified first, then the root `index.json` and `index.sjson` are copied.
 Every remote file is read back and compared before stale files are removed; a final check requires an exact mirror.
-Failures exit nonzero; failed readback leaves stale files in place. Dry runs list changes without writing.
+Failures exit nonzero and show rclone's error lines with credential values blanked; failed readback leaves stale
+files in place. Dry runs list changes without writing. Every run logs the full destination bucket/prefix.
 Configure static HTTP(S) serving separately at the bucket/prefix, then point the node's `images` provider
 `server_url` at that public tree URL; the S3 upload endpoint is not the serving URL. Signing and tree layout stay
 unchanged. `scripts/arca/test/upload-tree.sh` proves this with `rclone serve s3` on loopback with the provisioned rclone 1.76.0

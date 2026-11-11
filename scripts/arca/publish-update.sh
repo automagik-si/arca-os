@@ -50,6 +50,10 @@ done
 printf '%s' "$version" | grep -Eqx '[0-9]{12}' || refuse "version '$version' is not 12 digits"
 case "$project" in arcaos-*) ;; *) refuse "project '$project' does not start with arcaos-" ;; esac
 case "$builder_tree" in /srv/artifacts/*) ;; *) refuse "builder tree '$builder_tree' is not under /srv/artifacts/" ;; esac
+# upload-tree.sh mirrors the served tree under this lock; do not rewrite the tree meanwhile.
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
+exec 5>>"${XDG_CACHE_HOME:-$HOME/.cache}/arca-upload-tree.lock"
+flock -n 5 || refuse "an upload of the tree holds the upload lock; publish again when it ends"
 command -v incus >/dev/null || die "incus is not on PATH"
 
 # Publish into the builder's persistent tree (in a clean checkout, so the Go
