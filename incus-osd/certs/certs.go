@@ -5,16 +5,32 @@ import (
 	"embed"
 	"encoding/pem"
 	"errors"
+	"io/fs"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 )
 
 //go:embed files/*
-var files embed.FS
+var embeddedFiles embed.FS
 
-var parsedCerts Certificates
+var embeddedInventory = &inventory{files: embeddedFiles}
+
+// inventoryFS is the file access needed to load the certificates.
+type inventoryFS interface {
+	fs.ReadDirFS
+	fs.ReadFileFS
+}
+
+// inventory caches the certificates once all of them have been parsed and validated.
+type inventory struct {
+	mu     sync.Mutex
+	files  inventoryFS
+	loaded bool
+	certs  Certificates
+}
 
 // Certificates holds a variety of certificates and associated metadata used by the IncusOS daemon.
 type Certificates struct {
@@ -73,11 +89,35 @@ func (c *SecureBootCertificates) ToAPI() api.InternalSecureBootCertificates {
 
 // GetEmbeddedCertificates returns certificates and associated metadata that have been embedded
 // into the IncusOS daemon.
-func GetEmbeddedCertificates() (Certificates, error) { //nolint:revive
+func GetEmbeddedCertificates() (Certificates, error) {
+	return embeddedInventory.get()
+}
+
+// get returns the cached certificates, loading them on first use.
+func (i *inventory) get() (Certificates, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
 	// If we've already parsed the certificates once, return the cached copy.
-	if parsedCerts.RootCACertificate != nil {
-		return parsedCerts, nil
+	if i.loaded {
+		return i.certs, nil
 	}
+
+	// Only cache the certificates if all of them were parsed and validated.
+	parsedCerts, err := loadCertificates(i.files)
+	if err != nil {
+		return Certificates{}, err
+	}
+
+	i.certs = parsedCerts
+	i.loaded = true
+
+	return i.certs, nil
+}
+
+// loadCertificates parses and validates the certificates and associated metadata.
+func loadCertificates(files inventoryFS) (Certificates, error) { //nolint:revive
+	var parsedCerts Certificates
 
 	// Get a list of the production certificates.
 	contents, err := files.ReadFile("files/production-cert-subject-key-ids.txt")
