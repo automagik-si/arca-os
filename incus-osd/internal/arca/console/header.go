@@ -240,7 +240,7 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 
 	var left strings.Builder
 
-	left.WriteString(tagBrand + brand + tagReset + " " + tagBold + tview.Escape(node) + tagReset +
+	_, _ = left.WriteString(tagBrand + brand + tagReset + " " + tagBold + tview.Escape(node) + tagReset +
 		"  " + osName + " " + tview.Escape(release))
 	used := fixed + width(node)
 
@@ -250,7 +250,7 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 			break
 		}
 
-		left.WriteString("  " + tagDim + tview.Escape(item) + tagReset)
+		_, _ = left.WriteString("  " + tagDim + tview.Escape(item) + tagReset)
 		used += 2 + width(item)
 	}
 
@@ -286,10 +286,10 @@ func drawHeader(screen tcell.Screen, s Snapshot, x, y, w, h int) {
 			}
 
 			if i > 0 {
-				b.WriteString("  ")
+				_, _ = b.WriteString("  ")
 			}
 
-			b.WriteString(tagBold + tview.Escape(item) + tagReset)
+			_, _ = b.WriteString(tagBold + tview.Escape(item) + tagReset)
 			used += gap + width(item)
 		}
 

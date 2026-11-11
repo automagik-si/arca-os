@@ -55,7 +55,7 @@ func screenLine(screen tcell.SimulationScreen, y int) string {
 
 	for x := 0; x < w; x++ {
 		str, _, cw := screen.Get(x, y)
-		b.WriteString(str)
+		_, _ = b.WriteString(str)
 
 		if cw > 1 {
 			x += cw - 1
@@ -72,8 +72,8 @@ func screenText(screen tcell.SimulationScreen) string {
 	var b strings.Builder
 
 	for y := range h {
-		b.WriteString(screenLine(screen, y))
-		b.WriteByte('\n')
+		_, _ = b.WriteString(screenLine(screen, y))
+		_ = b.WriteByte('\n')
 	}
 
 	return b.String()

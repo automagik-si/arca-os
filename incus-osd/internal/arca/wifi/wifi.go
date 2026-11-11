@@ -178,59 +178,59 @@ func RenderNetwork(cfg *api.SystemNetworkConfig) string {
 
 	var b strings.Builder
 
-	b.WriteString("[Match]\nType=wlan\nWLANInterfaceType=station\n\n[Link]\nRequiredForOnline=no\n\n[Network]\n")
+	_, _ = b.WriteString("[Match]\nType=wlan\nWLANInterfaceType=station\n\n[Link]\nRequiredForOnline=no\n\n[Network]\n")
 
 	if cfg != nil && cfg.DNS != nil {
 		if len(cfg.DNS.SearchDomains) > 0 {
-			b.WriteString("Domains=" + strings.Join(cfg.DNS.SearchDomains, " ") + "\n")
+			_, _ = b.WriteString("Domains=" + strings.Join(cfg.DNS.SearchDomains, " ") + "\n")
 		}
 
 		for _, ns := range cfg.DNS.Nameservers {
-			b.WriteString("DNS=" + ns + "\n")
+			_, _ = b.WriteString("DNS=" + ns + "\n")
 		}
 
 		if cfg.DNS.DNSOverTLS {
-			b.WriteString("DNSOverTLS=yes\n")
+			_, _ = b.WriteString("DNSOverTLS=yes\n")
 		}
 	}
 
 	if cfg != nil && cfg.Time != nil {
 		for _, ntp := range cfg.Time.NTPServers {
-			b.WriteString("NTP=" + ntp + "\n")
+			_, _ = b.WriteString("NTP=" + ntp + "\n")
 		}
 	}
 
 	if len(w.Addresses) == 0 {
-		b.WriteString("LinkLocalAddressing=no\n")
+		_, _ = b.WriteString("LinkLocalAddressing=no\n")
 	} else {
-		b.WriteString("LinkLocalAddressing=ipv6\n")
+		_, _ = b.WriteString("LinkLocalAddressing=ipv6\n")
 	}
 
-	b.WriteString("IgnoreCarrierLoss=3s\n")
+	_, _ = b.WriteString("IgnoreCarrierLoss=3s\n")
 
 	dhcp4 := slices.Contains(w.Addresses, "dhcp4")
 	dhcp6 := slices.Contains(w.Addresses, "dhcp6")
 
 	if dhcp6 || slices.Contains(w.Addresses, "slaac") {
-		b.WriteString("IPv6AcceptRA=true\n")
+		_, _ = b.WriteString("IPv6AcceptRA=true\n")
 	} else {
-		b.WriteString("IPv6AcceptRA=false\n")
+		_, _ = b.WriteString("IPv6AcceptRA=false\n")
 	}
 
 	switch {
 	case dhcp4 && dhcp6:
-		b.WriteString("DHCP=yes\n")
+		_, _ = b.WriteString("DHCP=yes\n")
 	case dhcp4:
-		b.WriteString("DHCP=ipv4\n")
+		_, _ = b.WriteString("DHCP=ipv4\n")
 	case dhcp6:
-		b.WriteString("DHCP=ipv6\n")
+		_, _ = b.WriteString("DHCP=ipv6\n")
 	default:
 		// No DHCP address is requested; the link keeps the addresses it has.
 	}
 
-	b.WriteString("\n[DHCPv4]\nClientIdentifier=mac\nRouteMetric=600\nUseMTU=true\n")
-	b.WriteString("\n[DHCPv6]\nWithoutRA=solicit\n")
-	b.WriteString("\n[IPv6AcceptRA]\nRouteMetric=600\n")
+	_, _ = b.WriteString("\n[DHCPv4]\nClientIdentifier=mac\nRouteMetric=600\nUseMTU=true\n")
+	_, _ = b.WriteString("\n[DHCPv6]\nWithoutRA=solicit\n")
+	_, _ = b.WriteString("\n[IPv6AcceptRA]\nRouteMetric=600\n")
 
 	return b.String()
 }
@@ -240,31 +240,31 @@ func RenderNetwork(cfg *api.SystemNetworkConfig) string {
 func RenderSupplicant(w *api.SystemNetworkWireless) string {
 	var b strings.Builder
 
-	b.WriteString("ctrl_interface=DIR=" + CtrlDir + "\nupdate_config=0\nsae_pwe=2\np2p_disabled=1\nautoscan=exponential:3:300\n")
+	_, _ = b.WriteString("ctrl_interface=DIR=" + CtrlDir + "\nupdate_config=0\nsae_pwe=2\np2p_disabled=1\nautoscan=exponential:3:300\n")
 
 	if w == nil {
 		return b.String()
 	}
 
 	if w.Country != "" {
-		b.WriteString("country=" + w.Country + "\n")
+		_, _ = b.WriteString("country=" + w.Country + "\n")
 	}
 
 	for i, n := range w.Networks {
-		b.WriteString("\nnetwork={\n\tssid=" + hex.EncodeToString([]byte(n.SSID)) + "\n")
+		_, _ = b.WriteString("\nnetwork={\n\tssid=" + hex.EncodeToString([]byte(n.SSID)) + "\n")
 
 		if n.Hidden {
-			b.WriteString("\tscan_ssid=1\n")
+			_, _ = b.WriteString("\tscan_ssid=1\n")
 		}
 
 		if n.BSSID != "" {
-			b.WriteString("\tbssid=" + strings.ToLower(n.BSSID) + "\n")
+			_, _ = b.WriteString("\tbssid=" + strings.ToLower(n.BSSID) + "\n")
 		}
 
 		fmt.Fprintf(&b, "\tpriority=%d\n", len(w.Networks)-i)
 
 		if n.Security != api.SystemNetworkWirelessSecurityWPAPersonal {
-			b.WriteString("\tkey_mgmt=NONE\n}\n")
+			_, _ = b.WriteString("\tkey_mgmt=NONE\n}\n")
 
 			continue
 		}
@@ -279,12 +279,12 @@ func RenderSupplicant(w *api.SystemNetworkWireless) string {
 		}
 
 		if psk != "" {
-			b.WriteString("\tkey_mgmt=SAE WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=" + psk + "\n")
+			_, _ = b.WriteString("\tkey_mgmt=SAE WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=" + psk + "\n")
 		} else {
-			b.WriteString("\tkey_mgmt=SAE\n\tieee80211w=1\n")
+			_, _ = b.WriteString("\tkey_mgmt=SAE\n\tieee80211w=1\n")
 		}
 
-		b.WriteString("\tsae_password=" + hex.EncodeToString([]byte(n.Passphrase)) + "\n}\n")
+		_, _ = b.WriteString("\tsae_password=" + hex.EncodeToString([]byte(n.Passphrase)) + "\n}\n")
 	}
 
 	return b.String()
