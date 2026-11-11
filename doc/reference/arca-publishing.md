@@ -37,14 +37,21 @@ scripts/arca/upload-tree.sh --tree <dir> --config <external-config>
 ```
 
 Keep the config outside the repository. It is read as data, with unquoted `key=value` lines for required `bucket`,
-`endpoint` (HTTP(S) origin, without credentials or a path), `region` (`auto` for Cloudflare R2), and optional `prefix`
+`endpoint` (an HTTPS origin without credentials or a path; plain HTTP is accepted only for the loopback hosts
+`127.0.0.1`, `localhost` and `[::1]`), `region` (`auto` for Cloudflare R2), and optional `prefix`
 (a relative path without a trailing slash). Blank lines and `#` comments are accepted. Export credentials through
 `RCLONE_S3_ACCESS_KEY_ID` and `RCLONE_S3_SECRET_ACCESS_KEY`, with optional `RCLONE_S3_SESSION_TOKEN`; never store
 credentials in that file or the checkout. Missing configuration or credentials are refused. Ambient rclone settings
 are ignored, including debug logging; only the bucket and endpoint are logged, never credentials.
 
-Supply a complete, finished local tree, serialize uploads, and keep it unchanged until upload finishes. Include only
-public update certificates, never signing keys. The uploader copies release directories and public keys first and
+Supply a complete, finished local tree. Include only public update certificates, never signing keys. The uploader
+refuses (exit 2) while an automatic publishing run holds `~/.cache/arca-autopublish.lock` or another upload holds
+`~/.cache/arca-upload-tree.lock`, and holds both until it ends, so a publishing run that starts meanwhile skips.
+It uploads from a hard-link snapshot taken next to the tree (same file system, removed on exit), so files added,
+removed or replaced during the upload wait for the next one; a file rewritten in place would still change, which is
+what the locks are for, so do not edit the tree by hand while an upload runs. Before anything is written it refuses
+when `index.json` lists a file that is missing from the snapshot or has another size. A dry run takes the same locks,
+snapshot and checks. The uploader copies release directories and public keys first and
 checks their bytes, then publishes the root `index.json` and `index.sjson` last. It reads every remote file back,
 including the signed index and release files, and compares the contents before removing stale remote files.
 A final size/hash check requires a complete mirror. A verification failure exits nonzero and retains stale files.

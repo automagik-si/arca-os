@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Upload a published tree without changing its signatures or layout.
 # Usage: upload-tree.sh --tree <dir> --config <file> [--dry-run]
+# It refuses while an automatic publishing run or another upload holds its lock,
+# and uploads from a hard-link snapshot taken next to the tree.
 set +x
 set -euo pipefail
 
@@ -39,7 +41,11 @@ if [ -z "$bucket" ] || [ -z "$endpoint" ] || [ -z "$region" ]; then
 	refuse "config requires bucket, endpoint and region"
 fi
 [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || refuse "invalid bucket"
-[[ "$endpoint" =~ ^https?://[a-zA-Z0-9.-]+(:[0-9]+)?/?$ ]] || refuse "endpoint must be an HTTP(S) origin without credentials or a path"
+# Plain HTTP shows the access key id and lets the path alter or replay requests.
+if ! [[ "$endpoint" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?/?$ ]] &&
+	! [[ "$endpoint" =~ ^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?/?$ ]]; then
+	refuse "endpoint must be an HTTPS origin (plain HTTP only for a loopback host) without credentials or a path"
+fi
 [[ "$region" =~ ^[a-zA-Z0-9-]+$ ]] || refuse "invalid region"
 if [ -n "$prefix" ]; then
 	[[ "$prefix" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)*$ ]] || refuse "invalid prefix"
@@ -48,12 +54,43 @@ fi
 if [ -z "${RCLONE_S3_ACCESS_KEY_ID:-}" ] || [ -z "${RCLONE_S3_SECRET_ACCESS_KEY:-}" ]; then
 	refuse "set RCLONE_S3_ACCESS_KEY_ID and RCLONE_S3_SECRET_ACCESS_KEY"
 fi
-command -v rclone >/dev/null || die "rclone is not on PATH"
-if [ ! -d "$tree" ] || [ ! -s "$tree/index.json" ] || [ ! -s "$tree/index.sjson" ]; then
+for tool in rclone jq flock; do command -v "$tool" >/dev/null || die "$tool is not on PATH"; done
+if [ -z "$tree" ] || [ ! -d "$tree" ]; then
+	refuse "--tree must be a directory"
+fi
+
+# The same lock as autopublish.sh, which writes the served tree, then this script's own.
+cache=${XDG_CACHE_HOME:-$HOME/.cache}
+mkdir -p "$cache"
+exec 7>>"$cache/arca-autopublish.lock"
+flock -n 7 || refuse "an automatic publishing run holds $cache/arca-autopublish.lock"
+exec 8>>"$cache/arca-upload-tree.lock"
+flock -n 8 || refuse "another upload holds $cache/arca-upload-tree.lock"
+
+# Every phase reads this snapshot; hard links need the tree's own file system.
+source_tree=$(cd "$tree" && pwd -P)
+work=$(mktemp -d "$(dirname "$source_tree")/.upload-tree.XXXXXX") || die "cannot create a snapshot directory next to the tree"
+trap 'rm -rf "$work"' EXIT
+tree=$work/tree
+cp -al "$source_tree" "$tree" || die "cannot take a hard-link snapshot of the tree"
+
+if [ ! -s "$tree/index.json" ] || [ ! -s "$tree/index.sjson" ]; then
 	refuse "tree requires nonempty index.json and index.sjson"
 fi
 [ -n "$(find "$tree" -mindepth 2 -type f -print -quit)" ] || refuse "tree has no release files"
 [ -z "$(find "$tree" ! -type f ! -type d -print -quit)" ] || refuse "tree must contain only regular files and directories"
+
+# Every file the index lists must be in the snapshot with the listed size.
+(cd "$tree" && find . -type f -printf '%s\t%P\n') |
+	jq -Rn '[inputs | split("\t") | {(.[1:] | join("\t")): (.[0] | tonumber)}] | add // {}' >"$work/have.json" ||
+	die "cannot list the snapshot"
+# shellcheck disable=SC2016  # jq variables, not shell
+unlisted=$(jq -r --slurpfile have "$work/have.json" '(.updates // [])[] | .version as $v | (.files // [])[]
+	| "\($v)/\(.filename)" as $p | select(($have[0][$p] // -1) != .size) | $p | @json' "$tree/index.json") ||
+	refuse "index.json is not a readable index"
+if [ -n "$unlisted" ]; then
+	refuse "index.json lists files that are missing or have another size: $(printf '%s' "$unlisted" | head -5 | tr '\n' ' ')"
+fi
 
 remote=:s3:$bucket
 [ -z "$prefix" ] || remote=$remote/$prefix

@@ -61,7 +61,8 @@ done
 log "apt: installing ${#want[@]} packages"
 apt-get install -y -q "${want[@]}"
 
-"$(dirname "$0")/provision-rclone.sh"
+# The helper is pushed into the VM next to this script; test/provision-push.sh checks that.
+bash "$(dirname "$0")/provision-rclone.sh"
 
 # --- mkosi -----------------------------------------------------------------
 mkosi_want="${MKOSI_REF#v}"
