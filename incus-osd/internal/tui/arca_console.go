@@ -333,6 +333,7 @@ func NewArcaTestTUI(s *state.State, screen tcell.Screen) (*TUI, func(), func()) 
 	t.app = tview.NewApplication().SetScreen(screen).SetRoot(t.pages, true)
 
 	done := make(chan struct{})
+	t.runDone = done
 	app := t.app
 
 	go func() {

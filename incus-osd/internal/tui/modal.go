@@ -13,6 +13,12 @@ type Modal struct {
 
 // Update sets the current message of the modal dialog.
 func (m *Modal) Update(message string) {
+	select {
+	case <-m.t.runDone:
+		return
+	default:
+	}
+
 	m.message = message
 
 	m.t.quickDraw()

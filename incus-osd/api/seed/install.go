@@ -4,6 +4,7 @@ package seed
 type Install struct {
 	Version string `json:"version" yaml:"version"`
 
+	Confirmation             string           `json:"confirmation,omitempty"               yaml:"confirmation,omitempty"`               // Automation-only typed confirmation override; only the exact value ERASE is accepted.
 	ForceInstall             bool             `json:"force_install"                        yaml:"force_install"`                        // If true, ignore any existing data on target install disk.
 	ForceInstallConfirmation string           `json:"force_install_confirmation,omitempty" yaml:"force_install_confirmation,omitempty"` // An optional value used to confirm re-installation of IncusOS.
 	ForceReboot              bool             `json:"force_reboot"                         yaml:"force_reboot"`                         // If true, reboot the system automatically upon completion rather than waiting for the install media to be removed.
