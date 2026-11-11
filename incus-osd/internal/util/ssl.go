@@ -101,10 +101,10 @@ func UpdateSystemCustomCACerts(pemCerts []string) error {
 }
 
 // VerifySMIME first verifies the provided S/MIME-signed message using the root CA as a trust
-// anchor. Then, if validation succeeded, it ensures one of the expected intermediate CAs is
-// present in the provided certificate chain. `openssl smime ...` doesn't provide a way to do
-// this, so we must perform a manual check ourselves. Upon success, the verified plain-text
-// message is returned.
+// anchor. Then, if validation succeeded, it ensures the message has exactly one signer whose
+// certificate was issued by one of the expected intermediate CAs. `openssl smime ...` doesn't
+// provide a way to do this, so we must perform a manual check ourselves. Upon success, the
+// verified plain-text message is returned.
 func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificate, message []byte) (*bytes.Buffer, error) {
 	if len(expectedIntermediateCAs) == 0 {
 		return nil, errors.New("at least one intermediate CA must be provided when performing S/MIME validation")
@@ -122,12 +122,17 @@ func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificat
 		return nil, err
 	}
 
+	return verifySMIMEWithRoot(ctx, embeddedCerts.RootCACertificate, expectedIntermediateCAs, message)
+}
+
+// verifySMIMEWithRoot verifies the message using the provided root CA as a trust anchor.
+func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expectedIntermediateCAs []*x509.Certificate, message []byte) (*bytes.Buffer, error) {
 	// Get the root CA.
 	var rootCABuf bytes.Buffer
 
-	err = pem.Encode(&rootCABuf, &pem.Block{
+	err := pem.Encode(&rootCABuf, &pem.Block{
 		Type:  "CERTIFICATE",
-		Bytes: embeddedCerts.RootCACertificate.Raw,
+		Bytes: rootCA.Raw,
 	})
 	if err != nil {
 		return nil, err
@@ -151,10 +156,23 @@ func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificat
 		return nil, err
 	}
 
-	// Verify the signed message.
+	// Create a temporary file for the certificate the signature gets verified with.
+	signerFile, err := os.CreateTemp("", "")
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = os.Remove(signerFile.Name()) }()
+
+	err = signerFile.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify the signed message, trusting only the provided root CA.
 	verified := bytes.NewBuffer(nil)
 
-	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", "smime", "-verify", "-text", "-CAfile", rootCAFile.Name())
+	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", smimeVerifyArgs(rootCAFile.Name(), signerFile.Name())...)
 	if err != nil {
 		// Return a nicer error if verification failed due to a missing/unverifiable CA.
 		if strings.Contains(err.Error(), "Verify error: unable to get local issuer certificate") {
@@ -185,19 +203,23 @@ func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificat
 		return nil, err
 	}
 
-	foundIntermediateCA := false
-
-	for _, cert := range pkcs.Certificates {
-		if slices.ContainsFunc(expectedIntermediateCAs, func(c *x509.Certificate) bool {
-			return bytes.Equal(cert.Raw, c.Raw)
-		}) {
-			foundIntermediateCA = true
-
-			break
-		}
+	// Get the certificate the signature was verified with.
+	verifiedSigners, err := os.ReadFile(signerFile.Name())
+	if err != nil {
+		return nil, err
 	}
 
-	if !foundIntermediateCA {
+	signer, err := smimeSigner(pkcs, verifiedSigners)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure the signer's certificate was issued by one of the expected intermediate CAs.
+	issuedByExpectedCA := slices.ContainsFunc(expectedIntermediateCAs, func(ca *x509.Certificate) bool {
+		return bytes.Equal(signer.RawIssuer, ca.RawSubject) && signer.CheckSignatureFrom(ca) == nil
+	})
+
+	if !issuedByExpectedCA {
 		expectedSubjects := []string{}
 		for _, ca := range expectedIntermediateCAs {
 			if !slices.Contains(expectedSubjects, ca.Subject.String()) {
@@ -209,4 +231,31 @@ func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificat
 	}
 
 	return verified, nil
+}
+
+// smimeVerifyArgs returns the openssl arguments to verify a message trusting only the root CA
+// in rootCAFile, writing the certificate the signature was verified with to signerFile.
+func smimeVerifyArgs(rootCAFile string, signerFile string) []string {
+	return []string{"smime", "-verify", "-text", "-no-CApath", "-no-CAstore", "-CAfile", rootCAFile, "-signer", signerFile}
+}
+
+// smimeSigner returns the certificate the message's signature was verified with, requiring
+// exactly one signer. verifiedSigners holds the PEM-encoded certificate(s) written by openssl.
+func smimeSigner(pkcs *pkcs7.PKCS7, verifiedSigners []byte) (*x509.Certificate, error) {
+	if len(pkcs.Signers) != 1 {
+		return nil, fmt.Errorf("S/MIME message must have exactly one signer, found %d", len(pkcs.Signers))
+	}
+
+	block, rest := pem.Decode(verifiedSigners)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("unable to decode the S/MIME signer's certificate")
+	}
+
+	// One certificate is written per signer.
+	extra, _ := pem.Decode(rest)
+	if extra != nil {
+		return nil, errors.New("S/MIME message must have exactly one signer, found several")
+	}
+
+	return x509.ParseCertificate(block.Bytes)
 }
