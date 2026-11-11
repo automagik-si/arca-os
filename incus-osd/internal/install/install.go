@@ -241,12 +241,7 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 				return err
 			}
 
-			confirmationValue := string(machineID[:6])
-
-			switch installSeed.ForceInstallConfirmation {
-			case "":
-				return fmt.Errorf("%s is already installed on this system; to confirm overwriting, add `ForceInstallConfirmation=%s` to the install seed and reboot", osName, confirmationValue)
-			case confirmationValue, "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING":
+			err = withReinstallSafety(installSeed, osName, machineID, func() error {
 				// Get the device that IncusOS is currently installed on.
 				output, err := subprocess.RunCommandContext(ctx, "dmsetup", "deps", "-o", "blkdevname", "/dev/mapper/root")
 				if err != nil {
@@ -260,9 +255,20 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 					return fmt.Errorf("%s is already installed on this system, but unable to determine what device it is running from", osName)
 				}
 
-				slog.InfoContext(ctx, "Wiping existing version of "+osName+", then rebooting in five seconds to run actual installation")
+				t, err := tui.GetTUI(nil)
+				if err != nil {
+					return err
+				}
 
-				_, err = subprocess.RunCommandContext(ctx, "sgdisk", "-Z", "/dev/"+deviceGroup[1])
+				modal := t.AddModal(osName+" Reinstall", "install")
+
+				err = confirmTargetDestruction(ctx, modal, "/dev/"+deviceGroup[1], installSeed.Confirmation, func() error {
+					slog.InfoContext(ctx, "Wiping existing version of "+osName+", then rebooting in five seconds to run actual installation")
+
+					_, err := subprocess.RunCommandContext(ctx, "sgdisk", "-Z", "/dev/"+deviceGroup[1])
+
+					return err
+				})
 				if err != nil {
 					return err
 				}
@@ -276,8 +282,11 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 
 				// Sleep until the system reboots so we don't attempt to proceed with the install.
 				time.Sleep(10 * time.Second)
-			default:
-				return fmt.Errorf("%s is already installed on this system; the value of `ForceInstallConfirmation` '%s' != '%s', refusing to continue", osName, installSeed.ForceInstallConfirmation, confirmationValue)
+
+				return nil
+			})
+			if err != nil {
+				return err
 			}
 		}
 
@@ -735,18 +744,18 @@ func (i *Install) performInstall(ctx context.Context, modal *tui.Modal, sourceDe
 
 	// At this point, the target device either has no GPT table, or we will be force-installing over any existing data.
 
-	// Zap any existing GPT table on the target device.
-	if i.config.ForceInstall {
-		// Don't check return status, since sgdisk always returns an error if there's a mismatch
-		// between the main and backup GPT tables.
-		_, _ = subprocess.RunCommandContext(ctx, "sgdisk", "-Z", targetDevice)
-	}
+	err = confirmTargetDestruction(ctx, modal, targetDevice, i.config.Confirmation, func() error {
+		// Zap any existing GPT table only after the operator confirms the plan.
+		if i.config.ForceInstall {
+			// sgdisk may report a mismatch between the main and backup GPT tables.
+			_, _ = subprocess.RunCommandContext(ctx, "sgdisk", "-Z", targetDevice)
+		}
 
-	// Before starting the install, wipe the target device.
-	slog.InfoContext(ctx, "Wiping target drive, this may take a while")
-	modal.Update("Wiping target drive, this may take a while.")
+		slog.InfoContext(ctx, "Wiping target drive, this may take a while")
+		modal.Update("Wiping target drive, this may take a while.")
 
-	err = storage.WipeDrive(ctx, targetDeviceID, false)
+		return storage.WipeDrive(ctx, targetDeviceID, false)
+	})
 	if err != nil {
 		return err
 	}

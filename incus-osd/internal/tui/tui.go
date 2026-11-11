@@ -34,6 +34,7 @@ type TUI struct {
 	frame    *tview.Frame
 	pages    *tview.Pages
 	screen   tcell.Screen
+	runDone  chan struct{}
 	textView *tview.TextView
 
 	modalMessages []*Modal
@@ -61,7 +62,8 @@ func GetTUI(s *state.State) (*TUI, error) {
 	}
 
 	singletonTUI = &TUI{
-		state: s,
+		state:   s,
+		runDone: make(chan struct{}),
 	}
 
 	// Detect any additional console devices.
@@ -133,6 +135,8 @@ func (t *TUI) Write(p []byte) (int, error) {
 
 // Run is a wrapper to start the underlying TUI application.
 func (t *TUI) Run() error {
+	defer close(t.runDone)
+
 	// Setup a gofunc to cycle through modal dialogs, one per second.
 	go func() {
 		for i := 0; ; i++ {
@@ -278,6 +282,11 @@ func (t *TUI) renderModal(title string, msg string, progress float64) {
 	grid.SetTitle(" " + title + " ").SetBorder(true)
 
 	t.pages.AddPage("modal", modal(grid, modalWidth, modalHeight), true, true)
+
+	if t.pages.HasPage("install-confirmation") {
+		t.pages.SendToFront("install-confirmation")
+	}
+
 	t.app.Draw()
 }
 

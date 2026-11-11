@@ -31,6 +31,19 @@ installation process.
 
 The structure is defined in [`api/seed/install.go`](https://github.com/lxc/incus-os/blob/main/incus-osd/api/seed/install.go):
 
+Before erasing a target, the installer shows its model, size, serial (if readable),
+partition table and contents on the install console. Type `ERASE` exactly and
+press Enter to proceed. Empty or incorrect input, Ctrl-C, Esc, console failure,
+or five minutes without confirmation aborts without erasing the disk. Use
+Up/Down or PageUp/PageDown to review long partition lists.
+
+- `confirmation`: **Automation-only override for automated VM proofs.** Setting
+  `confirmation: "ERASE"` explicitly pre-answers the console prompt and logs a
+  conspicuous warning. It is never set by default. Other values do not bypass
+  the prompt. Leave this field unset for
+  operator installations. This does not bypass target selection, `force_install`,
+  or the existing `force_install_confirmation` check during reinstallation.
+
 - `force_install`: If true, will install to target device even if partitions
   already exist. WARNING: THIS CAN CAUSE DATA LOSS!
 
