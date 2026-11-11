@@ -25,6 +25,55 @@ Arca OS uses two channels:
 The tree is kept in the builder (`/srv/artifacts/updates`), where the signing key is, and mirrored to the directory
 that the build host serves to the network (`~/.cache/arca-os/updates` by default).
 
+## Uploading to an S3-compatible bucket
+
+The local publish → upload → serve flow is explicit; automatic publishing does not call the upload script.
+No real bucket exists yet. After local publishing completes, use rclone with a dedicated bucket or prefix:
+
+```sh
+scripts/arca/publish-update.sh --version <version> --serve-dir <dir> --channel stable
+scripts/arca/upload-tree.sh --tree <dir> --config <external-config> --dry-run
+scripts/arca/upload-tree.sh --tree <dir> --config <external-config>
+```
+
+Keep the config outside the repository. It is read as data, with unquoted `key=value` lines for required `bucket`,
+`endpoint` (an HTTPS origin without credentials or a path; plain HTTP is accepted only for the loopback hosts
+`127.0.0.1`, `localhost` and `[::1]`), `region` (`auto` for Cloudflare R2), and `prefix` (a relative path without a
+trailing slash). The prefix is required and an empty value is refused, because the destination is a mirror; to mirror
+to the whole bucket, leave `prefix` out and set `mirror_bucket_root=yes`. Blank lines and `#` comments are accepted.
+Export credentials through `RCLONE_S3_ACCESS_KEY_ID` and `RCLONE_S3_SECRET_ACCESS_KEY`, with optional
+`RCLONE_S3_SESSION_TOKEN`; never store credentials in that file or the checkout. Missing configuration or credentials
+are refused. Ambient rclone settings are ignored, including debug logging. Every run and dry run logs the full
+destination (bucket/prefix and endpoint); when rclone fails, its error lines (file names, HTTP statuses) are shown
+with the credential values blanked.
+
+Supply a complete, finished local tree. Include only public update certificates, never signing keys. Run the upload on
+the build host, as the user whose timer runs `autopublish.sh`, on the served copy (`~/.cache/arca-os/updates`): the
+locks live in that user's cache directory, so a tree owned by another user is refused, and so is the builder's own
+`/srv/artifacts` tree, which is rewritten in place. The uploader refuses (exit 2) while an automatic publishing run
+holds `~/.cache/arca-autopublish.lock` or another upload holds `~/.cache/arca-upload-tree.lock`, and holds both until
+it ends, so a publishing run that starts meanwhile skips and `publish-update.sh`, which takes the upload lock,
+refuses. It uploads from a hard-link snapshot taken next to the tree (same file system, removed on exit), so files
+added, removed or replaced during the upload wait for the next one; a file rewritten in place would still change,
+which is what the locks are for, so do not edit the tree by hand while an upload runs. Before anything is written it
+refuses when `index.sjson`, the only index machines read, does not carry `index.json` (the signature is checked
+against the signer's certificate in the file; the CA stays in the builder), or when `index.json` lists a file that is
+missing from the snapshot or has another size. A dry run takes the same locks, snapshot and checks. On TERM, INT or
+HUP the uploader stops rclone and waits for it before it removes the snapshot. A killed upload leaves `.upload-tree.*`
+next to the tree; a later run removes it once it is a day old, and says so. The uploader copies release directories
+and public keys first and checks their bytes, then publishes the root `index.json` and `index.sjson` last. It reads
+every remote file back, including the signed index and release files, and compares the contents before removing stale
+remote files. A final size/hash check requires a complete mirror. A verification failure exits nonzero and retains
+stale files. The selected bucket/prefix is a mirror: unrelated files there will be deleted. Dry runs list additions,
+replacements, and removals without writing.
+
+After a successful upload, configure static HTTP(S) serving for that bucket/prefix separately and set the nodes'
+`images` provider `server_url` to the public tree URL. The S3 API endpoint is used for uploading, not serving updates.
+The uploader changes neither signatures nor tree format. The local proof is `scripts/arca/test/upload-tree.sh`,
+using `rclone serve s3` (pinned rclone 1.76.0, Python 3 and ShellCheck), without credentials for a real bucket or image builds.
+`provision-builder.sh` installs the checksum-pinned rclone through `provision-rclone.sh`; existing builders can run
+that helper alone as root. The proof refuses unsupported tools with the required version and never downloads them.
+
 ## One run
 
 `scripts/arca/autopublish.sh` does one run. A run picks the first of these that applies:

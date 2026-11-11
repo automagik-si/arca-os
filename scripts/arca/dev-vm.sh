@@ -144,6 +144,7 @@ do_create() {
 
 	log "provisioning $VM"
 	incus file push "${P[@]}" "$HERE/provision-builder.sh" "$VM/root/provision-builder.sh"
+	incus file push "${P[@]}" "$HERE/provision-rclone.sh" "$VM/root/provision-rclone.sh"
 	incus exec "${P[@]}" "$VM" -- bash /root/provision-builder.sh
 }
 
