@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lxc/incus/v7/shared/subprocess"
+	"github.com/rivo/tview"
 
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
 	"github.com/lxc/incus-os/incus-osd/internal/tui"
@@ -57,16 +58,18 @@ func inspectInstallDevice(ctx context.Context, device string) (string, error) {
 func renderInstallPlan(device installDevice) string {
 	var plan strings.Builder
 
-	_, _ = plan.WriteString("WARNING: Everything on this device will be erased.\n" +
-		"The TPM will be reset at the end of the install, destroying any keys or\n" +
-		"credentials a previous system stored in it.\n" +
-		"If the other system uses the TPM to unlock its disk, export that system's\n" +
-		"recovery key before continuing.\n\n")
+	_, _ = plan.WriteString("WARNING: Everything on the target disk shown below will be erased.\n" +
+		"The TPM will also be reset at the end of the install, destroying any keys or\n" +
+		"credentials stored in it. This also affects OTHER disks in this machine that\n" +
+		"the installer does not erase: an encrypted disk (BitLocker, LUKS) that\n" +
+		"unlocks with this TPM will then ask for its recovery key or passphrase.\n" +
+		"Before typing ERASE, save recovery keys or passphrases off this machine.\n" +
+		"If none exists, add one before installing. Esc cancels.\n\n")
 	fmt.Fprintf(&plan, "Target: %s\nModel: %s\nSize: %.2f GiB (%d bytes)\nSerial: %s\nPartition table: %s\n", device.Path, readableValue(device.Model), float64(device.Size)/(1024*1024*1024), device.Size, readableValue(device.Serial), readableValue(device.PTType))
 	_, _ = plan.WriteString("Current contents (OS names, when detected, appear in labels/types):\n")
 	writeInstallContents(&plan, device, "")
 
-	return plan.String()
+	return strings.Join(tview.WordWrap(plan.String(), 78), "\n")
 }
 
 func writeInstallContents(plan *strings.Builder, device installDevice, indent string) {
@@ -103,7 +106,7 @@ func (c destructionConfirmation) run(ctx context.Context, device string, seedAns
 
 	answer := seedAnswer
 	if seedAnswer == installConfirmation {
-		slog.WarnContext(ctx, "WARNING: AUTOMATION-ONLY install seed confirmation override is erasing the target without operator input", "device", device)
+		slog.WarnContext(ctx, "WARNING: AUTOMATION-ONLY install seed confirmation override is erasing the target and resetting the TPM without operator input; other disks may need recovery keys or passphrases", "device", device)
 	} else {
 		promptCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()

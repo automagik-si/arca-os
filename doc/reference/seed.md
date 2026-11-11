@@ -38,16 +38,19 @@ or five minutes without confirmation aborts without erasing the disk. Use
 Up/Down or PageUp/PageDown to review long partition lists.
 
 The installer also resets the TPM at the end of the install. This reset is
-best-effort: installation continues if it fails. A successful reset destroys any
-keys or credentials a previous system stored in the TPM, even if that system's
-disk is not erased. If the other system uses the TPM to unlock its disk, export
-that system's recovery key before continuing. Both the disk erasure and TPM reset
-are disclosed before the confirmation prompt.
+best-effort: installation continues if it fails, and the failure is logged. A
+successful reset destroys any keys or credentials stored in the TPM. The reset
+also affects other disks in this machine that the installer does not erase: any
+encrypted volume (for example LUKS with `tpm2-device=auto`, or BitLocker) unlocked
+by this TPM will need its recovery key or passphrase. Save those off this machine
+first; if a volume has no recovery key or passphrase, add one before installing.
+Both the disk erasure and TPM reset are disclosed before the confirmation prompt.
 
 - `confirmation`: **Automation-only override for automated VM proofs.** Setting
   `confirmation: "ERASE"` explicitly pre-answers the console prompt and logs a
-  conspicuous warning. It is never set by default. Other values do not bypass
-  the prompt. Leave this field unset for
+  conspicuous warning about disk erasure and the TPM reset. The TPM reset still
+  happens with this pre-answer. It is never set by default. Other values do not
+  bypass the prompt. Leave this field unset for
   operator installations. This does not bypass target selection, `force_install`,
   or the existing `force_install_confirmation` check during reinstallation.
 

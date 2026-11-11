@@ -970,7 +970,10 @@ func (i *Install) performInstall(ctx context.Context, modal *tui.Modal, sourceDe
 	// first-boot running systemd-repart because the TPM was in a weird state. This is allowed
 	// to fail, since some physical TPMs may not allow a reset from userspace, or if swtpm is
 	// configured that service won't be running yet.
-	_, _ = subprocess.RunCommandContext(ctx, "tpm2_clear")
+	_, err = subprocess.RunCommandContext(ctx, "tpm2_clear")
+	if err != nil {
+		slog.WarnContext(ctx, "TPM reset failed; continuing installation", "err", err)
+	}
 
 	// Finally, run `bootctl install`.
 	_, err = subprocess.RunCommandContext(ctx, "bootctl", "--graceful", "install")
