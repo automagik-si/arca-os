@@ -15,3 +15,5 @@ The following configuration options can be set:
 * `name`: The name of the provider. One of `images`, `operations-center`, or `debug`. `debug` is intended for use by developers working on IncusOS.
 
 * `config`: A map of provider-specific configuration key-value pairs.
+
+For the `images` provider, the `update_ca` key sets a PEM-encoded certificate authority used to verify signed update metadata. It must be the certificate authority that directly issued the signer's certificate (basic constraint `CA:TRUE`; a pinned leaf certificate is not accepted), and a signer issued under a further intermediate is not accepted.
