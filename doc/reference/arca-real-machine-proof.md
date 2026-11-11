@@ -31,40 +31,73 @@ This gate comes before any firmware change and before any install. It is not
 a decision line: without a recorded `PASS gate`, do not start.
 
 The installer runs a TPM clear at the end of every completed install and
-does not check whether it worked (`incus-osd/internal/install/install.go`),
-so plan as if it always works. The erase screen discloses it (step 3). A
-clear discards every key the TPM held or had sealed. A machine with another
+carries on when it fails, only logging the failure
+(`incus-osd/internal/install/install.go:969-976`), so plan as if it always
+works. The erase screen says so above the target, including that other disks
+in the machine are affected (`incus-osd/internal/install/confirmation.go:61-67`).
+A clear discards every key the TPM held or had sealed. A machine with another
 disk whose encrypted volume is unlocked only by its TPM (for example a LUKS
 volume with `tpm2-device=auto` in `/etc/crypttab`) therefore loses that unlock
 on a successful install, while the disk itself is never touched and its
-digest never changes. A change of Secure Boot state or keys can break the
-same unlock even earlier, in step 1b.
+digest never changes. A change of Secure Boot state or keys breaks the same
+unlock even earlier: such an unlock is normally bound to PCR 7, so the old
+volume may ask for its recovery key from step 1b on, not only after the
+install. Everything below therefore happens on the old system while its TPM
+still unlocks, before step 1b.
 
-On the old system, before anything else:
+1. List every encrypted volume on every disk, not only those in
+   `/etc/crypttab`: `lsblk -o PATH,FSTYPE` and
+   `sudo blkid -t TYPE=crypto_LUKS`. For each, read the key slots and tokens
+   with `sudo cryptsetup luksDump <device>`. Every volume with a TPM-bound
+   token is in scope (`systemd-tpm2`, or a `clevis` token using the TPM),
+   including volumes on disks the installer will not erase. A BitLocker
+   volume with a TPM protector is the same case under another system: it
+   needs its recovery password (`manage-bde -protectors -get <drive>`),
+   tested with that system's own tools.
+2. Back up each volume's LUKS header to separate storage before changing it:
+   `sudo cryptsetup luksHeaderBackup <device> --header-backup-file <file>`.
+   Protect the file like a key: with it, a key that is removed later still
+   opens the volume.
+3. Each volume must have a recovery key that does not depend on the TPM,
+   written down outside recordings and held by the team under the vault rule.
+   Adding one needs the volume unlocked, and `systemd-cryptenroll` asks for
+   an existing passphrase by default, which a TPM-only volume does not have.
+   Use `sudo systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key <device>`
+   (systemd 256 or newer; check `systemctl --version`), or
+   `--unlock-key-file=<file>` where a key file exists. If neither applies,
+   the gate cannot be met with these tools: stop. Run `luksDump` again and
+   write down the number of the new recovery key slot.
+4. **Test every recovery key once, in its own slot and without the TPM:**
 
-1. List every encrypted volume on every disk and how each one unlocks: read
-   `/etc/crypttab`, and `sudo cryptsetup luksDump <device>` for the key slots
-   and tokens of each volume. Every volume with a TPM token is in scope,
-   including volumes on disks the installer will not erase.
-2. Each such volume must have a recovery key that does not depend on the TPM
-   (for example one added with
-   `sudo systemd-cryptenroll --recovery-key <device>`), written down outside
-   recordings and held by the team under the vault rule.
-3. **Test every recovery key once:**
-   `sudo cryptsetup open --test-passphrase <device>` must accept the key
-   typed from the stored copy. An enrolled but untested key does not pass.
-4. The owner confirms that nothing else on the machine exists only in the TPM
+   ```sh
+   sudo cryptsetup open --test-passphrase --disable-external-tokens \
+     --key-slot <recovery slot> -v <device>
+   ```
+
+   The command must prompt, the key is typed from the stored copy, and the
+   output must contain `Key slot <n> unlocked.` for the recovery slot. Without
+   `--disable-external-tokens` the command unlocks through the TPM token and
+   never prompts, so it proves nothing: a run that did not prompt, or that
+   names another slot, is not a test. An enrolled but untested key does not
+   pass.
+5. The owner confirms that nothing else on the machine exists only in the TPM
    (a key an application created or sealed there), or that each such secret
-   has a tested copy elsewhere.
+   has a tested copy elsewhere. The owner confirms this again immediately
+   before step 3 and before any reinstall in step 8.
 
-**PASS/FAIL gate:** PASS only if every TPM-unlocked volume has a recovery key
-that was enrolled, proved by a real unlock check and stored in the vault,
-and the owner gave the confirmation in item 4. Otherwise FAIL; do not start.
+**PASS/FAIL gate:** PASS only if every TPM-unlocked volume was found, has a
+header backup and a recovery key in the vault, that key's own slot was
+unlocked in the test above, and the owner gave the confirmation in item 5.
+Otherwise FAIL; do not start.
 
 ## Before starting
 
 The owner must settle these decisions and supply their values privately:
 
+- **Installer:** the published installer is built from code that has the
+  erase screen with its typed `ERASE` confirmation and its TPM reset warning.
+  Both are on main (`incus-osd/internal/install/confirmation.go`); an
+  installer published before them is not this plan's installer.
 - **SSD arrival:** the new SSD has arrived, is installed, may be erased, and
   has no partition table. The installer refuses a target that already has
   one unless the seed sets `force_install`, which the first install here
@@ -92,8 +125,12 @@ The owner must settle these decisions and supply their values privately:
   boots only with Secure Boot turned off; an unlock tied to the TPM or to the
   Secure Boot state then needs its recovery key. The original keys are
   exported in step 1; putting them back ends the new installation's own TPM
-  unlock and is done only when that installation is abandoned. If the way
-  back cannot be assured, do not start.
+  unlock and is done only when that installation is abandoned. This plan has
+  no command that writes the exported files back: the keys return through the
+  firmware's own option to restore factory keys, or its page for loading key
+  files. If the firmware has neither, record that before step 1b; the
+  original keys then cannot be put back, and the owner decides whether to
+  proceed. If the way back cannot be assured, do not start.
 - **Display:** the firmware screens, boot menu and installer must be readable
   without the NVIDIA card: an onboard output, or a serial console verified to
   show firmware setup. Setup Mode removes every existing key, and a card's
@@ -101,9 +138,12 @@ The owner must settle these decisions and supply their values privately:
   only the Arca OS keys are enrolled the firmware can refuse it and every
   screen before the operating system stays black. The only alternative is an
   explicit owner decision to keep Microsoft's UEFI CA in the firmware's `db`.
-  That route replaces Setup Mode in step 1b by the manual enrolment described
-  in the [physical installation guide](../getting-started/installation/physical.md),
-  widens what the firmware trusts, and is recorded in step 4.
+  That route widens what the firmware trusts and is recorded in step 4. It
+  does not use Setup Mode: the keys are loaded by hand in firmware setup, and
+  step 1b says what replaces its Setup Mode items and its PASS line. This
+  plan gives no screen-by-screen procedure for it; the firmware's own pages
+  and the [physical installation guide](../getting-started/installation/physical.md)
+  are the reference.
 - **Driver track:** the separate NVIDIA work has delivered a signed pack for
   the chosen OS kernel, an approved pinned branch/build, and a prebuilt CUDA
   test container with a known-answer workload and its exact invocation.
@@ -111,7 +151,8 @@ The owner must settle these decisions and supply their values privately:
 Bring a keyboard, the display path chosen above, wired network, the published
 installer for the previous release, and separate recovery media. From the
 board manual, write down the firmware (CMOS) reset procedure and what it does
-to Secure Boot on this board before the run, not during it. Check that the
+to Secure Boot and to the TPM on this board (a reset can disable or clear a
+firmware TPM) before the run, not during it. Check that the
 firmware clock is correct: signature and TLS checks depend on it.
 Prepare an authenticated management client with the matching Incus OS
 commands and the client's trusted certificate in the install preseed; see
@@ -164,7 +205,7 @@ The examples use `proof:` as a local Incus remote alias for the proof machine,
 not as a host name. Add that remote using the access guide, check its server
 certificate against the console, and authenticate with the preseeded client.
 Run management commands from the management client, never against the
-laptop's remote. For raw API calls, `incus query` returns the response
+laptop's remote; the only exception is step 10. For raw API calls, `incus query` returns the response
 metadata, so the fields below do not have an extra `metadata` wrapper.
 
 Keep raw evidence privately on separate storage. Public results contain only
@@ -263,11 +304,22 @@ its own. Entering Setup Mode removes every existing key.
    state changed; use the tested recovery key. Shut down cleanly, then repeat
    step 1's read-only digest of the old disk: step 2 compares against it.
 
+On the route that keeps Microsoft's UEFI CA, items 3 and 4 are replaced. In
+firmware setup, load the Arca OS PK, KEK and db keys from the installer
+media's `keys` folder, remove everything else from `KEK` and `db` except
+Microsoft's UEFI CA in `db`, and leave Secure Boot on in user mode. Nothing
+is in Setup Mode afterwards and the installer enrols nothing. Item 5 is then
+done with Secure Boot turned off, as the firmware rules below describe; from
+the recovery system, `bootctl status` must show user mode and a fresh export
+must list exactly the approved certificates plus that CA.
+
 **PASS/FAIL 1b:** PASS only if the original state was recorded, the firmware
 has Secure Boot switched on and is in Setup Mode with no key enrolled, the
 display path still works, the old system still boots and unlocks (by itself or with
-the tested recovery key), and its baseline was refreshed. Otherwise FAIL and
-stop before the installer.
+the tested recovery key), and its baseline was refreshed. On the route that
+keeps Microsoft's UEFI CA, "in Setup Mode with no key enrolled" is replaced
+by: in user mode, with the approved Arca OS keys and nothing else but that
+CA. Otherwise FAIL and stop before the installer.
 
 **Abort/recovery:** put the firmware back as recorded: restore the factory
 keys with the firmware's own option if they were present, and set Secure Boot
@@ -286,10 +338,19 @@ until the proof ends:
   setup and change no key. Do not restore keys, clear keys or enter Setup
   Mode again. If the firmware cannot turn Secure Boot off without changing
   keys, stop.
+- Check that, the first time Secure Boot is turned off (step 2). From the
+  recovery system, `bootctl status` must show Secure Boot disabled in user
+  mode, not Setup Mode, and a fresh export of `PK`, `KEK`, `db` and `dbx`
+  must hold the Arca OS keys the team's key holders confirm. Keep that export
+  as the enrolled set. In every later session with Secure Boot off, a fresh
+  export must be identical to it; after step 7, `KEK`, `db` and `dbx` may
+  differ by a published key update, `PK` may not. Any other difference: stop.
 - While Secure Boot is off, never let the new SSD or the installer boot. The
   installed system records a boot without Secure Boot as an untrusted state
   that only a reinstall removes. Always pick the device in the one-time boot
-  menu; never rely on the boot order.
+  menu; never rely on the boot order. If the new SSD starts by mistake in
+  that state, it stops and asks for its recovery passphrase: power off, do
+  not enter the passphrase.
 - Before booting the new SSD or the installer, turn Secure Boot back on with
   the same keys.
 - The installed system binds its disk unlock to the exact Secure Boot
@@ -299,16 +360,17 @@ until the proof ends:
 - If every screen before the operating system goes black after enrolment,
   power off and use the display path from the display decision. If that also
   fails, apply the firmware reset procedure written down beforehand, then
-  check what state Secure Boot is in before booting anything. If Secure Boot
+  check what state Secure Boot and the TPM are in before booting anything. If Secure Boot
   is now off or the keys are gone, do not boot the new SSD: boot the old disk
   and record FAIL.
 
 ## 2. Installer confirmation and rejection test
 
-Use a published installer that implements the console `ERASE` confirmation,
-the five-minute abort timeout and the TPM-clear disclosure on the erase
-screen. This is a release prerequisite: if the prompt, the target details or
-the disclosure are absent, stop. Use the prepared `install.yaml`: its
+The installer's erase screen opens with a warning that the TPM will also be
+reset and that other disks in the machine are affected, then shows the
+target. It requires a typed `ERASE` and aborts after five minutes without it
+(`incus-osd/internal/install/confirmation.go`). An installer that shows no
+such screen was published before that code: stop. Use the prepared `install.yaml`: its
 `target` selector is restricted to the new SSD and cannot also match another
 disk. Do not use a broad size-sort rule, `force_install` or a pre-answered
 `confirmation`.
@@ -355,10 +417,11 @@ digest. Fetch the update index again and require the same answer as before.
 Turn Secure Boot back on with the same keys, then boot the installer.
 
 Recheck the target from scratch inside the five-minute limit: serial first,
-then model, byte size and contents. The erase screen discloses that the
-installer will also attempt to clear the TPM. Read that line. Typing `ERASE`
-accepts both the erasure of the new SSD and that TPM clear, which reaches the
-old system as the hard gate describes. Type `ERASE` **by hand on the proof
+then model, byte size and contents. The warning at the top of the erase
+screen says the TPM will also be reset and that this affects other disks in
+the machine. Read it; the owner repeats the confirmation of the gate's item 5
+now. Typing `ERASE` accepts both the erasure of the new SSD and that TPM
+reset, which reaches the old system as the hard gate describes. Type `ERASE` **by hand on the proof
 machine's console**, only for the new SSD. Wait for installation to finish.
 Remove install and seed media when asked, then allow the proof machine to
 boot its installed system without that media.
@@ -374,8 +437,10 @@ Only now, and before any later boot of the old disk, shut down the proof
 machine cleanly, turn Secure Boot off without changing keys, and use recovery
 media to compare the old disk's complete offline digest and size with the
 refreshed baseline. Turn Secure Boot back on and return to the new SSD. It
-must unlock by itself; if it asks for the recovery passphrase, the firmware
-changed the measurement: record that for step 4.
+must unlock by itself. If it asks for the recovery passphrase, power off and
+check in firmware setup that Secure Boot is really on before typing
+anything. With Secure Boot on, the firmware changed the measurement: enter
+the passphrase and record that for step 4.
 
 **PASS/FAIL 3:** PASS only if installation completed, the new SSD boots
 without installer media, its recovery material was stored before any
@@ -568,7 +633,8 @@ applications onto their newer databases. The old disk is the final escape.
    the selector and the serial on the erase screen are the only guards, and
    the screen may be shown twice with a restart in between. Repeat steps 2
    and 3. The reinstall destroys data on the new SSD and attempts another TPM
-   clear; the earlier recovery passphrase is void, so retrieve the new one
+   clear, so the owner first repeats the confirmation of the gate's item 5;
+   the earlier recovery passphrase is void, so retrieve the new one
    right after first boot. Save needed evidence first. A reinstall
    demonstrates recovery, not a successful A/B rollback: record which route
    was used and the failed A/B result separately.
