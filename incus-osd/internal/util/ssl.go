@@ -156,10 +156,10 @@ func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expected
 		return nil, err
 	}
 
-	// Verify the signed message.
+	// Verify the signed message, trusting only the provided root CA.
 	verified := bytes.NewBuffer(nil)
 
-	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", "smime", "-verify", "-text", "-CAfile", rootCAFile.Name())
+	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", "smime", "-verify", "-text", "-no-CApath", "-no-CAstore", "-CAfile", rootCAFile.Name())
 	if err != nil {
 		// Return a nicer error if verification failed due to a missing/unverifiable CA.
 		if strings.Contains(err.Error(), "Verify error: unable to get local issuer certificate") {

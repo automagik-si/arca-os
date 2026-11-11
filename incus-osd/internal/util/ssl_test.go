@@ -110,13 +110,18 @@ func signSMIME(t *testing.T, content string, signers []*smimeIdentity, chain []*
 	return message
 }
 
-func TestVerifySMIMESignerIssuer(t *testing.T) {
-	t.Parallel()
+func requireOpenSSL(t *testing.T) {
+	t.Helper()
 
 	_, err := exec.LookPath("openssl")
 	if err != nil {
 		t.Skip("openssl isn't available")
 	}
+}
+
+func TestVerifySMIMESignerIssuer(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
 
 	root := newSMIMEIdentity(t, "Root", 1, nil, true)
 	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
@@ -162,6 +167,33 @@ func TestVerifySMIMESignerIssuer(t *testing.T) {
 			require.Equal(t, "signed content", strings.TrimSpace(verified.String()))
 		})
 	}
+}
+
+func TestVerifySMIMETrustsOnlyProvidedRoot(t *testing.T) { //nolint:paralleltest // sets SSL_CERT_DIR
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	storeRoot := newSMIMEIdentity(t, "Store root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, storeRoot, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 1, expectedCA, false)
+
+	// A default certificate directory holding a root other than the provided one.
+	storeDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(storeDir, "store-root.crt"), certPEM(storeRoot), 0o600))
+
+	_, err := subprocess.RunCommandContext(t.Context(), "openssl", "rehash", storeDir)
+	require.NoError(t, err)
+
+	t.Setenv("SSL_CERT_DIR", storeDir)
+
+	message := signSMIME(t, "signed content", []*smimeIdentity{leaf}, []*smimeIdentity{expectedCA})
+
+	_, err = verifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, message)
+	require.ErrorContains(t, err, "missing or unverifiable CA")
+
+	// The same message verifies when its root is the provided one.
+	_, err = verifySMIMEWithRoot(t.Context(), storeRoot.cert, []*x509.Certificate{expectedCA.cert}, message)
+	require.NoError(t, err)
 }
 
 func TestSMIMESigner(t *testing.T) {
