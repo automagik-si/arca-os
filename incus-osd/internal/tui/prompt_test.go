@@ -47,7 +47,12 @@ func TestInstallPrompt(t *testing.T) {
 			result := make(chan response, 1)
 
 			go func() {
-				answer, err := modal.Prompt(ctx, "Model: Example disk\nSize: 64 GiB\nPartitions: Windows, ntfs, 32 GiB\nEverything will be erased.")
+				answer, err := modal.Prompt(ctx, "WARNING: Everything on this device will be erased.\n"+
+					"The TPM will be reset at the end of the install, destroying any keys or\n"+
+					"credentials a previous system stored in it.\n"+
+					"If the other system uses the TPM to unlock its disk, export that system's\n"+
+					"recovery key before continuing.\n\n"+
+					"Model: Example disk\nSize: 64 GiB\nPartitions: Windows, ntfs, 32 GiB")
 				result <- response{answer: answer, err: err}
 			}()
 
@@ -62,6 +67,17 @@ func TestInstallPrompt(t *testing.T) {
 			contents := strings.Join(rows(ttui, screen), "\n")
 			for _, want := range []string{"Example disk", "64 GiB", "Windows, ntfs, 32 GiB", "Type ERASE", "Confirmation:"} {
 				require.Contains(t, contents, want)
+			}
+
+			for _, want := range []string{
+				"Everything on this device will be erased.",
+				"The TPM will be reset at the end of the install, destroying any keys or",
+				"credentials a previous system stored in it.",
+				"If the other system uses the TPM to unlock its disk, export that system's",
+				"recovery key before continuing.",
+			} {
+				require.Contains(t, contents, want)
+				require.Less(t, strings.Index(contents, want), strings.Index(contents, "Confirmation:"))
 			}
 
 			// Rotating status modals must not obscure the confirmation input.

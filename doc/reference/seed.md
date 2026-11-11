@@ -37,6 +37,13 @@ press Enter to proceed. Empty or incorrect input, Ctrl-C, Esc, console failure,
 or five minutes without confirmation aborts without erasing the disk. Use
 Up/Down or PageUp/PageDown to review long partition lists.
 
+The installer also resets the TPM at the end of the install. This reset is
+best-effort: installation continues if it fails. A successful reset destroys any
+keys or credentials a previous system stored in the TPM, even if that system's
+disk is not erased. If the other system uses the TPM to unlock its disk, export
+that system's recovery key before continuing. Both the disk erasure and TPM reset
+are disclosed before the confirmation prompt.
+
 - `confirmation`: **Automation-only override for automated VM proofs.** Setting
   `confirmation: "ERASE"` explicitly pre-answers the console prompt and logs a
   conspicuous warning. It is never set by default. Other values do not bypass

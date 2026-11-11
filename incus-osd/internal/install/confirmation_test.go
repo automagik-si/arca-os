@@ -33,6 +33,33 @@ func TestRenderInstallPlan(t *testing.T) {
 	require.Contains(t, renderInstallPlan(installDevice{}), "none detected")
 }
 
+func TestDestructionConfirmationDisclosure(t *testing.T) {
+	t.Parallel()
+
+	var displayed string
+
+	confirmation := destructionConfirmation{
+		inspect: func(context.Context, string) (string, error) {
+			return renderInstallPlan(installDevice{Path: "/dev/test"}), nil
+		},
+		update: func(plan string) { displayed = plan },
+		prompt: func(_ context.Context, plan string) (string, error) {
+			require.Equal(t, displayed, plan)
+			warning, _, found := strings.Cut(plan, "\n\nTarget:")
+			require.True(t, found)
+			require.Equal(t, "WARNING: Everything on this device will be erased.\n"+
+				"The TPM will be reset at the end of the install, destroying any keys or\n"+
+				"credentials a previous system stored in it.\n"+
+				"If the other system uses the TPM to unlock its disk, export that system's\n"+
+				"recovery key before continuing.", warning)
+			require.Greater(t, strings.Index(plan, "Type ERASE exactly"), len(warning))
+
+			return "ERASE", nil
+		},
+	}
+	require.NoError(t, confirmation.run(t.Context(), "/dev/test", "", func() error { return nil }))
+}
+
 func TestDestructionConfirmation(t *testing.T) { //nolint:paralleltest // Captures the process-wide default logger.
 	var logs bytes.Buffer
 

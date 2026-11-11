@@ -57,10 +57,14 @@ func inspectInstallDevice(ctx context.Context, device string) (string, error) {
 func renderInstallPlan(device installDevice) string {
 	var plan strings.Builder
 
+	_, _ = plan.WriteString("WARNING: Everything on this device will be erased.\n" +
+		"The TPM will be reset at the end of the install, destroying any keys or\n" +
+		"credentials a previous system stored in it.\n" +
+		"If the other system uses the TPM to unlock its disk, export that system's\n" +
+		"recovery key before continuing.\n\n")
 	fmt.Fprintf(&plan, "Target: %s\nModel: %s\nSize: %.2f GiB (%d bytes)\nSerial: %s\nPartition table: %s\n", device.Path, readableValue(device.Model), float64(device.Size)/(1024*1024*1024), device.Size, readableValue(device.Serial), readableValue(device.PTType))
 	_, _ = plan.WriteString("Current contents (OS names, when detected, appear in labels/types):\n")
 	writeInstallContents(&plan, device, "")
-	_, _ = plan.WriteString("\nWARNING: Everything on this device will be erased.\n")
 
 	return plan.String()
 }
