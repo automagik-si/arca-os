@@ -51,7 +51,7 @@ func fit(s string, n int) string {
 			break
 		}
 
-		b.WriteRune(r)
+		_, _ = b.WriteRune(r)
 
 		used += w
 	}

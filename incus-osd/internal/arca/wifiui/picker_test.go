@@ -44,7 +44,7 @@ func screenLine(screen tcell.SimulationScreen, y int) string {
 	var b strings.Builder
 
 	for x := range testWidth {
-		b.WriteString(cellAt(screen, x, y))
+		_, _ = b.WriteString(cellAt(screen, x, y))
 	}
 
 	return b.String()
