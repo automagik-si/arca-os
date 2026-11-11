@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
@@ -26,11 +27,44 @@ func TestRenderInstallPlan(t *testing.T) {
 			FSType: "ntfs", PartTypeName: "Microsoft basic data", Label: "Windows",
 		}},
 	})
-	for _, want := range []string{"/dev/test", "Example disk", "64.00 GiB", "example-serial", "gpt", "/dev/test1", "32.00 GiB", "ntfs", "Microsoft basic data", "Windows", "Everything on this device will be erased"} {
+	for _, want := range []string{"/dev/test", "Example disk", "64.00 GiB", "example-serial", "gpt", "/dev/test1", "32.00 GiB", "ntfs", "Microsoft basic data", "Windows", "Everything on the target disk shown below will be erased"} {
 		require.Contains(t, plan, want)
 	}
 
+	for line := range strings.SplitSeq(plan, "\n") {
+		require.LessOrEqual(t, utf8.RuneCountInString(line), 78, "plan line: %s", line)
+	}
+
 	require.Contains(t, renderInstallPlan(installDevice{}), "none detected")
+}
+
+func TestDestructionConfirmationDisclosure(t *testing.T) {
+	t.Parallel()
+
+	var displayed string
+
+	confirmation := destructionConfirmation{
+		inspect: func(context.Context, string) (string, error) {
+			return renderInstallPlan(installDevice{Path: "/dev/test"}), nil
+		},
+		update: func(plan string) { displayed = plan },
+		prompt: func(_ context.Context, plan string) (string, error) {
+			require.Equal(t, displayed, plan)
+			warning, _, found := strings.Cut(plan, "\n\nTarget:")
+			require.True(t, found)
+			require.Equal(t, "WARNING: Everything on the target disk shown below will be erased.\n"+
+				"The TPM will also be reset at the end of the install, destroying any keys or\n"+
+				"credentials stored in it. This also affects OTHER disks in this machine that\n"+
+				"the installer does not erase: an encrypted disk (BitLocker, LUKS) that\n"+
+				"unlocks with this TPM will then ask for its recovery key or passphrase.\n"+
+				"Before typing ERASE, save recovery keys or passphrases off this machine.\n"+
+				"If none exists, add one before installing. Esc cancels.", warning)
+			require.Greater(t, strings.Index(plan, "Type ERASE exactly"), len(warning))
+
+			return "ERASE", nil
+		},
+	}
+	require.NoError(t, confirmation.run(t.Context(), "/dev/test", "", func() error { return nil }))
 }
 
 func TestDestructionConfirmation(t *testing.T) { //nolint:paralleltest // Captures the process-wide default logger.
@@ -100,6 +134,11 @@ func TestDestructionConfirmation(t *testing.T) { //nolint:paralleltest // Captur
 			}
 
 			require.Equal(t, tt.preanswered, strings.Contains(logs.String(), "WARNING: AUTOMATION-ONLY"))
+
+			if tt.preanswered {
+				require.Contains(t, logs.String(), "resetting the TPM")
+				require.Contains(t, logs.String(), "other disks may need recovery keys or passphrases")
+			}
 		})
 	}
 }

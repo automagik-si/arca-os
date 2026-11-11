@@ -56,7 +56,7 @@ func (m *Modal) Prompt(ctx context.Context, message string) (string, error) {
 
 		root := tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(text, 0, 1, false).
-			AddItem(tview.NewTextView().SetText("WARNING: Everything on this device will be erased.\nType ERASE then Enter. Ctrl-C/Esc cancels. Up/Down/PageUp/PageDown scrolls."), 3, 0, false).
+			AddItem(tview.NewTextView().SetText("WARNING: the disk is erased and the TPM reset; other disks may need keys.\nType ERASE then Enter. Ctrl-C/Esc cancels. Up/Down/PageUp/PageDown scrolls."), 3, 0, false).
 			AddItem(input, 1, 0, true)
 		root.SetBorder(true).SetTitle(" " + m.title + " - confirm disk erasure ")
 		t.pages.AddPage("install-confirmation", root, true, true)
