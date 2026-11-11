@@ -7,11 +7,14 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,12 +33,20 @@ type smimeIdentity struct {
 func newSMIMEIdentity(t *testing.T, name string, serial int64, parent *smimeIdentity, isCA bool) *smimeIdentity {
 	t.Helper()
 
+	return newSMIMEIdentityWithSubject(t, name, nil, serial, parent, isCA)
+}
+
+// newSMIMEIdentityWithSubject is newSMIMEIdentity with an optional DER-encoded subject.
+func newSMIMEIdentityWithSubject(t *testing.T, name string, rawSubject []byte, serial int64, parent *smimeIdentity, isCA bool) *smimeIdentity {
+	t.Helper()
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(serial),
 		Subject:               pkix.Name{CommonName: name},
+		RawSubject:            rawSubject,
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		BasicConstraintsValid: true,
@@ -196,51 +207,116 @@ func TestVerifySMIMETrustsOnlyProvidedRoot(t *testing.T) { //nolint:paralleltest
 	require.NoError(t, err)
 }
 
+// utf8CommonName returns the DER encoding of a subject whose common name is a UTF8String.
+func utf8CommonName(t *testing.T, name string) []byte {
+	t.Helper()
+
+	value, err := asn1.MarshalWithParams(name, "utf8")
+	require.NoError(t, err)
+
+	der, err := asn1.Marshal(pkix.RDNSequence{{{Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: asn1.RawValue{FullBytes: value}}}})
+	require.NoError(t, err)
+
+	return der
+}
+
+// smimeMessage wraps DER-encoded signed data as an S/MIME message.
+func smimeMessage(der []byte) []byte {
+	message := "MIME-Version: 1.0\n" +
+		"Content-Type: application/x-pkcs7-mime; smime-type=signed-data; name=\"smime.p7m\"\n" +
+		"Content-Transfer-Encoding: base64\n\n"
+
+	lines := []string{}
+	for line := range slices.Chunk([]byte(base64.StdEncoding.EncodeToString(der)), 64) {
+		lines = append(lines, string(line))
+	}
+
+	return []byte(message + strings.Join(lines, "\n") + "\n")
+}
+
+func TestVerifySMIMEChecksVerifiedSigner(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 1, expectedCA, false)
+
+	// A second CA whose name differs from the expected CA's only in its string encoding.
+	otherCA := newSMIMEIdentityWithSubject(t, "Expected CA", utf8CommonName(t, "Expected CA"), 3, root, true)
+	otherLeaf := newSMIMEIdentity(t, "Leaf", 1, otherCA, false)
+
+	require.NotEqual(t, expectedCA.cert.RawSubject, otherCA.cert.RawSubject)
+	require.Equal(t, expectedCA.cert.Subject.String(), otherCA.cert.Subject.String())
+
+	// Both leaves are in the message and the signature verifies with the second one.
+	signed, err := pkcs7.NewSignedData([]byte("Content-Type: text/plain\r\n\r\nsigned content\r\n"))
+	require.NoError(t, err)
+
+	signed.SetDigestAlgorithm(pkcs7.OIDDigestAlgorithmSHA256)
+	signed.AddCertificate(otherLeaf.cert)
+	signed.AddCertificate(otherCA.cert)
+	require.NoError(t, signed.AddSigner(leaf.cert, otherLeaf.key, pkcs7.SignerInfoConfig{}))
+
+	der, err := signed.Finish()
+	require.NoError(t, err)
+
+	_, err = verifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, smimeMessage(der))
+	require.ErrorContains(t, err, "was not signed by one of the following expected intermediate CAs")
+}
+
+func TestSMIMEVerifyArgs(t *testing.T) {
+	t.Parallel()
+
+	args := smimeVerifyArgs("root.crt", "signer.crt")
+
+	// Only the provided root CA is trusted.
+	require.Contains(t, args, "-no-CApath")
+	require.Contains(t, args, "-no-CAstore")
+	require.NotContains(t, args, "-CApath")
+	require.NotContains(t, args, "-CAstore")
+}
+
 func TestSMIMESigner(t *testing.T) {
 	t.Parallel()
 
 	root := newSMIMEIdentity(t, "Root", 1, nil, true)
 	ca := newSMIMEIdentity(t, "CA", 2, root, true)
-	sameNameCA := newSMIMEIdentity(t, "CA", 3, root, true)
 	leaf := newSMIMEIdentity(t, "Leaf", 1, ca, false)
-	sameSerialLeaf := newSMIMEIdentity(t, "Leaf", 1, sameNameCA, false)
+	secondLeaf := newSMIMEIdentity(t, "Second leaf", 2, ca, false)
 
-	parse := func(extra ...*smimeIdentity) *pkcs7.PKCS7 {
-		signed, err := pkcs7.NewSignedData([]byte("signed content"))
-		require.NoError(t, err)
+	signed, err := pkcs7.NewSignedData([]byte("signed content"))
+	require.NoError(t, err)
 
-		signed.SetDigestAlgorithm(pkcs7.OIDDigestAlgorithmSHA256)
-		require.NoError(t, signed.AddSigner(leaf.cert, leaf.key, pkcs7.SignerInfoConfig{}))
+	signed.SetDigestAlgorithm(pkcs7.OIDDigestAlgorithmSHA256)
+	require.NoError(t, signed.AddSigner(leaf.cert, leaf.key, pkcs7.SignerInfoConfig{}))
 
-		for _, c := range extra {
-			signed.AddCertificate(c.cert)
-		}
+	der, err := signed.Finish()
+	require.NoError(t, err)
 
-		der, err := signed.Finish()
-		require.NoError(t, err)
+	oneSigner, err := pkcs7.Parse(der)
+	require.NoError(t, err)
 
-		parsed, err := pkcs7.Parse(der)
-		require.NoError(t, err)
-
-		return parsed
-	}
-
-	// A single signer, with other certificates alongside.
-	signer, err := smimeSigner(parse(ca))
+	// A single signer and a single verified certificate.
+	signer, err := smimeSigner(oneSigner, certPEM(leaf))
 	require.NoError(t, err)
 	require.True(t, signer.Equal(leaf.cert))
 
-	// A second certificate with the signer's issuer name and serial number.
-	_, err = smimeSigner(parse(sameSerialLeaf))
-	require.ErrorContains(t, err, "more than one certificate for its signer")
+	// More than one verified certificate.
+	_, err = smimeSigner(oneSigner, certPEM(leaf, secondLeaf))
+	require.ErrorContains(t, err, "must have exactly one signer")
+
+	// No verified certificate.
+	_, err = smimeSigner(oneSigner, nil)
+	require.Error(t, err)
 
 	// No signer at all.
-	der, err := pkcs7.DegenerateCertificate(leaf.cert.Raw)
+	der, err = pkcs7.DegenerateCertificate(leaf.cert.Raw)
 	require.NoError(t, err)
 
 	unsigned, err := pkcs7.Parse(der)
 	require.NoError(t, err)
 
-	_, err = smimeSigner(unsigned)
+	_, err = smimeSigner(unsigned, certPEM(leaf))
 	require.ErrorContains(t, err, "must have exactly one signer")
 }

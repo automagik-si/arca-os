@@ -156,10 +156,23 @@ func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expected
 		return nil, err
 	}
 
+	// Create a temporary file for the certificate the signature gets verified with.
+	signerFile, err := os.CreateTemp("", "")
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = os.Remove(signerFile.Name()) }()
+
+	err = signerFile.Close()
+	if err != nil {
+		return nil, err
+	}
+
 	// Verify the signed message, trusting only the provided root CA.
 	verified := bytes.NewBuffer(nil)
 
-	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", "smime", "-verify", "-text", "-no-CApath", "-no-CAstore", "-CAfile", rootCAFile.Name())
+	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", smimeVerifyArgs(rootCAFile.Name(), signerFile.Name())...)
 	if err != nil {
 		// Return a nicer error if verification failed due to a missing/unverifiable CA.
 		if strings.Contains(err.Error(), "Verify error: unable to get local issuer certificate") {
@@ -190,8 +203,13 @@ func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expected
 		return nil, err
 	}
 
-	// Get the certificate of the message's signer.
-	signer, err := smimeSigner(pkcs)
+	// Get the certificate the signature was verified with.
+	verifiedSigners, err := os.ReadFile(signerFile.Name())
+	if err != nil {
+		return nil, err
+	}
+
+	signer, err := smimeSigner(pkcs, verifiedSigners)
 	if err != nil {
 		return nil, err
 	}
@@ -215,23 +233,29 @@ func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expected
 	return verified, nil
 }
 
-// smimeSigner returns the certificate of the message's signer, requiring exactly one signer.
-func smimeSigner(pkcs *pkcs7.PKCS7) (*x509.Certificate, error) {
+// smimeVerifyArgs returns the openssl arguments to verify a message trusting only the root CA
+// in rootCAFile, writing the certificate the signature was verified with to signerFile.
+func smimeVerifyArgs(rootCAFile string, signerFile string) []string {
+	return []string{"smime", "-verify", "-text", "-no-CApath", "-no-CAstore", "-CAfile", rootCAFile, "-signer", signerFile}
+}
+
+// smimeSigner returns the certificate the message's signature was verified with, requiring
+// exactly one signer. verifiedSigners holds the PEM-encoded certificate(s) written by openssl.
+func smimeSigner(pkcs *pkcs7.PKCS7, verifiedSigners []byte) (*x509.Certificate, error) {
 	if len(pkcs.Signers) != 1 {
 		return nil, fmt.Errorf("S/MIME message must have exactly one signer, found %d", len(pkcs.Signers))
 	}
 
-	signer := pkcs.GetOnlySigner()
-	if signer == nil {
-		return nil, errors.New("S/MIME message doesn't contain its signer's certificate")
+	block, rest := pem.Decode(verifiedSigners)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("unable to decode the S/MIME signer's certificate")
 	}
 
-	// The issuer and serial number must identify a single certificate.
-	for _, cert := range pkcs.Certificates {
-		if bytes.Equal(cert.RawIssuer, signer.RawIssuer) && cert.SerialNumber.Cmp(signer.SerialNumber) == 0 && !cert.Equal(signer) {
-			return nil, errors.New("S/MIME message contains more than one certificate for its signer")
-		}
+	// One certificate is written per signer.
+	extra, _ := pem.Decode(rest)
+	if extra != nil {
+		return nil, errors.New("S/MIME message must have exactly one signer, found several")
 	}
 
-	return signer, nil
+	return x509.ParseCertificate(block.Bytes)
 }
