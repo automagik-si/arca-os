@@ -120,4 +120,11 @@ func TestInventoryLoadedOnceIsCached(t *testing.T) {
 	second, err := inv.get()
 	require.NoError(t, err)
 	require.Equal(t, first, second)
+
+	// Changing a returned list doesn't change the cached one.
+	first.ProductionCertSubjectKeyIDs[0] = "changed"
+
+	third, err := inv.get()
+	require.NoError(t, err)
+	require.Equal(t, second, third)
 }

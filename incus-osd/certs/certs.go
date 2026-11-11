@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -98,9 +99,9 @@ func (i *inventory) get() (Certificates, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	// If we've already parsed the certificates once, return the cached copy.
+	// If we've already parsed the certificates once, return a copy of the cached set.
 	if i.loaded {
-		return i.certs, nil
+		return i.certs.clone(), nil
 	}
 
 	// Only cache the certificates if all of them were parsed and validated.
@@ -112,7 +113,19 @@ func (i *inventory) get() (Certificates, error) {
 	i.certs = parsedCerts
 	i.loaded = true
 
-	return i.certs, nil
+	return i.certs.clone(), nil
+}
+
+// clone returns a copy of the certificates that doesn't share any slice with the original.
+func (c *Certificates) clone() Certificates {
+	ret := *c
+
+	ret.ProductionCertSubjectKeyIDs = slices.Clone(c.ProductionCertSubjectKeyIDs)
+	ret.SecureBootCertificates.KEK = slices.Clone(c.SecureBootCertificates.KEK)
+	ret.SecureBootCertificates.DB = slices.Clone(c.SecureBootCertificates.DB)
+	ret.SecureBootCertificates.DBX = slices.Clone(c.SecureBootCertificates.DBX)
+
+	return ret
 }
 
 // loadCertificates parses and validates the certificates and associated metadata.
