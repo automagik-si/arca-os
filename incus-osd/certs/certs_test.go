@@ -76,7 +76,7 @@ func testInventory(t *testing.T) fstest.MapFS {
 	pk := issue(t, "Secure Boot PK", pkKey.Public(), secureBoot, secureBootKey, false)
 
 	return fstest.MapFS{
-		"files/production-cert-subject-key-ids.txt": &fstest.MapFile{},
+		"files/production-cert-subject-key-ids.txt": &fstest.MapFile{Data: []byte("key-id")},
 		"files/root-E1.crt":                         pemFile(root.Raw),
 		"files/secureboot-E1.crt":                   pemFile(secureBoot.Raw),
 		"files/update-E1.crt":                       pemFile(update.Raw),
@@ -126,5 +126,5 @@ func TestInventoryLoadedOnceIsCached(t *testing.T) {
 
 	third, err := inv.get()
 	require.NoError(t, err)
-	require.Equal(t, second, third)
+	require.Equal(t, []string{"key-id"}, third.ProductionCertSubjectKeyIDs)
 }
