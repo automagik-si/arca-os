@@ -16,4 +16,4 @@ The following configuration options can be set:
 
 * `config`: A map of provider-specific configuration key-value pairs.
 
-For the `images` provider, the `update_ca` key sets a PEM-encoded certificate authority used to verify signed update metadata. It must be the certificate authority that directly issued the signer's certificate (basic constraint `CA:TRUE`; a pinned leaf certificate is not accepted), and a signer issued under a further intermediate is not accepted.
+For the `images` provider, the `update_ca` key sets a PEM-encoded certificate authority used to verify signed update metadata. It must be the certificate authority that directly issued the signer's certificate (basic constraint `CA:TRUE`; a pinned leaf certificate is not accepted), and a signer issued under a further intermediate is not accepted. The `update_ca` certificate must itself chain to the root certificate built into the OS, and where it has a key usage extension, that extension must include Certificate Sign.
