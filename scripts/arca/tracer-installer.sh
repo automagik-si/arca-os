@@ -6,33 +6,40 @@
 #
 #   tracer-installer.sh --server-url <url> [--client-cert <file>|-]
 #                       [--force-install] [--auto-updates] [--out <dir>]
+#                       [--apps a,b,...] [--target-id <by-id name>]
 #
 # --server-url is required. It is the URL that will serve updates/ (below) as
 # its root, such as http://<address>:<port>, and it goes into the image's seed.
 # Plain http is enough: incus-osd checks the signed index, not the transport.
+# --apps overrides the applications installed from the tree (default incus,arca).
+# --target-id writes target.id into install.json, so the installer picks the one
+# disk whose /dev/disk/by-id name contains it, instead of requiring exactly one
+# disk. A value that matches no disk makes the installer refuse, not guess.
 #
 # It writes, in <dir> (default /srv/artifacts/installer/<version>, with
 # /srv/artifacts/installer/latest pointing there):
 #   <ImageId>_<version>-installer.img
 #       The built .raw with an install seed at seek=4196352 bs=512:
 #       install (force_install only with --force-install; no forced reboot,
-#       so it waits for the stick to be removed), applications incus and arca,
-#       provider images with that server_url, update (channel stable,
-#       check_frequency never, auto_reboot false; --auto-updates instead sets
-#       check_frequency 1h and auto_reboot true, so the stick keeps itself
-#       current), and with --client-cert,
-#       incus (apply_defaults, that certificate trusted as a client). It
-#       installs onto the one disk it finds, and refuses when it finds none
-#       or several.
+#       so it waits for the stick to be removed), applications incus and arca
+#       (or the --apps names), provider images with that server_url, update
+#       (channel stable, check_frequency never, auto_reboot false; --auto-updates
+#       instead sets check_frequency 1h and auto_reboot true, so the stick keeps
+#       itself current), and with --client-cert, incus (apply_defaults, that
+#       certificate trusted as a client). It installs onto the one disk it finds,
+#       and refuses when it finds none or several; with --target-id it installs
+#       onto the one disk whose by-id name contains that value, and refuses when
+#       none or several match.
 #   updates/
 #       A static tree in the layout incus-osd's images provider reads, made by
 #       the build's own image-publisher: index.json, index.sjson, and
-#       <version>/ with update.json, update.sjson and <arch>/incus.raw.gz and
-#       <arch>/arca.raw.gz, in channel stable. The .sjson files are signed
-#       with the same test update key the image trusts. The installed system
-#       has no primary application on its first boot, so it checks for
-#       updates once despite check_frequency never, and installs incus and
-#       arca from the tree. The tree has no OS files, so the OS stays as is.
+#       <version>/ with update.json, update.sjson and <arch>/<app>.raw.gz for
+#       every installed application, in channel stable. The .sjson files are
+#       signed with the same test update key the image trusts. The installed
+#       system has no primary application on its first boot, so it checks for
+#       updates once despite check_frequency never, and installs those
+#       applications from the tree. The tree has no OS files, so the OS stays
+#       as is.
 #   seed/ (the seed files and seed.tar), RELEASE, OSNAME, base.manifest,
 #   kernel.BUILDINFO (when build.sh had --local-kernel) and SHA256SUMS (the
 #   image and every file under updates/, by path relative to <dir>).
@@ -49,12 +56,12 @@ SEED_OFFSET=4196352
 APPS=(incus arca)
 CHANNEL=stable
 
-usage() { sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'tracer-installer: %s\n' "$*" >&2; }
 die() { printf 'tracer-installer: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'tracer-installer: refused: %s\n' "$*" >&2; exit 2; }
 
-cert_src='' out='' force_install=false server_url='' auto_updates=false
+cert_src='' out='' force_install=false server_url='' auto_updates=false target_id='' apps_csv=''
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--server-url) [ $# -ge 2 ] || usage; server_url=$2; shift 2 ;;
@@ -62,10 +69,28 @@ while [ $# -gt 0 ]; do
 	--force-install) force_install=true; shift ;;
 	--auto-updates) auto_updates=true; shift ;;
 	--out) [ $# -ge 2 ] || usage; out=$2; shift 2 ;;
+	--apps) [ $# -ge 2 ] || usage; [ -n "$2" ] || refuse "--apps needs at least one application"; apps_csv=$2; shift 2 ;;
+	--target-id) [ $# -ge 2 ] || usage; [ -n "$2" ] || refuse "--target-id needs a value"; target_id=$2; shift 2 ;;
 	-h | --help) usage ;;
 	*) refuse "unknown argument: $1" ;;
 	esac
 done
+
+if [ -n "$apps_csv" ]; then
+	case "$apps_csv" in
+	,* | *, | *,,*) refuse "--apps has an empty application name" ;;
+	esac
+	app_list=()
+	IFS=, read -r -a app_list <<<"$apps_csv" || true
+	[ "${#app_list[@]}" -gt 0 ] || refuse "--apps needs at least one application"
+	seen=,
+	for a in "${app_list[@]}"; do
+		[ -n "$a" ] || refuse "--apps has an empty application name"
+		case "$seen" in *",$a,"*) refuse "--apps names '$a' twice" ;; esac
+		seen=$seen$a,
+	done
+	APPS=("${app_list[@]}")
+fi
 
 [ -n "$server_url" ] || refuse "--server-url <url> is required"
 while [ "${server_url%/}" != "$server_url" ]; do server_url=${server_url%/}; done
@@ -170,7 +195,8 @@ done
 # --- The installer: the built image with an install seed --------------------
 inst_img=$stage/${osname}_${version}-installer.img
 seed=$stage/seed
-jq -n --argjson f "$force_install" '{version: "1", force_install: $f, force_reboot: false}' > "$seed/install.json"
+jq -n --argjson f "$force_install" --arg t "$target_id" \
+	'{version: "1", force_install: $f, force_reboot: false} + (if $t == "" then {} else {target: {id: $t}} end)' > "$seed/install.json"
 jq -n '{version: "1", applications: ($ARGS.positional | map({name: .}))}' --args "${APPS[@]}" > "$seed/applications.json"
 jq -n --arg u "$server_url" '{version: "1", name: "images", config: {server_url: $u}}' > "$seed/provider.json"
 # A new stick that should keep itself current: check about hourly and reboot
