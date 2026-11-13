@@ -118,7 +118,9 @@ to start the VM when the host has less than 12 GiB of `MemAvailable`
 `tracer-installer.sh` writes a test-signed build as one USB installer image, plus the update tree that the installed
 system fetches `incus` and `arca` from. It runs in the builder right after `build.sh`, in the same checkout, before
 anything cleans it, because it signs with the checkout's test update key (the injected persistent one). `--server-url` is required: it is
-the URL the tree will be served at, and it goes into the image's seed.
+the URL the tree will be served at, and it goes into the image's seed. `--apps` overrides the applications installed
+from the tree (default `incus,arca`). `--target-id` writes `target.id` into the seed's `install.json`, so the installer
+picks the one disk whose `/dev/disk/by-id` name contains that value instead of requiring exactly one disk.
 
 ```sh
 # In the builder, after build.sh, in the same /srv/work/<name> checkout (not through in-builder.sh, which cleans it):
@@ -129,21 +131,22 @@ scripts/arca/vm-test.sh --project arcaos-dev --vm arcaos-installer --install-med
 
 It writes, in one directory:
 
-- `<ImageId>_<version>-installer.img`, the image with an install seed: applications `incus` and `arca`, provider
-  `images` at that `server_url`, channel `stable` with updates checked `never` and no automatic reboot,
-  `force_install` only with `--force-install`, and with `--client-cert` that certificate trusted by Incus. It installs
-  onto the one disk it finds and refuses when it finds several.
+- `<ImageId>_<version>-installer.img`, the image with an install seed: applications `incus` and `arca` (or those named
+  by `--apps`), provider `images` at that `server_url`, channel `stable` with updates checked `never` and no automatic
+  reboot, `force_install` only with `--force-install`, and with `--client-cert` that certificate trusted by Incus. It
+  installs onto the one disk it finds and refuses when it finds several; with `--target-id`, it installs onto the one
+  disk whose `/dev/disk/by-id` name contains that value, and refuses when none or several match.
 - `updates/`, a static tree in the layout incus-osd's `images` provider reads, made by the build's own
-  `image-publisher`: `index.json` and `index.sjson`, and `<version>/` with `update.json`, `update.sjson`,
-  `x86_64/incus.raw.gz` and `x86_64/arca.raw.gz`, in channel `stable`. Both `.sjson` files are signed with the
+  `image-publisher`: `index.json` and `index.sjson`, and `<version>/` with `update.json`, `update.sjson`, and
+  `<arch>/<app>.raw.gz` for every installed application, in channel `stable`. Both `.sjson` files are signed with the
   persistent test update key, which the image trusts, so plain `http` is enough. The tree holds no OS files, so the OS is never
-  updated from it. The script reads it back the way incus-osd will: both signatures, one release, and exactly the two
+  updated from it. The script reads it back the way incus-osd will: both signatures, one release, and exactly those
   applications, each unpacking to the built sysext.
 - `seed/`, `RELEASE`, `OSNAME`, `base.manifest`, `kernel.BUILDINFO` and `SHA256SUMS`, which covers the image and every
   file under `updates/`.
 
 On its first boot the installed system has no primary application, so incus-osd checks the server once even though
-updates are checked `never`, and installs `incus` and `arca`. After that it does not check again on its own. The
+updates are checked `never`, and installs those applications. After that it does not check again on its own. The
 target's firmware must be in Secure Boot Setup Mode, because the first boot enrolls the build's test keys.
 
 With `--install-media <dir>`, `vm-test.sh` rehearses this. The seed's `server_url` must be `http://<address>:<port>`,
@@ -155,6 +158,22 @@ checks it checks `installed`, `media-removed`, `apps-from-server` (the server an
 and of each application's `.raw.gz` with 200) and `updates-off` (check frequency `never`, no automatic reboot, provider
 `images` at the seed's URL). It always stops the server on exit. On any exit before the install disk is detached, it
 also stops the VM and detaches the disk.
+
+### Pinning an image to one disk
+
+`set-target.sh` pins an existing installer image to one disk, by its `/dev/disk/by-id` name, for a machine where more
+than one disk is present:
+
+```sh
+scripts/arca/set-target.sh <by-id name> [image dir]
+```
+
+It rewrites `seed/install.json`'s `target.id`, preserving `force_install` and the other options, packs the seed files
+again (including `incus.json` and `network.json` when present), writes `seed/seed.tar` into the image at sector
+4196352, reads it back, and rewrites and checks `SHA256SUMS`. The image directory defaults to the current directory. It
+refuses a name with whitespace or `/`, and any name containing `ADATA`, `Samsung`, `990`, `Expansion`, `Seagate` or
+`Flash_Disk` (case-insensitive): those disks this image must never install onto. A name that matches no disk makes the
+installer refuse, not guess.
 
 ### Installing a laptop
 
@@ -285,7 +304,7 @@ prove the node picks it up on its own.
 | Component | Files |
 |---|---|
 | Builder, toolchain, stock build and boot | `scripts/arca/{provision-builder,dev-vm,in-builder,build,vm-test}.sh` |
-| A test-signed USB installer | `scripts/arca/tracer-installer.sh` |
+| A test-signed USB installer, and pinning its target disk | `scripts/arca/{tracer-installer,set-target}.sh` |
 | Automatic updates and rollback on the node | `incus-osd/internal/update/arca_*.go`, `doc/reference/system/arca-updates.md`, `scripts/arca/test/updates-{build,vm}.sh` (VM proof) |
 | Automatic publishing, canary and promotion | `scripts/arca/{autopublish,canary,release-tree,publish-update,publish-build}.sh`, `scripts/arca/units/`, `doc/reference/arca-publishing.md` |
 | Binder kernel from Zabbly's tree | `kernel/`, `mkosi.sandbox/etc/apt/preferences.d/arca-kernel.pref` |
