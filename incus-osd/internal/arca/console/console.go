@@ -50,6 +50,7 @@ type sources struct {
 	online    func() Online
 	instances func() (instancesResult, error)
 	updates   func() Updates
+	seal      func() Seal
 	actions   updateActions
 }
 
@@ -66,6 +67,7 @@ func liveSources(s *state.State) sources {
 		online:    func() Online { return readOnline(s) },
 		instances: r.read,
 		updates:   func() Updates { return liveUpdates(s) },
+		seal:      func() Seal { return liveSeal(s) },
 		actions:   liveActions{s: s},
 	}
 }
@@ -175,6 +177,7 @@ func (c *console) collect(ctx context.Context) {
 	})
 
 	go c.every(ctx, updatesEvery, c.readUpdates)
+	go c.every(ctx, updatesEvery, c.readSeal)
 
 	c.every(ctx, clockEvery, func() {})
 }

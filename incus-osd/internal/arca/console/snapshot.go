@@ -61,6 +61,9 @@ type Snapshot struct {
 
 	// HandOver is the recovery passphrase page, while it is open.
 	HandOver handOver
+
+	// Seal is this boot's TPM re-seal after a recovery unlock; empty on a TPM boot.
+	Seal Seal
 }
 
 // App is one installed application.
@@ -131,6 +134,7 @@ func (s Snapshot) Equal(o Snapshot) bool {
 		s.Selected == o.Selected && s.Page == o.Page && s.Focus == o.Focus &&
 		reflect.DeepEqual(s.Updates, o.Updates) && s.UpdateSel == o.UpdateSel &&
 		s.HandOver == o.HandOver &&
+		s.Seal == o.Seal &&
 		s.InstancesAt.Truncate(time.Minute).Equal(o.InstancesAt.Truncate(time.Minute)) &&
 		s.Now.Truncate(time.Minute).Equal(o.Now.Truncate(time.Minute))
 }
