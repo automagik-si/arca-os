@@ -184,9 +184,9 @@ Each time IncusOS seals the drive to the TPM (first boot, an OS update or Secure
 - `pcr4`, `pcr7` and `pcr12`: the PCR values, as lowercase SHA-256 hex
 - `sealed_at`: when, in RFC 3339
 
-The record holds no secret, only public measurements. Failing to write it never fails the seal. A drive sealed before the record existed gets one on the first boot the TPM unlocks it.
+The record holds no secret, only public measurements. Failing to write it never fails the seal. Whenever the TPM unlocked the drive, IncusOS also rewrites a record that is missing, unreadable or no longer matches the measurements, so a drive sealed before the record existed gets one on its next boot. The record must hold lowercase hex PCR values and a numeric version, or it is ignored as unreadable.
 
-Before the passphrase prompt, the initrd mounts the ESP read-only, compares the record with the boot's measurements, and, when they differ, explains the cause in a few plain lines on the screen and the serial console, with the way back:
+Before the passphrase prompt, the initrd reads the record from the ESP (where the initrd mounted it, or by mounting it read-only by its partition label when it isn't), compares the record with the boot's measurements, and, when they differ, explains the cause in a few plain lines on the screen and the serial console, with the way back:
 
 | What changed | What the screen says | Way back |
 |---|---|---|
@@ -194,11 +194,11 @@ Before the passphrase prompt, the initrd mounts the ESP read-only, compares the 
 | PCR 7 with the same Secure Boot state | The Secure Boot keys changed | Restore the firmware's Secure Boot keys as they were and boot again |
 | PCR 4, only compared with Secure Boot off | A different OS image was started, with the sealed version | Pick the sealed version in the boot menu and boot again |
 | PCR 12, only compared with Secure Boot off | The boot parameters changed | Remove the extra kernel command line, credentials or add-ons and boot again |
-| No record, on a drive sealed before it existed | One line: if a passphrase prompt follows, type the recovery passphrase | Type the passphrase, then reset the TPM bindings |
+| No record, on a drive sealed before it existed | One line: if a passphrase prompt follows, type the recovery passphrase or the older recovery key | Type the passphrase or key, then reset the TPM bindings |
 
 A drive that `systemd-repart` created on this boot holds only its TPM keyslot and has no record yet; its first boot prints nothing.
 
-Each message also says that the recovery passphrase unlocks the drive at the prompt below, and that once IncusOS is up, [resetting the TPM bindings](system/security.md) seals the drive to the new state. The changed values are shown shortened. When the record matches, nothing is printed. The check only explains: the boot, the prompt and its retries are unchanged.
+Each message also says that the recovery passphrase (eight words) or, on a drive installed before it, the older recovery key (with dashes) unlocks the drive at the prompt below. IncusOS doesn't re-seal by itself after such a boot: once it is up, [resetting the TPM bindings](system/security.md) with `incus admin os system security tpm-rebind` seals the drive to the new state. The changed values are shown shortened. When the record matches, nothing is printed. The check only explains: the boot, the prompt and its retries are unchanged.
 
 A cleared or replaced TPM doesn't change the PCR values, so such a boot looks exactly like a healthy one before the unlock is tried, and the screen says nothing. The sealed key is then gone from the TPM: type the recovery passphrase at the prompt and reset the TPM bindings once IncusOS is up.
 

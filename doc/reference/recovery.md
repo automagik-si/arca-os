@@ -62,7 +62,8 @@ Boot state or keys changed, a different OS image was started, or the boot parame
 changed. Each message gives the way back, such as setting the firmware back or picking the
 sealed version in the boot menu, before falling back to the passphrase. A healthy boot prints
 nothing. A cleared or replaced TPM can't be told apart from a healthy boot this early, so no
-message is shown then: type the recovery passphrase and reset the TPM bindings. See
+message is shown then: type the recovery passphrase and reset the TPM bindings. IncusOS
+doesn't re-seal by itself after a passphrase boot; resetting the TPM bindings does. See
 [Why the TPM refused](security.md#why-the-tpm-refused).
 
 ```{note}
