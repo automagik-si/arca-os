@@ -408,7 +408,8 @@ func passphraseGroups(key string) []string {
 	return []string{strings.Join(words[:4], " "), strings.Join(words[4:], " ")}
 }
 
-// printUpdateNote prints a note on the last failed update check, if any.
+// printUpdateNote prints a note on the last failed update check, if any, and on the channel's
+// newest OS version.
 func printUpdateNote(w io.Writer, data json.RawMessage) {
 	var update api.SystemUpdate
 
@@ -421,21 +422,33 @@ func printUpdateNote(w io.Writer, data json.RawMessage) {
 }
 
 // availableVersionNote is the channel's newest OS version and how this system stands against
-// it, or "" when no successful check has seen one.
+// it, in the console's words, or "" when there is none.
 func availableVersionNote(st api.SystemUpdateState) string {
 	if st.AvailableVersion == "" {
 		return ""
 	}
 
-	note := "\nAvailable OS version: " + st.AvailableVersion + " (as of the last successful check)\n"
+	health := api.SystemUpdateHealth{}
+	if st.Health != nil {
+		health = *st.Health
+	}
+
+	stale := ""
+	if st.LastErrorKind != "" {
+		stale = " (the last check failed)"
+	}
+
+	note := "\nAvailable OS version: " + st.AvailableVersion + " (as of the last valid answer from the update server)\n"
 
 	switch {
-	case st.NeedsReboot:
-		return note + "  An update is waiting for a restart\n"
+	case st.AvailableVersion == health.PendingVersion:
+		return note + "  Waiting for a restart" + stale + "\n"
 	case st.UpdateAvailable:
-		return note + "  Behind the channel: an update is available\n"
+		return note + "  Behind the channel" + stale + "\n"
+	case st.AvailableVersion == health.CurrentVersion:
+		return note + "  Up to date" + stale + "\n"
 	default:
-		return note + "  No update to apply\n"
+		return note + "  No update to apply" + stale + "\n"
 	}
 }
 
