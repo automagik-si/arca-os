@@ -354,6 +354,8 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 				if !sec.State.EncryptionRecoveryKeysRetrieved {
 					_, _ = fmt.Fprintf(os.Stderr, "\nNOTE: Once you have securely recorded the recovery keys, run\n      `%s admin os system security retrieved` to mark that they have\n      been manually retrieved.\n", os.Args[0])
 				}
+
+				_, _ = fmt.Fprint(os.Stderr, resealNote(sec.State))
 			}
 		}
 
@@ -406,6 +408,17 @@ func passphraseGroups(key string) []string {
 	}
 
 	return []string{strings.Join(words[:4], " "), strings.Join(words[4:], " ")}
+}
+
+// resealNote is this boot's recovery unlock and TPM re-seal in the owner's words, or "" when the
+// boot unlocked with the TPM.
+func resealNote(st api.SystemSecurityState) string {
+	summary := st.ResealSummary()
+	if summary == "" {
+		return ""
+	}
+
+	return "\nRecovery unlock (" + st.LastRecoveryUnlock + "): " + summary + ".\n"
 }
 
 // printUpdateNote prints a note on the last failed update check, if any, and on the channel's

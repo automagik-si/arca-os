@@ -266,20 +266,30 @@ func drawSummary(screen tcell.Screen, s Snapshot, r rect) {
 	tview.Print(screen, " "+strings.Join(parts, " · "), r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
 }
 
-// drawAlert draws the alert line: an update that needs the owner or is under way, and
-// otherwise that there is no alert. Instance alerts arrive with the live instance state.
+// drawAlert draws the alert line: a TPM that could not be re-sealed, an update that needs
+// the owner or is under way, a TPM re-sealed after a recovery unlock, and otherwise that
+// there is no alert. Instance alerts arrive with the live instance state.
 func drawAlert(screen tcell.Screen, s Snapshot, r rect) {
 	if r.empty() {
 		return
 	}
 
-	if tag, text := updatesAlert(s.Updates); text != "" {
-		tview.Print(screen, " "+tag+safe(fit(printable(text), r.W-2))+tagReset, r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
+	sealTag, sealText := sealAlert(s.Seal, r.W-2)
+	updTag, updText := updatesAlert(s.Updates)
 
-		return
+	tag, text := tagOK, "✓ No alerts"
+
+	switch {
+	case sealText != "" && sealTag == tagBad:
+		tag, text = sealTag, sealText
+	case updText != "":
+		tag, text = updTag, updText
+	case sealText != "":
+		tag, text = sealTag, sealText
+	default:
 	}
 
-	tview.Print(screen, " "+tagOK+"✓ No alerts"+tagReset, r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
+	tview.Print(screen, " "+tag+safe(fit(printable(text), r.W-2))+tagReset, r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
 }
 
 // drawKeys draws the key line.

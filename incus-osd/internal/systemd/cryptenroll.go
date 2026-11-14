@@ -283,7 +283,7 @@ func ListEncryptedVolumes(ctx context.Context) ([]api.SystemSecurityEncryptedVol
 			} else {
 				ret = append(ret, api.SystemSecurityEncryptedVolume{
 					Volume: volumeName,
-					State:  "unlocked (recovery passphrase)",
+					State:  api.EncryptedVolumeUnlockedRecovery,
 				})
 			}
 
@@ -293,7 +293,7 @@ func ListEncryptedVolumes(ctx context.Context) ([]api.SystemSecurityEncryptedVol
 		// The volume auto-unlocked using the TPM.
 		ret = append(ret, api.SystemSecurityEncryptedVolume{
 			Volume: volumeName,
-			State:  "unlocked (TPM)",
+			State:  api.EncryptedVolumeUnlockedTPM,
 		})
 	}
 

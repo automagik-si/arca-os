@@ -720,6 +720,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		return err
 	}
 
+	// After a recovery passphrase unlock, re-seal the TPM so the next boot unlocks without it.
+	secureboot.ResealAfterRecoveryUnlock(ctx, s)
+
 	// Sometimes the system may not be able to immediately check the provider for any updates.
 	// One such example is when Operations Center is installed and the underlying IncusOS system
 	// is registered to it as the provider. We need to wait until the Operations Center
