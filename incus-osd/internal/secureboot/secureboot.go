@@ -143,14 +143,18 @@ func HandleSecureBootKeyChange(ctx context.Context, ukiFile string, usrImageFile
 		return err
 	}
 
+	beginSeal()
+
 	for name, volume := range luksVolumes {
 		_, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-key-file=/var/lib/incus-os/keys/recovery."+name+".key", "--tpm2-device=auto", "--wipe-slot=tpm2", "--tpm2-pcrlock=", pcrBindingArg, volume)
 		if err != nil {
 			return err
 		}
-	}
 
-	RecordSealState(ukiFile, newPCR4, newPCR7, pcr12)
+		if name == sealedVolume {
+			RecordSealState(ukiFile, newPCR4, newPCR7, pcr12)
+		}
+	}
 
 	return nil
 }
@@ -213,14 +217,18 @@ func UpdatePCR4Binding(ctx context.Context, ukiFile string) error {
 
 	pcrBindingArg := pcrBindingArgument(newPCR4, pcr7, pcr12)
 
+	beginSeal()
+
 	for name, volume := range luksVolumes {
 		err := enrollTPM2(ctx, name, volume, pcrBindingArg)
 		if err != nil {
 			return err
 		}
-	}
 
-	RecordSealState(ukiFile, newPCR4, pcr7, pcr12)
+		if name == sealedVolume {
+			RecordSealState(ukiFile, newPCR4, pcr7, pcr12)
+		}
+	}
 
 	return nil
 }
@@ -241,14 +249,18 @@ func UpdatePCR7Binding(ctx context.Context) error {
 
 	pcrBindingArg := pcrBindingArgument(nil, pcr7, nil)
 
+	beginSeal()
+
 	for name, volume := range luksVolumes {
 		err := enrollTPM2(ctx, name, volume, pcrBindingArg)
 		if err != nil {
 			return err
 		}
-	}
 
-	RecordSealState("", nil, pcr7, nil)
+		if name == sealedVolume {
+			RecordSealState("", nil, pcr7, nil)
+		}
+	}
 
 	return nil
 }

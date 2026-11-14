@@ -148,3 +148,69 @@ func TestUpdatePCR7Binding(t *testing.T) { //nolint:paralleltest // puts a fake 
 		t.Fatal("a failed systemd-cryptenroll was not returned")
 	}
 }
+
+func TestUpdatePCR7BindingFailingPartway(t *testing.T) { //nolint:paralleltest // puts a fake systemd-cryptenroll on PATH
+	savedEFI := sealReadEFIVariable
+
+	t.Cleanup(func() { sealReadEFIVariable = savedEFI })
+
+	sealReadEFIVariable = func(name string) ([]byte, error) { return map[string][]byte{"SecureBoot": {1}}[name], nil }
+	next := Measurements{SecureBootEnabled: true, PCR7: strings.Repeat("7", 64)}
+	rootFirst := false
+
+	// Volumes are re-bound in map order, so repeat until root went first at least once.
+	for i := 0; i < 64 && !rootFirst; i++ {
+		for _, failing := range []string{"/dev/root-luks", "/dev/swap-luks"} {
+			stubPCRsAndVolumes(t)
+
+			dir := t.TempDir()
+			log := filepath.Join(dir, "calls.log")
+			script := "#!/bin/sh\necho \"$*\" >> " + log + "\ncase \"$*\" in *" + failing + ") exit 1;; esac\n"
+
+			err := os.WriteFile(filepath.Join(dir, "systemd-cryptenroll"), []byte(script), 0o700) //nolint:gosec
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			err = os.WriteFile(SealStatePath, []byte(`{"version":1,"secure_boot_enabled":true,"pcr7":"`+strings.Repeat("b", 64)+`"}`), 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = UpdatePCR7Binding(context.Background())
+			if err == nil {
+				t.Fatalf("a failing %s didn't fail the re-seal", failing)
+			}
+
+			calls, err := os.ReadFile(log) //nolint:gosec
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rootBound := failing != "/dev/root-luks" && strings.Contains(string(calls), "/dev/root-luks")
+			rootFirst = rootFirst || rootBound
+
+			// The record follows root's binding, whichever volume failed.
+			record, err := ReadSealState(SealStatePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if (DiagnoseSeal(record, next) == SealMatch) != rootBound {
+				t.Fatalf("%s failed, root re-bound %t, record %+v", failing, rootBound, record)
+			}
+
+			// The boot is marked before the first re-bind, so a restart can't repair the record.
+			_, err = os.Stat(SealStateBootMarker)
+			if err != nil {
+				t.Fatalf("%s failed and the boot isn't marked: %v", failing, err)
+			}
+		}
+	}
+
+	if !rootFirst {
+		t.Fatal("root was never re-bound before swap failed")
+	}
+}

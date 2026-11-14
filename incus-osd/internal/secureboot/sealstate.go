@@ -71,6 +71,17 @@ func RecordSealState(ukiFile string, pcr4 []byte, pcr7 []byte, pcr12 []byte) {
 	}
 }
 
+// sealedVolume is the volume the initrd explains, so a seal records its state once this one is bound.
+const sealedVolume = "root"
+
+// beginSeal marks this boot before a seal changes a TPM binding, so a restart midway can't repair the record.
+func beginSeal() {
+	err := markSealStateBoot()
+	if err != nil {
+		slog.Warn("Failed to mark the TPM seal state for this boot", "err", err)
+	}
+}
+
 // markSealStateBoot records that this boot sealed or checked the seal state record.
 func markSealStateBoot() error {
 	err := os.MkdirAll(filepath.Dir(SealStateBootMarker), 0o700)

@@ -116,6 +116,14 @@ func ForceUpdatePCRBindings(ctx context.Context, s *state.State) error {
 		luksKey = s.System.Security.Config.EncryptionRecoveryKeys[0]
 	}
 
+	// With Secure Boot on, PCR12 isn't bound.
+	sealedPCR12 := pcr12
+	if sbEnabled {
+		sealedPCR12 = nil
+	}
+
+	beginSeal()
+
 	for name, volume := range luksVolumes {
 		var stderr string
 
@@ -173,12 +181,10 @@ func ForceUpdatePCRBindings(ctx context.Context, s *state.State) error {
 				}
 			}
 		}
-	}
 
-	if sbEnabled {
-		RecordSealState(ukiFile, pcr4, pcr7, nil)
-	} else {
-		RecordSealState(ukiFile, pcr4, pcr7, pcr12)
+		if name == sealedVolume {
+			RecordSealState(ukiFile, pcr4, pcr7, sealedPCR12)
+		}
 	}
 
 	// Once complete, immediately reboot the system which should then auto-unlock.

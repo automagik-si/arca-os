@@ -335,14 +335,18 @@ func appendEFIVarUpdate(ctx context.Context, efiUpdateFile string, varName strin
 		return err
 	}
 
+	beginSeal()
+
 	for name, volume := range luksVolumes {
 		_, err = subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-key-file=/var/lib/incus-os/keys/recovery."+name+".key", "--tpm2-device=auto", "--wipe-slot=tpm2", "--tpm2-pcrlock=", pcrBindingArg, volume)
 		if err != nil {
 			return err
 		}
-	}
 
-	RecordSealState("", nil, newPCR7, nil)
+		if name == sealedVolume {
+			RecordSealState("", nil, newPCR7, nil)
+		}
+	}
 
 	return nil
 }
