@@ -31,6 +31,10 @@ type Updates struct {
 
 	LastResult, LastReason, NeedsOwner string
 
+	// Available is the channel's newest OS version as of the last check; UpdateAvailable that check's verdict.
+	Available       string
+	UpdateAvailable bool
+
 	// The last check's failure; the CAs are set when the update server isn't trusted.
 	ErrorKind, LastError, EmbeddedCA, PresentedCA string
 	TrustFailures                                 int
@@ -80,6 +84,9 @@ func liveUpdates(s *state.State) Updates {
 		PresentedCA:    sum.PresentedCA,
 		TrustFailures:  sum.TrustFailures,
 		TrustEscalated: sum.TrustEscalated,
+
+		Available:       sum.AvailableVersion,
+		UpdateAvailable: sum.UpdateAvailable,
 	}
 
 	for _, line := range sum.Failed {
@@ -242,6 +249,7 @@ func updatesLines(u Updates, sel int) []string {
 
 	lines = append(lines,
 		field("Current", orDash(u.Current)),
+		field("Available", availableText(u)),
 		field("Previous", orDash(u.Previous)),
 		field("Good", orDash(u.Good)),
 		field("Pending", orDash(u.Pending)),
@@ -268,6 +276,26 @@ func updatesLines(u Updates, sel int) []string {
 	}
 
 	return append(lines, "", tagDim+"c checks for updates now · Esc closes this page"+tagReset)
+}
+
+// availableText is the channel's newest OS version, with how this system stands against it.
+func availableText(u Updates) string {
+	if u.Available == "" {
+		return "—"
+	}
+
+	v := safe(u.Available) + "   "
+
+	switch {
+	case u.Available == u.Pending:
+		return v + tagWarn + "Waiting for a restart" + tagReset
+	case u.UpdateAvailable:
+		return v + tagWarn + "Behind the channel" + tagReset
+	case u.Available == u.Current:
+		return v + tagOK + "Up to date" + tagReset
+	default:
+		return v + tagDim + "No update to apply" + tagReset
+	}
 }
 
 // trustWarning is the owner's warning after repeated trust failures.

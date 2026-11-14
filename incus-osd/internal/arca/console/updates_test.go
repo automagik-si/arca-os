@@ -1,6 +1,7 @@
 package console
 
 import (
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/lxc/incus-os/incus-osd/internal/state"
 	osupdate "github.com/lxc/incus-os/incus-osd/internal/update"
 )
 
@@ -158,18 +160,20 @@ func TestUpdatesPage(t *testing.T) {
 // untrusted is an updater whose update server's key isn't trusted, after three checks.
 func untrusted() Updates {
 	return Updates{
-		Automatic:      true,
-		Window:         "03:00-05:00",
-		Status:         osupdate.TrustStatus,
-		LastCheck:      time.Date(2026, 11, 3, 14, 0, 0, 0, time.UTC),
-		Current:        "202611010000",
-		Good:           "202611010000",
-		ErrorKind:      osupdate.ErrorKindTrust,
-		LastError:      "unable to verify S/MIME message due to its use of a missing or unverifiable CA",
-		EmbeddedCA:     "70:79:C3:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:01",
-		PresentedCA:    "0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02",
-		TrustFailures:  3,
-		TrustEscalated: true,
+		Automatic:       true,
+		Window:          "03:00-05:00",
+		Status:          osupdate.TrustStatus,
+		LastCheck:       time.Date(2026, 11, 3, 14, 0, 0, 0, time.UTC),
+		Current:         "202611010000",
+		Available:       "202611030000",
+		UpdateAvailable: true,
+		Good:            "202611010000",
+		ErrorKind:       osupdate.ErrorKindTrust,
+		LastError:       "unable to verify S/MIME message due to its use of a missing or unverifiable CA",
+		EmbeddedCA:      "70:79:C3:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:01",
+		PresentedCA:     "0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02",
+		TrustFailures:   3,
+		TrustEscalated:  true,
 	}
 }
 
@@ -207,6 +211,7 @@ func TestUpdatesPageUntrusted(t *testing.T) {
 		"Server CA   0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:",
 		"            DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02",
 		"Error       unable to verify S/MIME message due to its use of a missing",
+		"Available   202611030000   Behind the channel",
 	} {
 		if rowOf(screen, want) < 0 {
 			t.Fatalf("the page has no %q:\n%s", want, screenText(screen))
@@ -249,5 +254,46 @@ func TestUpdatesTrustBeforeEscalation(t *testing.T) {
 	page = strings.Join(updatesLines(u, 0), "\n")
 	if strings.Contains(page, "Embedded CA") {
 		t.Fatalf("fingerprints shown for a network failure:\n%s", page)
+	}
+}
+
+// styleTag is a console style tag such as [gray] or [-:-:-].
+var styleTag = regexp.MustCompile(`\[[a-z:-]*\]`)
+
+func stripTags(text string) string {
+	return styleTag.ReplaceAllString(text, "")
+}
+
+func TestUpdatesAvailableVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		u    Updates
+		want string
+	}{
+		{"unknown", Updates{Current: "202611010000"}, "Available   —"},
+		{"behind", Updates{Current: "202611010000", Available: "202611150123", UpdateAvailable: true}, "Available   202611150123   Behind the channel"},
+		{"latest", Updates{Current: "202611150123", Available: "202611150123"}, "Available   202611150123   Up to date"},
+		{"restart", Updates{Current: "202611010000", Pending: "202611150123", Available: "202611150123", UpdateAvailable: true}, "Available   202611150123   Waiting for a restart"},
+		{"held", Updates{Current: "202611010000", Available: "202611150123"}, "Available   202611150123   No update to apply"},
+	} {
+		page := stripTags(strings.Join(updatesLines(tc.u, 0), "\n"))
+		if !strings.Contains(page, tc.want+"\n") {
+			t.Fatalf("%s: no %q in:\n%s", tc.name, tc.want, page)
+		}
+	}
+}
+
+func TestLiveUpdatesAvailableVersion(t *testing.T) {
+	t.Parallel()
+
+	s := &state.State{}
+	s.System.Update.State.AvailableVersion = "202611150123"
+	s.System.Update.State.UpdateAvailable = true
+
+	u := liveUpdates(s)
+	if u.Available != "202611150123" || !u.UpdateAvailable {
+		t.Fatalf("live updates: available %q, update available %v", u.Available, u.UpdateAvailable)
 	}
 }
