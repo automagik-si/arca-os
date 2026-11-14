@@ -8,6 +8,7 @@
 │ Restarts    03:00-05:00, next at 2026-11-04 03:00   [ ] move by an hour      │
 │ Status      Needs you: after going back to 202611010000, 3 health checks fail│
 │ Current     202611010000                                                     │
+│ Available   —                                                                │
 │ Previous    202611010000                                                     │
 │ Good        202611010000                                                     │
 │ Pending     —                                                                │
@@ -18,7 +19,6 @@
 │ ▶ 202611020000: 3 health checks failed, last: the Incus API does not answer  │
 │                                                                              │
 │ c checks for updates now · Esc closes this page                              │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

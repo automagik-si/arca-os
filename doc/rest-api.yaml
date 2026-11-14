@@ -1880,6 +1880,10 @@ definitions:
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateState:
         properties:
+            available_version:
+                description: AvailableVersion is the channel's newest OS version, from the update server's last valid answer.
+                type: string
+                x-go-name: AvailableVersion
             embedded_ca_fingerprint:
                 description: EmbeddedCAFingerprint is the SHA-256 of the update CA this system expects.
                 type: string
@@ -1917,6 +1921,10 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: TrustFailures
+            update_available:
+                description: UpdateAvailable is whether the last check found AvailableVersion newer than the running one and not yet applied.
+                type: boolean
+                x-go-name: UpdateAvailable
         title: SystemUpdateState holds information about the current update state.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api

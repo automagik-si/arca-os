@@ -13,6 +13,7 @@
 │             DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02                  │
 │ Error       unable to verify S/MIME message due to its use of a missing or un│
 │ Current     202611010000                                                     │
+│ Available   202611030000   Behind the channel (the last check failed)        │
 │ Previous    —                                                                │
 │ Good        202611010000                                                     │
 │ Pending     —                                                                │
@@ -23,7 +24,6 @@
 │ None                                                                         │
 │                                                                              │
 │ c checks for updates now · Esc closes this page                              │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
