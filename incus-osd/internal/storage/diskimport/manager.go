@@ -566,10 +566,17 @@ func (m *Manager) openLVM(ctx context.Context, d *openDisk, dev string, name str
 
 	m.addLayer(d, "lvm")
 
-	out, err = m.run.Run(ctx, "", "lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_path,lv_active,segtype", vg)
+	out, err = m.run.Run(ctx, "", "lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_path,lv_active,lv_layout", vg)
 	if err != nil {
 		return errors.Join(activateErr, err)
 	}
+
+	if activateErr != nil {
+		slog.Warn("Import volume group partly activated", "serial", d.serial, "vg", vg, "err", activateErr)
+	}
+
+	// lv_layout is a per-LV field: a segment field such as segtype would print one row per segment.
+	seen := map[string]bool{}
 
 	for line := range strings.SplitSeq(out, "\n") {
 		fields := strings.Split(line, "|")
@@ -581,19 +588,20 @@ func (m *Manager) openLVM(ctx context.Context, d *openDisk, dev string, name str
 			fields[i] = strings.TrimSpace(fields[i])
 		}
 
-		if fields[0] == "" {
+		if fields[0] == "" || seen[fields[0]] {
 			continue
 		}
 
+		seen[fields[0]] = true
 		name := vg + "/" + fields[0]
 
 		// Incus and lvm2 thin snapshots set activation skip, and a thin pool is not a block device.
 		switch {
-		case fields[3] == "thin-pool":
+		case fields[3] == "thin,pool":
 			d.unreadable = append(d.unreadable, name+": thin pool (not a block device)")
 
 			continue
-		case fields[2] == "" && fields[3] == "thin":
+		case fields[2] == "" && fields[3] == "thin,sparse":
 			d.unreadable = append(d.unreadable, name+": thin volume (its pool cannot run read-only)")
 
 			continue
