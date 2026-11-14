@@ -5,6 +5,7 @@ ARP
 Asus
 authenticode
 backend
+BIP
 BMC
 BYOSOFT
 CAs
@@ -104,6 +105,7 @@ OVMF
 OVN
 OVS
 parsable
+Pavol
 PCI
 PCR
 PCRs
@@ -121,6 +123,7 @@ RaspberryPi
 Rauthy
 resilver
 RSA
+Rusnak
 Ryzen
 Scaleway
 SLAAC

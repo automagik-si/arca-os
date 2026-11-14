@@ -2,7 +2,7 @@
 
 IncusOS has a fairly robust [security setup](../security.md) that is enforced on all systems. Under normal operation, IncusOS relies on the TPM to automatically unlock the main system drive, which in turn holds the encryption keys for any [storage pools](storage.md).
 
-As part of its first boot, IncusOS generates a strong recovery key that can be used to decrypt the main system drive in recovery scenarios, such accidental TPM reset or needing to perform offline data recovery. Additional recovery keys can be added if desired. It is imperative to protect the recovery key(s) in a manner consistent with the importance of data stored on the corresponding IncusOS system.
+As part of its first boot, IncusOS generates a strong recovery key that can be used to decrypt the main system drive in recovery scenarios, such accidental TPM reset or needing to perform offline data recovery. It is a [passphrase of eight words](../security.md#recovery-passphrase), shown on the console at first boot until the owner confirms it. Additional recovery keys can be added if desired. It is imperative to protect the recovery key(s) in a manner consistent with the importance of data stored on the corresponding IncusOS system.
 
 The recovery key(s) can be retrieved by running
 

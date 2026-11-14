@@ -138,6 +138,7 @@ func PerformOSFactoryReset(ctx context.Context, resetSeed *api.SystemReset) erro
 	// logic will take care of re-configuring the system as appropriate.
 	_ = os.RemoveAll("/boot/swtpm/")
 	_ = os.Remove("/boot/sb-disabled")
+	_ = os.Remove("/boot/recovery-passphrase-acknowledged")
 
 	// Fourth, wipe system partitions (swap, root, and local-data).
 	for _, partitionIndex := range []string{"9", "10", "11"} {

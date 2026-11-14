@@ -1,0 +1,24 @@
+ ARCA  —  Arca OS 202611030000                                         —  14:22
+ —
+┌─ Recovery passphrase ────────────────────────────────────────────────────────┐
+│ Write these 8 words down, in this order, and keep them safe:                 │
+│                                                                              │
+│     1 abandon   2 ability   3 able      4 about                              │
+│     5 above     6 absent    7 absorb    8 abstract                           │
+│                                                                              │
+│ This is the recovery passphrase of this machine's disk. It is asked for at   │
+│ start-up when the TPM refuses to unlock the disk, for example after a        │
+│ firmware, Secure Boot or hardware change: type the 8 words, separated by     │
+│ single spaces, then press Enter.                                             │
+│                                                                              │
+│ Arca keeps a copy in its encrypted settings, readable only once the disk     │
+│ is unlocked. If you lose this passphrase and the TPM refuses, the disk and   │
+│ everything on it are lost.                                                   │
+│                                                                              │
+│ Enter when written down, then type words 2 and 5 to confirm.                 │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

@@ -376,6 +376,30 @@ func run(ctx context.Context, s *state.State) error {
 	return <-chErr
 }
 
+// prepareRecoveryHandOver marks the new recovery passphrase for hand-over at the console and
+// carries the install seed's acknowledgement from flagFile into state. The keys stay marked as
+// not retrieved until the owner confirms the passphrase there or marks them through the API.
+func prepareRecoveryHandOver(s *state.State, flagFile string) error {
+	_, err := os.Stat(flagFile)
+	if err == nil {
+		s.RecoveryPassphraseAcknowledged = true
+	}
+
+	s.RecoveryPassphrasePending = true
+
+	err = s.Save()
+	if err != nil {
+		return err
+	}
+
+	err = os.Remove(flagFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return nil
+}
+
 func shutdown(ctx context.Context, s *state.State) error {
 	// Save state on exit.
 	defer func() { _ = s.Save() }()
@@ -536,6 +560,16 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		if err != nil {
 			return err
 		}
+
+		err = prepareRecoveryHandOver(s, install.RecoveryPassphraseAcknowledgedFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Hand the recovery passphrase over at the console, on every start until it was.
+	if s.RecoveryPassphrasePending {
+		console.HandOver(ctx, s)
 	}
 
 	// Remove pcrlock credentials left on the ESP by earlier releases, they get measured into PCR12.

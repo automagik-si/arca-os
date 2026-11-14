@@ -35,6 +35,10 @@ type Install struct {
 	config *apiseed.Install
 }
 
+// RecoveryPassphraseAcknowledgedFile on the ESP carries the install seed's
+// recovery_passphrase_acknowledged to the installed system's first boot.
+const RecoveryPassphraseAcknowledgedFile = "/boot/recovery-passphrase-acknowledged"
+
 var cdromDevice = "/dev/sr0"
 
 var cdromMappedDevice = "/dev/mapper/sr0"
@@ -959,6 +963,16 @@ func (i *Install) performInstall(ctx context.Context, modal *tui.Modal, sourceDe
 
 	if !sbEnabled {
 		fd, err := os.Create("/boot/sb-disabled")
+		if err != nil {
+			return err
+		}
+
+		_ = fd.Close()
+	}
+
+	// If the install seed pre-acknowledges the recovery passphrase, tell first boot.
+	if i.config.Security != nil && i.config.Security.RecoveryPassphraseAcknowledged {
+		fd, err := os.Create(RecoveryPassphraseAcknowledgedFile)
 		if err != nil {
 			return err
 		}

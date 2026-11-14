@@ -89,6 +89,8 @@ func (v *view) Draw(screen tcell.Screen) {
 		drawHelp(screen, content)
 	case pageUpdates:
 		drawUpdates(screen, v.snap, content)
+	case pageRecovery:
+		drawHandOver(screen, v.snap, content)
 	default:
 		v.drawDashboard(screen, l, x, y)
 	}

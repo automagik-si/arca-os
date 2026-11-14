@@ -52,6 +52,13 @@ type State struct {
 	FullAgentEnabled    bool       `json:"full_agent_enabled"`
 	ServicesSeedApplied bool       `json:"services_seed_applied"`
 
+	// RecoveryPassphraseAcknowledged is set from the install seed: first boot then shows the
+	// recovery passphrase without waiting for the owner to confirm it.
+	RecoveryPassphraseAcknowledged bool `json:"recovery_passphrase_acknowledged"`
+
+	// RecoveryPassphrasePending is set while the console still has to hand the recovery passphrase over.
+	RecoveryPassphrasePending bool `json:"recovery_passphrase_pending"`
+
 	Applications struct {
 		Arca             api.Application        `json:"arca"`
 		Debug            api.Application        `json:"debug"`

@@ -401,6 +401,9 @@ func processNewState(ctx context.Context, s *state.State, skipOptions []string) 
 		}
 	}
 
+	// The keys enrolled now, which the restore removes from the LUKS volumes.
+	oldKeys := slices.Clone(s.System.Security.Config.EncryptionRecoveryKeys)
+
 	// Copy over relevant state updates.
 	s.Services = newState.Services
 	s.System = newState.System
@@ -432,7 +435,7 @@ func processNewState(ctx context.Context, s *state.State, skipOptions []string) 
 		}
 
 		for name, volume := range luksVolumes {
-			err := systemd.WipeAllRecoveryKeys(ctx, name, volume)
+			err := systemd.WipeAllRecoveryKeys(ctx, name, volume, oldKeys)
 			if err != nil {
 				return err
 			}

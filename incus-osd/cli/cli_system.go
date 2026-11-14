@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	cli "github.com/lxc/incus/v7/shared/cmd"
 	"github.com/spf13/cobra"
@@ -342,6 +343,13 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 
 			err := json.Unmarshal(data, &sec)
 			if err == nil {
+				for _, key := range sec.Config.EncryptionRecoveryKeys {
+					groups := passphraseGroups(key)
+					if groups != nil {
+						_, _ = fmt.Fprintf(os.Stderr, "\nRecovery passphrase, to read over:\n  %s\n", strings.Join(groups, "\n  "))
+					}
+				}
+
 				if !sec.State.EncryptionRecoveryKeysRetrieved {
 					_, _ = fmt.Fprintf(os.Stderr, "\nNOTE: Once you have securely recorded the recovery keys, run\n      `%s admin os system security retrieved` to mark that they have\n      been manually retrieved.\n", os.Args[0])
 				}
@@ -375,4 +383,21 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 
 	return cmd
+}
+
+// passphraseGroups returns a generated recovery passphrase (eight lowercase words) in
+// lines of four words, or nil for any other key.
+func passphraseGroups(key string) []string {
+	words := strings.Split(key, " ")
+	if len(words) != 8 {
+		return nil
+	}
+
+	for _, w := range words {
+		if w == "" || strings.Trim(w, "abcdefghijklmnopqrstuvwxyz") != "" {
+			return nil
+		}
+	}
+
+	return []string{strings.Join(words[:4], " "), strings.Join(words[4:], " ")}
 }
