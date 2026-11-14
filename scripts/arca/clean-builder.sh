@@ -7,11 +7,13 @@
 # --work-tree removes /srv/work/<name>, an in-builder.sh checkout, with its
 # .cache/. The name must match [A-Za-z0-9._-]+, not be . or .., and resolve to
 # itself directly under the work dir (no symlink); anything else is refused.
-# Unless --no-prune, it keeps the newest N (default 2) version directories
-# (12-digit names, in lexical order) under /srv/artifacts/os and removes the
-# others, except the one `latest` points at (kept with a warning when it is
-# older) and --keep-version (the version just built). Other entries there are
-# left alone. It prints every version kept or removed.
+# Unless --no-prune, it keeps the newest N (1 to 9999, default 2) version
+# directories (12-digit names, in lexical order) under /srv/artifacts/os and
+# removes the others, except the one `latest` points at (kept with a warning
+# when it is older) and --keep-version (the version just built). A version
+# with autopublish.json is autopublish's build, left to its own retention: it
+# is kept and takes no slot. Other entries there are left alone. It prints
+# every version kept or removed.
 # It then runs `fstrim -v /` and prints the space available on / before and
 # after, the bytes trimmed and the bytes freed. A second run removes nothing.
 # --dry-run prints the plan and changes nothing; it does not trim.
@@ -51,7 +53,7 @@ while [ $# -gt 0 ]; do
 	*) refuse "unknown argument: $1" ;;
 	esac
 done
-[[ "$keep" =~ ^[1-9][0-9]*$ ]] || refuse "--keep-artifacts must be a whole number of at least 1, not '$keep'"
+[[ "$keep" =~ ^[1-9][0-9]{0,3}$ ]] || refuse "--keep-artifacts must be a whole number from 1 to 9999, not '$keep'"
 if [ -n "$just" ] && ! [[ "$just" =~ ^[0-9]{12}$ ]]; then
 	refuse "--keep-version must be a 12-digit version, not '$just'"
 fi
@@ -92,6 +94,10 @@ if [ "$prune" -eq 1 ] && [ -d "$ART" ]; then
 	done < <(cd "$ART" && find . -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -Ex '[0-9]{12}' | LC_ALL=C sort -r)
 	n=0
 	for v in "${versions[@]}"; do
+		if [ -f "$ART/$v/autopublish.json" ]; then
+			echo "artifact: keep $v (autopublish)"
+			continue
+		fi
 		n=$((n + 1))
 		note=''
 		if [ -n "$latest" ] && [ "$(realpath -e -- "$ART/$v")" = "$latest" ]; then note=latest; fi

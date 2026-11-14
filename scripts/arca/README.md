@@ -116,9 +116,10 @@ scripts/arca/build-image.sh "$PWD" --dry-run           # builds nothing, prints 
 It runs `in-builder.sh <worktree> -- build.sh <args>` and then `clean-builder.sh` inside the builder (sent to
 `bash -s`, so nothing is left there), all under the builder lock. After a successful build it removes the work tree
 (`--keep-tree` keeps it, for example for `tracer-installer.sh`), keeps the newest 2 versions under
-`/srv/artifacts/os` (`--keep-artifacts N`), never the version just built nor the one `latest` points at, and runs
-`fstrim -v /`. After a failed build it keeps the work tree for debugging, prunes no artifact, still trims, and exits
-with the build's code. It prints what it kept and removed, the bytes freed in the builder, and the storage pool's free
+`/srv/artifacts/os` (`--keep-artifacts N`, 1 to 9999), never the version just built nor the one `latest` points at,
+leaves autopublish's builds (those with `autopublish.json`, which include the stable build the canary installs from)
+to autopublish's own retention, and runs `fstrim -v /`. After a failed build it keeps the work tree for debugging,
+prunes no artifact, still trims, and exits with the build's code. It prints what it kept and removed, the bytes freed in the builder, and the storage pool's free
 space before and after.
 
 Removing the work tree also drops its `.cache/`, the cache `make build` gives mkosi (`mkosi --cache-dir .cache/`), so

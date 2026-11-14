@@ -8,8 +8,8 @@
 # clean-builder.sh inside the builder, sent on stdin to `bash -s` so nothing
 # is left there. After a successful build the cleanup removes the work tree
 # /srv/work/<worktree name> (unless --keep-tree), keeps the newest N (default
-# 2) versions under /srv/artifacts/os and never the version just built, and
-# trims /. After a failed build it keeps the work tree for debugging, prunes
+# 2) versions under /srv/artifacts/os and never the version just built nor
+# autopublish's builds (they carry autopublish.json), and trims /. After a failed build it keeps the work tree for debugging, prunes
 # no artifact, still trims, and exits with the build's code.
 # It prints the bytes freed in the builder and the free space of the builder's
 # storage pool before and after.
@@ -64,7 +64,7 @@ case "$PROJECT" in
 arcaos-*) ;;
 *) refuse "project '$PROJECT' does not start with arcaos-" ;;
 esac
-[[ "$keep" =~ ^[1-9][0-9]*$ ]] || refuse "--keep-artifacts must be a whole number of at least 1, not '$keep'"
+[[ "$keep" =~ ^[1-9][0-9]{0,3}$ ]] || refuse "--keep-artifacts must be a whole number from 1 to 9999, not '$keep'"
 command -v jq >/dev/null || die "jq is not on PATH"
 
 # The builder lock, as in-builder.sh takes it; in-builder.sh then does not take it again.
