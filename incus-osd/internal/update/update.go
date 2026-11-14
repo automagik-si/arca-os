@@ -83,6 +83,8 @@ func CheckRespectMaintenanceWindows(ctx context.Context, s *state.State) error {
 // Check runs a full (applications and OS) update check regardless of any defined
 // maintenance windows. Typically this should be called  as the system starts up.
 func Check(ctx context.Context, s *state.State) error {
+	ctx = withCheckCycle(ctx)
+
 	err := CheckSecureBoot(ctx, s, false, false)
 	if err != nil {
 		return err
@@ -106,6 +108,8 @@ func Check(ctx context.Context, s *state.State) error {
 // to ensure the very latest updates are available. Typically this should one be
 // called in response to a user specifically requesting an update check.
 func CheckWithEmptyCache(ctx context.Context, s *state.State) error {
+	ctx = withCheckCycle(ctx)
+
 	err := CheckSecureBoot(ctx, s, true, false)
 	if err != nil {
 		return err
@@ -131,6 +135,8 @@ func CheckSecureBoot(ctx context.Context, s *state.State, clearCache bool, force
 		return nil
 	}
 
+	ctx = withCheckCycle(ctx)
+
 	p, t, err := updateCommonPrep(ctx, s, clearCache)
 	if err != nil {
 		return err
@@ -143,7 +149,7 @@ func CheckSecureBoot(ctx context.Context, s *state.State, clearCache bool, force
 	// Check for and apply any Secure Boot key updates before performing any OS or application updates.
 	_, err = checkAndDownloadUpdate(ctx, s, t, p, TypeSecureBoot, "", forceApplyUpdate)
 	if err != nil {
-		s.System.Update.State.Status = "Failed to check for Secure Boot key updates"
+		s.System.Update.State.Status = failedStatus(err, "Failed to check for Secure Boot key updates")
 		showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
 
 		return err
@@ -160,6 +166,8 @@ func CheckSecureBoot(ctx context.Context, s *state.State, clearCache bool, force
 // any application not currently installed. If no applications are specified, all currently installed
 // applications will be checked.
 func CheckApplications(ctx context.Context, s *state.State, toInstall []string, clearCache bool, forceApplyUpdate bool) error {
+	ctx = withCheckCycle(ctx)
+
 	p, t, err := updateCommonPrep(ctx, s, clearCache)
 	if err != nil {
 		return err
@@ -183,13 +191,15 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 
 	// Check for application updates.
 	appsUpdated := map[string]string{}
+	untrusted := false
 
 	for _, appName := range toInstall {
 		previous := installedVersion(ctx, s, appName)
 
 		newAppVersion, err := checkAndDownloadUpdate(ctx, s, t, p, TypeApplication, appName, forceApplyUpdate)
 		if err != nil {
-			s.System.Update.State.Status = "Failed to check for update for application '" + appName + "'"
+			untrusted = untrusted || errorKind(err) == ErrorKindTrust
+			s.System.Update.State.Status = failedStatus(err, "Failed to check for update for application '"+appName+"'")
 			showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
 
 			continue
@@ -229,7 +239,11 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 		}
 	}
 
-	s.System.Update.State.Status = "Application update check completed"
+	if untrusted {
+		s.System.Update.State.Status = TrustStatus
+	} else {
+		s.System.Update.State.Status = "Application update check completed"
+	}
 
 	return nil
 }
@@ -273,11 +287,18 @@ func prepareApplicationUpdates(ctx context.Context, s *state.State, updated map[
 
 // CheckOS checks for an available OS update.
 func CheckOS(ctx context.Context, s *state.State, clearCache bool, forceApplyUpdate bool) error {
+	ctx = withCheckCycle(ctx)
+
 	p, t, err := updateCommonPrep(ctx, s, clearCache)
 	if err != nil {
 		return err
 	}
 
+	return checkOSWith(ctx, s, p, t, forceApplyUpdate)
+}
+
+// checkOSWith checks the provider for an available OS update.
+func checkOSWith(ctx context.Context, s *state.State, p providers.Provider, t *tui.TUI, forceApplyUpdate bool) error {
 	// Save when we last performed an update check.
 	s.System.Update.State.LastCheck = time.Now()
 	s.System.Update.State.Status = "Checking for OS updates"
@@ -285,7 +306,7 @@ func CheckOS(ctx context.Context, s *state.State, clearCache bool, forceApplyUpd
 	// Check for the latest OS update.
 	newInstalledOSVersion, err := checkAndDownloadUpdate(ctx, s, t, p, TypeOS, "", forceApplyUpdate)
 	if err != nil {
-		s.System.Update.State.Status = "Failed to check for OS updates"
+		s.System.Update.State.Status = failedStatus(err, "Failed to check for OS updates")
 		showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
 
 		return err
@@ -431,10 +452,19 @@ func checkAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 		}
 	}
 
-	// Get the appropriate update.
-	var update providers.CommonUpdate
+	newVersion, err := fetchAndApplyUpdate(ctx, s, t, p, ut, appName, forceApplyUpdate)
+	recordCheck(ctx, s, err)
 
-	var err error
+	return newVersion, err
+}
+
+// fetchAndApplyUpdate asks the provider for the specified update and applies it when needed.
+func fetchAndApplyUpdate(ctx context.Context, s *state.State, t *tui.TUI, p providers.Provider, ut Type, appName string, forceApplyUpdate bool) (string, error) {
+	// Get the appropriate update.
+	var (
+		update providers.CommonUpdate
+		err    error
+	)
 
 	switch ut {
 	case TypeSecureBoot:
@@ -723,6 +753,10 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 }
 
 func dismissUpdateModal(t *tui.TUI) {
+	if t == nil {
+		return
+	}
+
 	updateModal := t.GetModal("update")
 	if updateModal != nil {
 		updateModal.Done()
@@ -743,5 +777,5 @@ func showModalError(ctx context.Context, osName string, msg string, err error, p
 		updateModal = t.AddModal(osName+" Update", "update")
 	}
 
-	updateModal.Update("[red]Error[white] " + msg + ": " + err.Error() + " (provider: " + p.Type() + ")")
+	updateModal.Update(modalErrorText(msg, err, p.Type()))
 }
