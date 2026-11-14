@@ -198,3 +198,80 @@ func TestOtherChecksLeaveTheAvailableVersion(t *testing.T) {
 	require.Equal(t, "202611150123", s.System.Update.State.AvailableVersion)
 	require.True(t, s.System.Update.State.UpdateAvailable)
 }
+
+func TestUpdateAvailableClearsOnceApplied(t *testing.T) {
+	t.Parallel()
+
+	s := runningState("202611010000")
+
+	needed, _, err := osUpdateNeeded(t.Context(), s, stubUpdate{"202611150123"})
+	require.NoError(t, err)
+	require.True(t, needed)
+
+	// What the OS apply branch records once the update is installed.
+	recordOSApplied(s, "202611150123")
+	require.Equal(t, "202611150123", s.OS.NextRelease)
+	require.Equal(t, "202611150123", s.System.Update.State.AvailableVersion)
+	require.False(t, s.System.Update.State.UpdateAvailable)
+
+	// The restart into it.
+	s.OS.RunningRelease = "202611150123"
+	s.System.Update.State.NeedsReboot = false
+
+	SettleAvailableVersion(s)
+	require.Equal(t, "202611150123", s.System.Update.State.AvailableVersion)
+	require.False(t, s.System.Update.State.UpdateAvailable)
+}
+
+func TestSettleAvailableVersionAtBoot(t *testing.T) {
+	t.Parallel()
+
+	// A flag left from before the restart into the available version.
+	s := runningState("202611150123")
+	s.System.Update.State.AvailableVersion = "202611150123"
+	s.System.Update.State.UpdateAvailable = true
+
+	SettleAvailableVersion(s)
+	require.False(t, s.System.Update.State.UpdateAvailable)
+
+	// A system that still runs an older version stays behind.
+	s = runningState("202611010000")
+	s.System.Update.State.AvailableVersion = "202611150123"
+	s.System.Update.State.UpdateAvailable = true
+
+	SettleAvailableVersion(s)
+	require.True(t, s.System.Update.State.UpdateAvailable)
+}
+
+func TestOSUpdateNeededWhileWaitingForARestart(t *testing.T) {
+	t.Parallel()
+
+	// The installed version, offered again before the restart, isn't applied again.
+	s := runningState("202611010000")
+	s.OS.NextRelease = "202611150123"
+	s.System.Update.State.NeedsReboot = true
+	s.System.Update.State.UpdateAvailable = true
+
+	needed, skip, err := osUpdateNeeded(t.Context(), s, stubUpdate{"202611150123"})
+	require.NoError(t, err)
+	require.False(t, skip)
+	require.False(t, needed)
+	require.Equal(t, "202611150123", s.System.Update.State.AvailableVersion)
+	require.False(t, s.System.Update.State.UpdateAvailable)
+}
+
+func TestOSUpdateNeededOnTheBackupImage(t *testing.T) {
+	t.Parallel()
+
+	// Booted back from the version the channel still offers: it isn't tried again.
+	s := runningState("202611010000")
+	s.OS.NextRelease = "202611150123"
+	s.System.Update.State.UpdateAvailable = true
+
+	needed, skip, err := osUpdateNeeded(t.Context(), s, stubUpdate{"202611150123"})
+	require.NoError(t, err)
+	require.True(t, skip)
+	require.False(t, needed)
+	require.Equal(t, "202611150123", s.System.Update.State.AvailableVersion)
+	require.False(t, s.System.Update.State.UpdateAvailable)
+}

@@ -190,6 +190,7 @@ func main() {
 
 	// Clear the reboot flag on startup.
 	s.System.Update.State.NeedsReboot = false
+	update.SettleAvailableVersion(s)
 
 	// Restore a prior good network configuration, if present.
 	if s.PriorNetworkConfig != nil {

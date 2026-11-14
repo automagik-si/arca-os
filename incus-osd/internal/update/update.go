@@ -586,6 +586,19 @@ func osUpdateNeeded(ctx context.Context, s *state.State, update providers.Common
 	return updateNeeded, false, nil
 }
 
+// recordOSApplied records an installed OS update, which is no longer one to apply.
+func recordOSApplied(s *state.State, version string) {
+	s.OS.NextRelease = version
+	s.System.Update.State.UpdateAvailable = false
+}
+
+// SettleAvailableVersion clears update_available at startup once the system runs the available version.
+func SettleAvailableVersion(s *state.State) {
+	if s.System.Update.State.AvailableVersion == s.OS.RunningRelease {
+		s.System.Update.State.UpdateAvailable = false
+	}
+}
+
 func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update providers.CommonUpdate, appName string) (string, error) {
 	updateModal := t.GetModal("update")
 
@@ -692,7 +705,7 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			s.System.Update.State.NeedsReboot = true
 		}
 
-		s.OS.NextRelease = update.Version()
+		recordOSApplied(s, update.Version())
 		armOSBake(ctx, s, update.Version())
 
 		// Record the state of auto-unlocked LUKS devices. With some TPMs this can be slow, so cache the
