@@ -101,6 +101,34 @@ image, the `.efi`, the `usr` images, every sysext, the manifests and the tree's 
 its metadata and the expected ImageId from there, not from the checkout it runs in, and never accepts the builder's
 name as `--vm`.
 
+### Leaving the builder clean
+
+A build leaves a checkout of about 18 GB at `/srv/work/<name>` and about 7 GB of artifacts per version, and the builder's
+disk only gives space back to the host's storage pool when it is trimmed. `build-image.sh` is the entry point that
+builds and then leaves the builder clean:
+
+```sh
+scripts/arca/build-image.sh "$PWD"                     # same arguments as build.sh after the worktree
+scripts/arca/build-image.sh "$PWD" --iso --keep-artifacts 3
+scripts/arca/build-image.sh "$PWD" --dry-run           # builds nothing, prints the cleanup plan
+```
+
+It runs `in-builder.sh <worktree> -- build.sh <args>` and then `clean-builder.sh` inside the builder (sent to
+`bash -s`, so nothing is left there), all under the builder lock. After a successful build it removes the work tree
+(`--keep-tree` keeps it, for example for `tracer-installer.sh`), keeps the newest 2 versions under
+`/srv/artifacts/os` (`--keep-artifacts N`, 1 to 9999), never the version just built nor the one `latest` points at,
+leaves autopublish's builds (those with `autopublish.json`, which include the stable build the canary installs from)
+to autopublish's own retention, and runs `fstrim -v /`. After a failed build it keeps the work tree for debugging,
+prunes no artifact, still trims, and exits with the build's code. It prints what it kept and removed, the bytes freed in the builder, and the storage pool's free
+space before and after.
+
+Removing the work tree also drops its `.cache/`, the cache `make build` gives mkosi (`mkosi --cache-dir .cache/`), so
+the next build of that worktree fetches its packages again and is a little slower. That is the price of a pool that
+does not fill. `clean-builder.sh` can
+also be run on its own in the builder (`--work-tree <name>`, `--keep-artifacts N`, `--no-prune`, `--dry-run`); it
+refuses a name or path outside `/srv/work`, and a second run removes nothing. `scripts/arca/test/build-clean.sh`
+tests both scripts on temp directories, with `fstrim` and `incus` stubbed.
+
 `vm-test.sh` follows upstream's end-to-end job: it injects a seed (`applications.json`, `provider.json`) into a copy of
 the image, imports it, boots a VM (4 vCPU, 8 GiB, 50 GiB root, vTPM, Secure Boot keys enrolled by the image itself),
 pushes the seeded applications for the `debug` provider, and waits for incus-osd to list them. Then it prints one
