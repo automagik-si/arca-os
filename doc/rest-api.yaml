@@ -1220,11 +1220,23 @@ definitions:
             encryption_recovery_keys_retrieved:
                 type: boolean
                 x-go-name: EncryptionRecoveryKeysRetrieved
+            last_recovery_unlock:
+                description: LastRecoveryUnlock is when the disk was last unlocked with a recovery passphrase instead of the TPM (RFC3339).
+                type: string
+                x-go-name: LastRecoveryUnlock
             pool_recovery_keys:
                 additionalProperties:
                     type: string
                 type: object
                 x-go-name: PoolRecoveryKeys
+            reseal_reason:
+                description: ResealReason is why the re-seal failed, in one short line.
+                type: string
+                x-go-name: ResealReason
+            reseal_status:
+                description: 'ResealStatus is what the last recovery unlock did to the TPM seal: "re-sealed", "reseal failed", or empty.'
+                type: string
+                x-go-name: ResealStatus
             secure_boot_certificates:
                 items:
                     $ref: '#/definitions/SystemSecuritySecureBootCertificate'

@@ -22,6 +22,68 @@ type SystemSecurityState struct {
 	SystemStateStatus               string                                `incusos:"-"                               json:"system_state_status"                yaml:"system_state_status"`
 	TPMStatus                       TPMStatus                             `incusos:"-"                               json:"tpm_status"                         yaml:"tpm_status"`
 	TPMPublicKey                    string                                `incusos:"-"                               json:"tpm_public_key,omitempty"           yaml:"tpm_public_key,omitempty"`
+
+	// LastRecoveryUnlock is when the disk was last unlocked with a recovery passphrase instead of the TPM (RFC3339).
+	LastRecoveryUnlock string `json:"last_recovery_unlock,omitempty" yaml:"last_recovery_unlock,omitempty"`
+
+	// ResealStatus is what the last recovery unlock did to the TPM seal: "re-sealed", "reseal failed", or empty.
+	ResealStatus string `json:"reseal_status,omitempty" yaml:"reseal_status,omitempty"`
+
+	// ResealReason is why the re-seal failed, in one short line.
+	ResealReason string `json:"reseal_reason,omitempty" yaml:"reseal_reason,omitempty"`
+}
+
+// The states of an encrypted volume that tell how it was unlocked on this boot.
+const (
+	EncryptedVolumeUnlockedTPM      = "unlocked (TPM)"
+	EncryptedVolumeUnlockedRecovery = "unlocked (recovery passphrase)"
+)
+
+// The results of the TPM re-seal after a recovery unlock.
+const (
+	ResealStatusResealed = "re-sealed"
+	ResealStatusFailed   = "reseal failed"
+)
+
+// RecoveryUnlocked reports whether this boot's root volume was unlocked with a recovery passphrase
+// and no volume was unlocked by the TPM.
+func (s SystemSecurityState) RecoveryUnlocked() bool {
+	root := false
+
+	for _, v := range s.EncryptedVolumes {
+		if v.State == EncryptedVolumeUnlockedTPM {
+			return false
+		}
+
+		if v.Volume == "root" {
+			root = v.State == EncryptedVolumeUnlockedRecovery
+		}
+	}
+
+	return root
+}
+
+// ResealSummary is the owner's sentence about this boot's recovery unlock and the TPM re-seal,
+// or "" when the boot did not use the recovery passphrase.
+func (s SystemSecurityState) ResealSummary() string {
+	if !s.RecoveryUnlocked() {
+		return ""
+	}
+
+	return ResealSentence(s.ResealStatus, s.ResealReason)
+}
+
+// ResealSentence is the owner's sentence for a re-seal status and reason, or "" for no status.
+func ResealSentence(status string, reason string) string {
+	switch status {
+	case ResealStatusResealed:
+		return "The disk was unlocked with the recovery passphrase; the TPM has been re-sealed to this system's current state"
+	case ResealStatusFailed:
+		return "The disk was unlocked with the recovery passphrase; the TPM could not be re-sealed: " + reason +
+			"; the passphrase will be asked again next boot"
+	default:
+		return ""
+	}
 }
 
 // SystemSecurityConfig holds additional security configuration settings.
