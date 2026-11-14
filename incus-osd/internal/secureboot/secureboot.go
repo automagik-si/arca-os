@@ -248,6 +248,8 @@ func UpdatePCR7Binding(ctx context.Context) error {
 		}
 	}
 
+	RecordSealState("", nil, pcr7, nil)
+
 	return nil
 }
 

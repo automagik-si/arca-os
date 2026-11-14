@@ -80,11 +80,15 @@ func stubPCRsAndVolumes(t *testing.T) {
 		}
 	}
 
-	savedDir, savedVolumes := pcrDir, luksVolumePartitions
+	savedDir, savedVolumes, savedSeal, savedMarker := pcrDir, luksVolumePartitions, SealStatePath, SealStateBootMarker
 
-	t.Cleanup(func() { pcrDir, luksVolumePartitions = savedDir, savedVolumes })
+	t.Cleanup(func() {
+		pcrDir, luksVolumePartitions, SealStatePath, SealStateBootMarker = savedDir, savedVolumes, savedSeal, savedMarker
+	})
 
 	pcrDir = dir + "/"
+	SealStatePath = filepath.Join(dir, "arca-tpm-seal.json")
+	SealStateBootMarker = filepath.Join(dir, "tpm-seal-state.boot")
 	luksVolumePartitions = func(context.Context) (map[string]string, error) {
 		return map[string]string{"root": "/dev/root-luks", "swap": "/dev/swap-luks"}, nil
 	}
@@ -95,7 +99,19 @@ func TestUpdatePCR7Binding(t *testing.T) { //nolint:paralleltest // puts a fake 
 
 	calls := stubCryptenroll(t, "New TPM2 token enrolled as key slot 2.", 0)
 
-	err := UpdatePCR7Binding(context.Background())
+	// Secure Boot is on, and the drive was sealed to another PCR7 before the firmware changed.
+	savedEFI := sealReadEFIVariable
+
+	t.Cleanup(func() { sealReadEFIVariable = savedEFI })
+
+	sealReadEFIVariable = func(name string) ([]byte, error) { return map[string][]byte{"SecureBoot": {1}}[name], nil }
+
+	err := os.WriteFile(SealStatePath, []byte(`{"version":1,"secure_boot_enabled":true,"pcr7":"`+strings.Repeat("b", 64)+`"}`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = UpdatePCR7Binding(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +127,17 @@ func TestUpdatePCR7Binding(t *testing.T) { //nolint:paralleltest // puts a fake 
 
 	if !slices.Equal(got, want) {
 		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// The record now holds the re-sealed PCR7, so the next boot, unchanged, has nothing to say.
+	record, err := ReadSealState(SealStatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := Measurements{SecureBootEnabled: true, PCR7: strings.Repeat("7", 64)}
+	if DiagnoseSeal(record, next) != SealMatch {
+		t.Fatalf("after the PCR7 re-seal the next boot diagnoses %d, record %+v", DiagnoseSeal(record, next), record)
 	}
 
 	// A failed enrolment is returned, so the re-seal is recorded as failed.
