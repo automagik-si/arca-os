@@ -25,6 +25,7 @@ if ! mountpoint -q "${BOOT_DIR}"; then
         if timeout 5 mount -o ro "${ESP_DEVICE}" "${MOUNT_DIR}"; then
             ESP_DIR="${MOUNT_DIR}"
             trap 'umount "${MOUNT_DIR}" 2> /dev/null; rmdir "${MOUNT_DIR}" 2> /dev/null' EXIT
+            trap 'exit 0' INT TERM
         else
             rmdir "${MOUNT_DIR}" 2> /dev/null
         fi
