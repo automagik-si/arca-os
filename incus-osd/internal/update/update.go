@@ -83,24 +83,7 @@ func CheckRespectMaintenanceWindows(ctx context.Context, s *state.State) error {
 // Check runs a full (applications and OS) update check regardless of any defined
 // maintenance windows. Typically this should be called  as the system starts up.
 func Check(ctx context.Context, s *state.State) error {
-	ctx = withCheckCycle(ctx)
-
-	err := CheckSecureBoot(ctx, s, false, false)
-	if err != nil {
-		return err
-	}
-
-	err = CheckApplications(ctx, s, nil, false, false)
-	if err != nil {
-		return err
-	}
-
-	err = CheckOS(ctx, s, false, false)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return fullCheck(ctx, s, false, CheckSecureBoot, checkInstalledApplications, CheckOS)
 }
 
 // CheckWithEmptyCache runs a full (applications and OS) update check regardless
@@ -108,24 +91,29 @@ func Check(ctx context.Context, s *state.State) error {
 // to ensure the very latest updates are available. Typically this should one be
 // called in response to a user specifically requesting an update check.
 func CheckWithEmptyCache(ctx context.Context, s *state.State) error {
+	return fullCheck(ctx, s, true, CheckSecureBoot, checkInstalledApplications, CheckOS)
+}
+
+// checkStep is one part of a full update check.
+type checkStep func(ctx context.Context, s *state.State, clearCache bool, forceApplyUpdate bool) error
+
+// fullCheck runs the steps as one check run, stopping at the first error.
+func fullCheck(ctx context.Context, s *state.State, clearCache bool, steps ...checkStep) error {
 	ctx = withCheckCycle(ctx)
 
-	err := CheckSecureBoot(ctx, s, true, false)
-	if err != nil {
-		return err
-	}
-
-	err = CheckApplications(ctx, s, nil, true, false)
-	if err != nil {
-		return err
-	}
-
-	err = CheckOS(ctx, s, true, false)
-	if err != nil {
-		return err
+	for _, step := range steps {
+		err := step(ctx, s, clearCache, false)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// checkInstalledApplications checks every installed application for updates.
+func checkInstalledApplications(ctx context.Context, s *state.State, clearCache bool, forceApplyUpdate bool) error {
+	return CheckApplications(ctx, s, nil, clearCache, forceApplyUpdate)
 }
 
 // CheckSecureBoot checks for an available Secure Boot update.
@@ -142,12 +130,17 @@ func CheckSecureBoot(ctx context.Context, s *state.State, clearCache bool, force
 		return err
 	}
 
+	return checkSecureBootWith(ctx, s, p, t, forceApplyUpdate)
+}
+
+// checkSecureBootWith checks the provider for an available Secure Boot update.
+func checkSecureBootWith(ctx context.Context, s *state.State, p providers.Provider, t *tui.TUI, forceApplyUpdate bool) error {
 	// Save when we last performed an update check.
 	s.System.Update.State.LastCheck = time.Now()
 	s.System.Update.State.Status = "Checking for Secure Boot updates"
 
 	// Check for and apply any Secure Boot key updates before performing any OS or application updates.
-	_, err = checkAndDownloadUpdate(ctx, s, t, p, TypeSecureBoot, "", forceApplyUpdate)
+	_, err := checkAndDownloadUpdate(ctx, s, t, p, TypeSecureBoot, "", forceApplyUpdate)
 	if err != nil {
 		s.System.Update.State.Status = failedStatus(err, "Failed to check for Secure Boot key updates")
 		showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
@@ -172,6 +165,13 @@ func CheckApplications(ctx context.Context, s *state.State, toInstall []string, 
 	if err != nil {
 		return err
 	}
+
+	return checkApplicationsWith(ctx, s, p, t, toInstall, forceApplyUpdate)
+}
+
+// checkApplicationsWith checks the provider for application updates, as CheckApplications does.
+func checkApplicationsWith(ctx context.Context, s *state.State, p providers.Provider, t *tui.TUI, toInstall []string, forceApplyUpdate bool) error {
+	var err error
 
 	// Save when we last performed an update check.
 	s.System.Update.State.LastCheck = time.Now()
@@ -777,5 +777,10 @@ func showModalError(ctx context.Context, osName string, msg string, err error, p
 		updateModal = t.AddModal(osName+" Update", "update")
 	}
 
-	updateModal.Update(modalErrorText(msg, err, p.Type()))
+	showModalErrorOn(updateModal, msg, err, p.Type())
+}
+
+// showModalErrorOn shows a failed check on the update modal.
+func showModalErrorOn(updateModal interface{ Update(message string) }, msg string, err error, providerType string) {
+	updateModal.Update(modalErrorText(msg, err, providerType))
 }
