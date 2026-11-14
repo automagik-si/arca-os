@@ -19,6 +19,14 @@ import (
 // DefaultRoot is where import file systems are mounted.
 const DefaultRoot = "/run/incus-os/import"
 
+// defaultUdevRules keeps udev from acting on the device-mapper devices an import creates.
+const defaultUdevRules = "/run/udev/rules.d/68-incus-os-import.rules"
+
+// udevRule stops the lvm2 rule (69-*lvm*.rules) from autoactivating, read-write, a volume group found on an import map.
+const udevRule = `# Written by incus-osd: an import drive is only ever activated read-only, by incus-osd.
+SUBSYSTEM=="block", ENV{DM_NAME}=="import-*", ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"
+`
+
 // ErrPassphraseNeeded is returned when an encrypted layer is found and no passphrase was given.
 var ErrPassphraseNeeded = errors.New("the drive is encrypted: a passphrase is needed")
 
@@ -35,7 +43,8 @@ type Manager struct {
 	copies []*copyJob
 	nextID int
 
-	resolve func(string) (string, error)
+	resolve   func(string) (string, error)
+	udevRules string
 }
 
 type undoStep struct {
@@ -68,7 +77,7 @@ func NewManager(sys System, incus Incus) *Manager {
 }
 
 func buildManager(run Runner, sys System, incus Incus, root string) *Manager {
-	return &Manager{run: run, sys: sys, incus: incus, root: root, disks: map[string]*openDisk{}, resolve: filepath.EvalSymlinks}
+	return &Manager{run: run, sys: sys, incus: incus, root: root, disks: map[string]*openDisk{}, resolve: filepath.EvalSymlinks, udevRules: defaultUdevRules}
 }
 
 // State returns the open drives and the copy jobs.
@@ -141,7 +150,13 @@ func (m *Manager) Open(ctx context.Context, serial string, passphrase string) (a
 	if err != nil {
 		undoErr := m.undoAll(ctx, d)
 		if undoErr != nil {
+			// Kept so that a close can finish the job.
 			slog.Error("Import drive left partly open", "serial", serial, "err", undoErr)
+
+			d.layers = nil
+			d.fss = nil
+			d.unreadable = []string{"partly open after a failed open: close it to finish closing"}
+			m.disks[serial] = d
 		}
 
 		return api.SystemStorageImportDisk{}, err
@@ -359,6 +374,11 @@ func (*Manager) diskInfo(d *openDisk) api.SystemStorageImportDisk {
 }
 
 func (m *Manager) openDisk(ctx context.Context, d *openDisk, devPath string, parts []lsblkNode, passphrase string) error {
+	err := m.installUdevRule(ctx)
+	if err != nil {
+		return err
+	}
+
 	targets := make([]string, 0, 1+len(parts))
 	targets = append(targets, devPath)
 
@@ -390,6 +410,49 @@ func (m *Manager) openDisk(ctx context.Context, d *openDisk, devPath string, par
 	return nil
 }
 
+// installUdevRule makes sure udev leaves import maps alone before the first one is created.
+func (m *Manager) installUdevRule(ctx context.Context) error {
+	current, err := os.ReadFile(m.udevRules)
+	if err == nil && string(current) == udevRule {
+		return nil
+	}
+
+	err = os.MkdirAll(filepath.Dir(m.udevRules), 0o755)
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(m.udevRules, []byte(udevRule), 0o644) //nolint:gosec
+	if err != nil {
+		return err
+	}
+
+	_, err = m.run.Run(ctx, "", "udevadm", "control", "--reload")
+
+	return err
+}
+
+// requireReadOnly sets a device read-only and refuses it unless the kernel confirms it.
+func (m *Manager) requireReadOnly(ctx context.Context, dev string, set bool) error {
+	if set {
+		_, err := m.run.Run(ctx, "", "blockdev", "--setro", dev)
+		if err != nil {
+			return err
+		}
+	}
+
+	out, err := m.run.Run(ctx, "", "blockdev", "--getro", dev)
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(out) != "1" {
+		return fmt.Errorf("%s is not read-only: refusing to read it", dev)
+	}
+
+	return nil
+}
+
 func (m *Manager) probe(ctx context.Context, dev string) string {
 	out, err := m.run.Run(ctx, "", "blkid", "-p", "-s", "TYPE", "-o", "value", dev)
 	if err != nil {
@@ -410,6 +473,11 @@ func (m *Manager) openLayer(ctx context.Context, d *openDisk, dev string, name s
 		d.unreadable = append(d.unreadable, name+": too many nested layers")
 
 		return nil
+	}
+
+	err := m.requireReadOnly(ctx, dev, depth > 0)
+	if err != nil {
+		return err
 	}
 
 	fsType := m.probe(ctx, dev)
@@ -440,7 +508,7 @@ func (m *Manager) openLUKS(ctx context.Context, d *openDisk, dev string, name st
 	d.seq++
 	mapName := fmt.Sprintf("import-%s-%d", unsafeName.ReplaceAllString(d.serial, "_"), d.seq)
 
-	_, err := m.run.Run(ctx, passphrase+"\n", "cryptsetup", "open", "--readonly", "--type", "luks", "--key-file=-", dev, mapName)
+	_, err := m.run.Run(ctx, passphrase, "cryptsetup", "open", "--readonly", "--type", "luks", "--key-file=-", dev, mapName)
 	if err != nil {
 		return fmt.Errorf("the passphrase did not open %s", name)
 	}
@@ -556,8 +624,6 @@ func (m *Manager) mountFS(ctx context.Context, d *openDisk, dev string, name str
 
 // undoAll reverses every step taken on the drive, last first.
 func (m *Manager) undoAll(ctx context.Context, d *openDisk) error {
-	var errs []error
-
 	for i, step := range slices.Backward(d.undo) {
 		var err error
 		if step.name == "rmdir" {
@@ -569,14 +635,13 @@ func (m *Manager) undoAll(ctx context.Context, d *openDisk) error {
 			_, err = m.run.Run(ctx, "", step.name, step.args...)
 		}
 
+		// Stop at the first failure: what lies below must stay as it is under what is still open.
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s %s: %w", step.name, strings.Join(step.args, " "), err))
-
-			continue
+			return fmt.Errorf("%s %s: %w", step.name, strings.Join(step.args, " "), err)
 		}
 
 		d.undo = d.undo[:i]
 	}
 
-	return errors.Join(errs...)
+	return nil
 }

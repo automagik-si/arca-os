@@ -104,7 +104,7 @@ func (m *Manager) openZFS(ctx context.Context, d *openDisk, dev string, passphra
 			return ErrPassphraseNeeded
 		}
 
-		_, err = m.run.Run(ctx, passphrase+"\n", "zfs", "load-key", "-L", "prompt", root)
+		_, err = m.run.Run(ctx, passphrase, "zfs", "load-key", "-L", "prompt", root)
 		if err != nil {
 			return fmt.Errorf("the passphrase did not open zfs dataset %s", root)
 		}
@@ -186,7 +186,18 @@ func (m *Manager) mountDataset(ctx context.Context, d *openDisk, dataset string)
 		return "", err
 	}
 
-	_, err = m.run.Run(ctx, "", "mount", "-t", "zfs", "-o", "ro,zfsutil", dataset, target)
+	out, err := m.run.Run(ctx, "", "zfs", "get", "-H", "-o", "value", "mountpoint", dataset)
+	if err != nil {
+		return "", err
+	}
+
+	// mount.zfs refuses zfsutil on a legacy dataset, which is how Incus creates its own.
+	opts := "ro,zfsutil"
+	if strings.TrimSpace(out) == "legacy" {
+		opts = "ro"
+	}
+
+	_, err = m.run.Run(ctx, "", "mount", "-t", "zfs", "-o", opts, dataset, target)
 	if err != nil {
 		return "", err
 	}
