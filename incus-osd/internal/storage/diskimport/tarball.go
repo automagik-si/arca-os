@@ -35,10 +35,13 @@ type fileKey struct {
 type tarball struct {
 	tw    *tar.Writer
 	links map[fileKey]string
+
+	// devOf returns the device a file is on; tests stand in for a second file system.
+	devOf func(name string, dev uint64) uint64
 }
 
 func newTarball(w io.Writer) *tarball {
-	return &tarball{tw: tar.NewWriter(w), links: map[fileKey]string{}}
+	return &tarball{tw: tar.NewWriter(w), links: map[fileKey]string{}, devOf: func(_ string, dev uint64) uint64 { return dev }}
 }
 
 // linkTarget returns the name a file was first written under, or records name as the first.
@@ -285,7 +288,7 @@ func (t *tarball) addEntry(src tree, path string, rel string) error {
 	}
 
 	if fi.Mode().IsRegular() && st.Nlink > 1 {
-		first, ok := t.linkTarget(st.Dev, st.Ino, hdr.Name)
+		first, ok := t.linkTarget(t.devOf(hdr.Name, st.Dev), st.Ino, hdr.Name)
 		if ok {
 			hdr.Typeflag = tar.TypeLink
 			hdr.Linkname = first
