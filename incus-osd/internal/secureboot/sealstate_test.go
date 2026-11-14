@@ -22,9 +22,13 @@ const (
 func stubSealReaders(t *testing.T, pcrs map[string][]byte, efi map[string][]byte) {
 	t.Helper()
 
-	oldPCR, oldEFI, oldNow, oldPath := sealReadPCR, sealReadEFIVariable, sealNow, SealStatePath
+	oldPCR, oldEFI, oldNow, oldPath, oldMarker := sealReadPCR, sealReadEFIVariable, sealNow, SealStatePath, SealStateBootMarker
 
-	t.Cleanup(func() { sealReadPCR, sealReadEFIVariable, sealNow, SealStatePath = oldPCR, oldEFI, oldNow, oldPath })
+	t.Cleanup(func() {
+		sealReadPCR, sealReadEFIVariable, sealNow, SealStatePath, SealStateBootMarker = oldPCR, oldEFI, oldNow, oldPath, oldMarker
+	})
+
+	SealStateBootMarker = filepath.Join(t.TempDir(), "run", "tpm-seal-state.boot")
 
 	sealReadPCR = func(index string) ([]byte, error) {
 		value, ok := pcrs[index]
@@ -127,7 +131,9 @@ func TestRepairSealState(t *testing.T) { //nolint:paralleltest // replaces packa
 	}
 
 	for _, tt := range tests {
+		// Each case is a new boot.
 		_ = os.Remove(SealStatePath)
+		_ = os.Remove(SealStateBootMarker)
 
 		if tt.record != "" {
 			err := os.WriteFile(SealStatePath, []byte(tt.record), 0o600)
@@ -144,6 +150,46 @@ func TestRepairSealState(t *testing.T) { //nolint:paralleltest // replaces packa
 		if rewritten != tt.rewrite {
 			t.Fatalf("%s: rewritten %v, want %v: %s", tt.name, rewritten, tt.rewrite, raw)
 		}
+	}
+}
+
+func TestRepairSealStateOncePerBootAndNeverAfterASeal(t *testing.T) { //nolint:paralleltest // replaces package readers
+	stubSealReaders(t, map[string][]byte{"4": bytes.Repeat([]byte{0xAA}, 32), "7": bytes.Repeat([]byte{0xBB}, 32), "12": bytes.Repeat([]byte{0xCC}, 32)}, map[string][]byte{"SecureBoot": {0}, "SetupMode": {1}})
+
+	SealStatePath = filepath.Join(t.TempDir(), "arca-tpm-seal.json")
+
+	pcr4 := func() string {
+		record, err := ReadSealState(SealStatePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return record.PCR4
+	}
+
+	// An update seals the next boot to a new UKI (PCR4 C), then incus-osd (re)starts on the same boot.
+	RecordSealState("", bytes.Repeat([]byte{0xCC}, 32), nil, nil)
+	RepairSealState(true)
+
+	if pcr4() != pcrC {
+		t.Fatalf("the repair replaced the sealed next-boot PCR4 with %s", pcr4())
+	}
+
+	// A new boot: the first start repairs a stale record, a second start on that boot doesn't touch it.
+	_ = os.Remove(SealStateBootMarker)
+
+	RepairSealState(true)
+
+	if pcr4() != pcrA {
+		t.Fatalf("the first start didn't repair the stale record: %s", pcr4())
+	}
+
+	RecordSealState("", bytes.Repeat([]byte{0xCC}, 32), nil, nil)
+
+	RepairSealState(true)
+
+	if pcr4() != pcrC {
+		t.Fatalf("a second start on the same boot rewrote the record: %s", pcr4())
 	}
 }
 

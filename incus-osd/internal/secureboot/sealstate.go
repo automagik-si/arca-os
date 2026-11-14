@@ -22,6 +22,9 @@ const sealStateVersion = 1
 // SealStatePath is the seal state record written by RecordSealState; tests replace it.
 var SealStatePath = SealStateFile
 
+// SealStateBootMarker says this boot already sealed or checked the record, on a per-boot tmpfs; tests replace it.
+var SealStateBootMarker = "/run/incus-os/tpm-seal-state.boot"
+
 // The readers RecordSealState uses; tests replace them.
 var (
 	sealReadPCR         = ReadPCR
@@ -56,17 +59,47 @@ type Measurements struct {
 // binding was sealed to; a nil value is read from the TPM. Failures are only logged, as
 // the record is informational and must never fail a seal.
 func RecordSealState(ukiFile string, pcr4 []byte, pcr7 []byte, pcr12 []byte) {
-	err := writeSealState(SealStatePath, buildSealState(ukiFile, pcr4, pcr7, pcr12))
+	// The record now holds the next boot's values, which RepairSealState must never replace on this boot.
+	err := markSealStateBoot()
+	if err != nil {
+		slog.Warn("Failed to mark the TPM seal state for this boot", "err", err)
+	}
+
+	err = writeSealState(SealStatePath, buildSealState(ukiFile, pcr4, pcr7, pcr12))
 	if err != nil {
 		slog.Warn("Failed to record the TPM seal state", "err", err)
 	}
 }
 
+// markSealStateBoot records that this boot sealed or checked the seal state record.
+func markSealStateBoot() error {
+	err := os.MkdirAll(filepath.Dir(SealStateBootMarker), 0o700)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(SealStateBootMarker, nil, 0o600)
+}
+
 // RepairSealState rewrites a missing, unreadable or stale record from the current measurements,
 // but only when the TPM unlocked the volumes on this boot, as these are then the sealed ones.
-// Seals made later on this boot write their own record over it.
+// It runs at most once per boot and never after a seal on this boot, whose record holds the
+// next boot's values: a restarted incus-osd or a seal before startup leaves the record alone.
 func RepairSealState(tpmAutoUnlocked bool) {
 	if !tpmAutoUnlocked {
+		return
+	}
+
+	_, err := os.Stat(SealStateBootMarker)
+	if !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+
+	// Without the marker, a later start on this boot could undo a seal, so don't repair.
+	err = markSealStateBoot()
+	if err != nil {
+		slog.Warn("Failed to mark the TPM seal state for this boot", "err", err)
+
 		return
 	}
 
