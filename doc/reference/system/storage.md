@@ -275,3 +275,59 @@ Encrypted drives that are managed by IncusOS get two additional properties in `i
 
 * Encrypted (indicates whether the drive is encrypted)
 * Encrypted ID (provides the path to the decrypted block device)
+
+## Importing an old drive
+
+A drive that holds data from another system (LUKS, LVM, btrfs, ext4, xfs or zfs, in any stack) can be opened read-only,
+its content listed and copied into a pool, and then, only on request, turned into a pool itself. Drives are named by
+their serial number, as shown by `incus admin os system storage show`.
+
+Opening a drive refuses the boot drive, pool members, remote drives, encrypted drives managed by IncusOS, protected
+serials, and any drive that is mounted, held by another device or given to an instance. Before anything is read, the
+drive and its partitions are set read-only in the kernel; LUKS is opened `--readonly`, LVM is activated read-only with
+read-only metadata, file systems are mounted read-only without journal replay, and zfs pools are imported with
+`readonly=on`. The kernel cannot run an LVM thin pool read-only, so thin volumes (and logical volumes that are not
+active) are listed as unreadable while the rest of the drive opens. The passphrase of a LUKS layer (or of an encrypted zfs dataset) is given on the command's standard input
+only, and is never stored or logged.
+
+```
+incus admin os system storage import-open -d '{"serial":"S0EXAMPLE","passphrase":"..."}'
+incus admin os system storage import-show
+```
+
+The listing shows each file system with the Incus instances and custom volumes of an old host found on it (up to six
+levels down, for instance under `var/lib/incus/storage-pools/<pool>`), and its top-level folders. Copy one of them
+into a pool; the copy runs in the background and its progress is shown by `import-show`:
+
+```
+incus admin os system storage import-copy -d '{"serial":"S0EXAMPLE","filesystem":"vg0/root","kind":"instance","source":"@/var/lib/incus/storage-pools/default/containers/web","target_pool":"local"}'
+incus admin os system storage import-copy -d '{"serial":"S0EXAMPLE","filesystem":"vg0/root","kind":"folder","source":"@home/owner","target_pool":"local","target_name":"owner-home"}'
+```
+
+`kind` is `instance`, `volume` or `folder`; a folder or volume becomes a custom volume. A copied instance arrives
+stopped with `boot.autostart` set to false (the old value is kept in `user.import.autostart`), without its snapshots.
+`profiles` replaces the instance's profiles; networks and profiles it uses must exist. Incus stores the whole copy in
+its backups volume before unpacking it into the pool, so a copy is refused unless both have room for it, counting the
+copies already running; when both are on the same zpool (as with the `local` pool), that zpool needs room for it twice.
+
+Close the drive when done; this undoes every step and makes the drive writable again:
+
+```
+incus admin os system storage import-close -d '{"serial":"S0EXAMPLE"}'
+```
+
+```{warning}
+Converting a drive erases it.
+```
+
+A closed import drive can be turned into an encrypted single-drive pool, handed to Incus as a storage pool of the same
+name. The serial must be repeated in `confirm`:
+
+```
+incus admin os system storage import-convert -d '{"serial":"S0EXAMPLE","pool":"data","confirm":"S0EXAMPLE"}'
+```
+
+## Protected drives
+
+`protected_serials` in the storage configuration lists drives that no wipe, encrypt, import or convert may touch. A
+configuration update without the field keeps the list; an empty list clears it.
