@@ -1881,7 +1881,7 @@ definitions:
     SystemUpdateState:
         properties:
             available_version:
-                description: AvailableVersion is the channel's newest OS version as of last_check; a failed check keeps the previous one.
+                description: AvailableVersion is the channel's newest OS version, from the update server's last valid answer.
                 type: string
                 x-go-name: AvailableVersion
             embedded_ca_fingerprint:
@@ -1922,7 +1922,7 @@ definitions:
                 type: integer
                 x-go-name: TrustFailures
             update_available:
-                description: UpdateAvailable is whether the check that saw AvailableVersion found it newer and not yet applied.
+                description: UpdateAvailable is whether the last check found AvailableVersion newer than the running one and not yet applied.
                 type: boolean
                 x-go-name: UpdateAvailable
         title: SystemUpdateState holds information about the current update state.

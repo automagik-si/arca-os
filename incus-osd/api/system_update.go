@@ -57,10 +57,10 @@ type SystemUpdateState struct {
 	// TrustEscalated is set once the owner has been warned about repeated trust failures.
 	TrustEscalated bool `json:"trust_escalated,omitempty" yaml:"trust_escalated,omitempty"`
 
-	// AvailableVersion is the channel's newest OS version as of last_check; a failed check keeps the previous one.
+	// AvailableVersion is the channel's newest OS version, from the update server's last valid answer.
 	AvailableVersion string `json:"available_version,omitempty" yaml:"available_version,omitempty"`
 
-	// UpdateAvailable is whether the check that saw AvailableVersion found it newer and not yet applied.
+	// UpdateAvailable is whether the last check found AvailableVersion newer than the running one and not yet applied.
 	UpdateAvailable bool `json:"update_available,omitempty" yaml:"update_available,omitempty"`
 
 	PendingMaintenanceWindowCheck bool `json:"-"`
