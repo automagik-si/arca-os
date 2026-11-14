@@ -417,7 +417,26 @@ func printUpdateNote(w io.Writer, data json.RawMessage) {
 		return
 	}
 
-	_, _ = fmt.Fprint(w, updateFailureNote(update.State))
+	_, _ = fmt.Fprint(w, updateFailureNote(update.State)+availableVersionNote(update.State))
+}
+
+// availableVersionNote is the channel's newest OS version and how this system stands against
+// it, or "" when no successful check has seen one.
+func availableVersionNote(st api.SystemUpdateState) string {
+	if st.AvailableVersion == "" {
+		return ""
+	}
+
+	note := "\nAvailable OS version: " + st.AvailableVersion + " (as of the last successful check)\n"
+
+	switch {
+	case st.NeedsReboot:
+		return note + "  An update is waiting for a restart\n"
+	case st.UpdateAvailable:
+		return note + "  Behind the channel: an update is available\n"
+	default:
+		return note + "  No update to apply\n"
+	}
 }
 
 // updateFailureNote describes the last failed update check, with both CAs when the update

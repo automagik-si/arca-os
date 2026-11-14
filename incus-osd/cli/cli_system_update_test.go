@@ -63,3 +63,47 @@ func TestPrintUpdateNote(t *testing.T) {
 		t.Fatalf("note after a successful check: %q", out)
 	}
 }
+
+func TestPrintUpdateAvailableVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		st   api.SystemUpdateState
+		want string
+	}{
+		{api.SystemUpdateState{AvailableVersion: "202611150123", UpdateAvailable: true}, "  Behind the channel: an update is available\n"},
+		{api.SystemUpdateState{AvailableVersion: "202611150123", UpdateAvailable: true, NeedsReboot: true}, "  An update is waiting for a restart\n"},
+		{api.SystemUpdateState{AvailableVersion: "202611150123"}, "  No update to apply\n"},
+	} {
+		data, err := json.Marshal(api.SystemUpdate{State: tc.st})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out bytes.Buffer
+
+		printUpdateNote(&out, data)
+
+		for _, want := range []string{"\nAvailable OS version: 202611150123 (as of the last successful check)\n", tc.want} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("no %q in:\n%s", want, out.String())
+			}
+		}
+	}
+
+	// A failed check keeps the last version, next to the failure.
+	data, err := json.Marshal(api.SystemUpdate{State: api.SystemUpdateState{
+		LastErrorKind: "network", LastError: "connection refused", AvailableVersion: "202611150123", UpdateAvailable: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+
+	printUpdateNote(&out, data)
+
+	if !strings.Contains(out.String(), "Last error (network)") || !strings.Contains(out.String(), "Available OS version: 202611150123") {
+		t.Fatalf("failed check note:\n%s", out.String())
+	}
+}
