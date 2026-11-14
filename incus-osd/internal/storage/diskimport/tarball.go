@@ -25,14 +25,34 @@ type tree struct {
 	idmap   idMap
 }
 
+// fileKey names a file across file systems: btrfs subvolumes reuse inode numbers.
+type fileKey struct {
+	dev uint64
+	ino uint64
+}
+
 // tarball writes an Incus backup tarball, keeping owners, modes, xattrs and hard links.
 type tarball struct {
 	tw    *tar.Writer
-	links map[uint64]string
+	links map[fileKey]string
 }
 
 func newTarball(w io.Writer) *tarball {
-	return &tarball{tw: tar.NewWriter(w), links: map[uint64]string{}}
+	return &tarball{tw: tar.NewWriter(w), links: map[fileKey]string{}}
+}
+
+// linkTarget returns the name a file was first written under, or records name as the first.
+func (t *tarball) linkTarget(dev uint64, ino uint64, name string) (string, bool) {
+	key := fileKey{dev, ino}
+
+	first, ok := t.links[key]
+	if ok {
+		return first, true
+	}
+
+	t.links[key] = name
+
+	return "", false
 }
 
 func (t *tarball) close() error {
@@ -265,13 +285,11 @@ func (t *tarball) addEntry(src tree, path string, rel string) error {
 	}
 
 	if fi.Mode().IsRegular() && st.Nlink > 1 {
-		first, ok := t.links[st.Ino]
+		first, ok := t.linkTarget(st.Dev, st.Ino, hdr.Name)
 		if ok {
 			hdr.Typeflag = tar.TypeLink
 			hdr.Linkname = first
 			hdr.Size = 0
-		} else {
-			t.links[st.Ino] = hdr.Name
 		}
 	}
 
