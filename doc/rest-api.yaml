@@ -1275,6 +1275,12 @@ definitions:
                     $ref: '#/definitions/SystemStoragePool'
                 type: array
                 x-go-name: Pools
+            protected_serials:
+                description: Serials of drives that no wipe, encrypt, import or convert may touch.
+                items:
+                    type: string
+                type: array
+                x-go-name: ProtectedSerials
             scrub_schedule:
                 type: string
                 x-go-name: ScrubSchedule
@@ -1422,6 +1428,135 @@ definitions:
         title: SystemStorageEncrypt defines a struct with information about what drive to encrypt.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImport:
+        properties:
+            copies:
+                items:
+                    $ref: '#/definitions/SystemStorageImportCopy'
+                type: array
+                x-go-name: Copies
+            disks:
+                items:
+                    $ref: '#/definitions/SystemStorageImportDisk'
+                type: array
+                x-go-name: Disks
+        title: SystemStorageImport lists the drives opened read-only for import and the copy jobs.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportClose:
+        properties:
+            serial:
+                type: string
+                x-go-name: Serial
+        title: SystemStorageImportClose asks to close an import drive.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportConvert:
+        properties:
+            confirm:
+                description: Confirm must repeat the serial.
+                type: string
+                x-go-name: Confirm
+            pool:
+                type: string
+                x-go-name: Pool
+            serial:
+                type: string
+                x-go-name: Serial
+        title: SystemStorageImportConvert asks to wipe an import drive and make it a native pool.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportCopy:
+        properties:
+            bytes_done:
+                format: int64
+                type: integer
+                x-go-name: BytesDone
+            bytes_total:
+                format: int64
+                type: integer
+                x-go-name: BytesTotal
+            error:
+                type: string
+                x-go-name: Error
+            finished:
+                format: date-time
+                type: string
+                x-go-name: Finished
+            id:
+                format: int64
+                type: integer
+                x-go-name: ID
+            request:
+                $ref: '#/definitions/SystemStorageImportCopyRequest'
+            started:
+                format: date-time
+                type: string
+                x-go-name: Started
+            state:
+                type: string
+                x-go-name: State
+        title: SystemStorageImportCopy is a copy job and its progress.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportCopyRequest:
+        properties:
+            filesystem:
+                type: string
+                x-go-name: Filesystem
+            kind:
+                description: Kind is one of "instance", "volume" or "folder".
+                type: string
+                x-go-name: Kind
+            profiles:
+                items:
+                    type: string
+                type: array
+                x-go-name: Profiles
+            serial:
+                type: string
+                x-go-name: Serial
+            source:
+                type: string
+                x-go-name: Source
+            target_name:
+                type: string
+                x-go-name: TargetName
+            target_pool:
+                type: string
+                x-go-name: TargetPool
+            target_project:
+                type: string
+                x-go-name: TargetProject
+        title: SystemStorageImportCopyRequest asks to copy one item of an import drive into a native pool.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportDisk:
+        properties:
+            filesystems:
+                items:
+                    $ref: '#/definitions/SystemStorageImportFilesystem'
+                type: array
+                x-go-name: Filesystems
+            id:
+                type: string
+                x-go-name: ID
+            layers:
+                items:
+                    type: string
+                type: array
+                x-go-name: Layers
+            serial:
+                type: string
+                x-go-name: Serial
+            unreadable:
+                items:
+                    type: string
+                type: array
+                x-go-name: Unreadable
+        title: SystemStorageImportDisk is a drive opened read-only for import.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemStorageImportEncryptedDrive:
         properties:
             id:
@@ -1431,6 +1566,83 @@ definitions:
                 type: string
                 x-go-name: Key
         title: SystemStorageImportEncryptedDrive defines a struct with information about what drive to decrypt.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportFilesystem:
+        properties:
+            folders:
+                items:
+                    type: string
+                type: array
+                x-go-name: Folders
+            instances:
+                items:
+                    $ref: '#/definitions/SystemStorageImportInstance'
+                type: array
+                x-go-name: Instances
+            name:
+                type: string
+                x-go-name: Name
+            type:
+                type: string
+                x-go-name: Type
+            volumes:
+                items:
+                    $ref: '#/definitions/SystemStorageImportVolume'
+                type: array
+                x-go-name: Volumes
+        title: SystemStorageImportFilesystem is one file system (or zfs pool) found on an import drive.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportInstance:
+        properties:
+            autostart:
+                type: boolean
+                x-go-name: Autostart
+            name:
+                type: string
+                x-go-name: Name
+            project:
+                type: string
+                x-go-name: Project
+            snapshots:
+                items:
+                    type: string
+                type: array
+                x-go-name: Snapshots
+            source:
+                type: string
+                x-go-name: Source
+            type:
+                type: string
+                x-go-name: Type
+        title: SystemStorageImportInstance is an Incus instance found on an import drive.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportOpen:
+        properties:
+            passphrase:
+                description: Passphrase of a LUKS layer or an encrypted zfs root; used once, never stored or logged.
+                type: string
+                x-go-name: Passphrase
+            serial:
+                type: string
+                x-go-name: Serial
+        title: SystemStorageImportOpen asks to open a drive read-only for import.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageImportVolume:
+        properties:
+            name:
+                type: string
+                x-go-name: Name
+            project:
+                type: string
+                x-go-name: Project
+            source:
+                type: string
+                x-go-name: Source
+        title: SystemStorageImportVolume is an Incus custom volume found on an import drive.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemStoragePool:
@@ -4009,6 +4221,140 @@ paths:
                 "500":
                     $ref: '#/responses/InternalServerError'
             summary: Wipe a drive
+            tags:
+                - system
+    /1.0/system/storage/import:
+        get:
+            description: Returns the drives opened read-only for import, what is on them, and the copy jobs.
+            operationId: system_get_storage_import
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: Import state
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/SystemStorageImport'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+            summary: Get the drives opened for import
+            tags:
+                - system
+    /1.0/system/storage/import/:close:
+        post:
+            consumes:
+                - application/json
+            description: Unmounts and closes every layer opened for import and makes the drive writable again.
+            operationId: system_post_storage_import_close
+            parameters:
+                - description: The drive to close
+                  in: body
+                  name: configuration
+                  required: true
+                  schema:
+                    $ref: '#/definitions/SystemStorageImportClose'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Close an import drive
+            tags:
+                - system
+    /1.0/system/storage/import/:convert:
+        post:
+            consumes:
+                - application/json
+            description: Wipes the drive and creates an encrypted single-drive pool that Incus uses. The confirmation must repeat the serial.
+            operationId: system_post_storage_import_convert
+            parameters:
+                - description: The drive and the new pool's name
+                  in: body
+                  name: configuration
+                  required: true
+                  schema:
+                    $ref: '#/definitions/SystemStorageImportConvert'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Turn an import drive into a native pool
+            tags:
+                - system
+    /1.0/system/storage/import/:copy:
+        post:
+            consumes:
+                - application/json
+            description: |-
+                Starts a background copy of one instance, custom volume or folder; its progress is in the import state.
+                A copied instance arrives stopped, with autostart off.
+            operationId: system_post_storage_import_copy
+            parameters:
+                - description: What to copy and where
+                  in: body
+                  name: configuration
+                  required: true
+                  schema:
+                    $ref: '#/definitions/SystemStorageImportCopyRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Copy an item of an import drive into a native pool
+            tags:
+                - system
+    /1.0/system/storage/import/:open:
+        post:
+            consumes:
+                - application/json
+            description: |-
+                Opens the drive with the given serial read-only (LUKS, LVM, btrfs, ext4, xfs or zfs) and lists what is on it.
+                The passphrase is used once and never stored or logged.
+            operationId: system_post_storage_import_open
+            parameters:
+                - description: The drive to open
+                  in: body
+                  name: configuration
+                  required: true
+                  schema:
+                    $ref: '#/definitions/SystemStorageImportOpen'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Open a drive read-only for import
             tags:
                 - system
     /1.0/system/update:
