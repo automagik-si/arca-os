@@ -67,8 +67,13 @@ See [automatic updates and rollback](arca-updates.md): restarts in the window, t
 
 When an update check fails, `GET /1.0/system/update` reports why under `state`:
 
-* `last_error_kind`: `network` (the server can't be reached or doesn't return the file), `parse` (the index or a file is malformed), `signature` (the signature doesn't match the content), `trust` (the signature is valid but doesn't chain to the CA this system trusts) or `other`. It's empty after a successful check.
-* `last_error`: the underlying error.
+* `last_error_kind`: why the last check failed. It's empty after a successful check.
+   * `network`: the server can't be reached or doesn't return the file.
+   * `parse`: the index or a file is malformed, or the certificates in the signed index are damaged.
+   * `signature`: the signature doesn't match the signed content.
+   * `trust`: the index is signed under a CA other than the one this system expects, or that CA doesn't chain to the root CA this system trusts.
+   * `other`: anything else, including a signing certificate that has expired or isn't valid yet (check the system clock), or a check that was cancelled.
+* `last_error`: a one-line summary of the error, without URL query strings.
 * `embedded_ca_fingerprint` and `presented_ca_fingerprint`: for a `trust` failure, the SHA-256 fingerprints of the update CA this system expects and of the CA the server's signature was issued by.
 * `trust_failures`: consecutive checks that failed with `trust`. Network and parse failures don't reset it; a successful check does, and clears the fingerprints.
 * `trust_escalated`: set once `trust_failures` reaches three.
