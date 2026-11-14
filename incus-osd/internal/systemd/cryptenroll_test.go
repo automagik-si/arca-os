@@ -175,8 +175,13 @@ func TestDeleteEncryptionKey(t *testing.T) { //nolint:paralleltest // sets PATH 
 
 	common := "abandon ability able about above absent absorb abstract"
 
-	for _, vol := range []string{"root", "swap"} {
-		err := os.WriteFile(filepath.Join(keys, "recovery."+vol+".key"), []byte("zoo zoo zoo zoo zoo zoo zoo "+vol), 0o400)
+	own := map[string]string{
+		"root": "zone wrist write wrong yard year yellow young",
+		"swap": "absurd abuse access accident account accuse achieve acid",
+	}
+
+	for vol, phrase := range own {
+		err := os.WriteFile(filepath.Join(keys, "recovery."+vol+".key"), []byte(phrase), 0o400)
 		if err != nil {
 			t.Fatal(err)
 		}
