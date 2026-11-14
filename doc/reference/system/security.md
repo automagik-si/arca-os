@@ -32,9 +32,19 @@ For changes to the certificate authorities to be effective, all applications mus
 This is best achieved by doing a full system restart following changes to the setting.
 ```
 
+## Re-seal after a recovery unlock
+
+When the main system drive was unlocked with a recovery key instead of the TPM, IncusOS [re-seals the TPM](../security.md#re-seal-after-a-recovery-unlock) during startup, so the next boot unlocks it automatically. The security state then reports:
+
+* `last_recovery_unlock`: when the drive was last unlocked with a recovery key (RFC 3339)
+* `reseal_status`: `re-sealed` or `reseal failed`
+* `reseal_reason`: why the re-seal failed, in one short line
+
+On a boot that used a recovery key, `incus admin os system security show` also prints what happened in plain words.
+
 ## Resetting TPM bindings
 
-If IncusOS fails to automatically unlock the main system drive, after booting using a recovery key, it is possible to forcefully reset the TPM bindings:
+If the automatic re-seal failed, or IncusOS still fails to automatically unlock the main system drive after booting using a recovery key, it is possible to forcefully reset the TPM bindings:
 
 ```
 incus admin os system security tpm-rebind

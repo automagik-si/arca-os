@@ -46,8 +46,15 @@ right?)
 
 If something unexpectedly changes the TPM state of your system, you can still boot but
 will need to manually provide an encryption recovery passphrase. After IncusOS starts
-up, you can use the API to force-reset the TPM encryption bindings which should allow
-automatic decryption of the install drive at boot time.
+up, it [re-seals the TPM](security.md#re-seal-after-a-recovery-unlock) to the state it
+just booted with, so the next boot unlocks the install drive automatically again. The
+console's alert line and `incus admin os system security show` say whether the re-seal
+worked.
+
+If the re-seal failed, the system keeps running and says why (`reseal_reason`); the
+passphrase will be asked again at the next boot, which also tries the re-seal again.
+Once the cause is fixed, you can also use the API to force-reset the TPM encryption
+bindings, which reboots the system.
 
 ```{note}
 When manually entering the recovery, keep in mind that the keyboard

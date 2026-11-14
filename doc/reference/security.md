@@ -122,7 +122,7 @@ PCR 12 is populated by `systemd-boot` and `systemd-stub` with the kernel command
 
 When Secure Boot is enabled, `systemd-stub` ignores any command line provided by the boot loader because the UKI already contains one. When Secure Boot is disabled, that protection doesn't apply and a modified boot entry on the (unencrypted) ESP could boot the genuine UKI with an altered kernel command line without affecting PCRs 4, 7 or 11. Binding PCR 12 to its expected value closes this gap: a command line that differs from the one built into the UKI causes an additional PCR 12 measurement and the TPM refuses to unlock the encrypted disks.
 
-PCR 12 is expected to keep the same value from one boot to the next. The expected value is read from the TPM whenever the PCR 4 binding is updated, and existing installs are automatically migrated to also bind PCR 12 on their first boot of an IncusOS version supporting it. Passing extra kernel command line arguments to a virtual machine through SMBIOS will change PCR 12 and require entering the recovery passphrase on the next boot. The same happens when booting a different UKI profile, as `systemd-stub` measures the selected profile into PCR 12. In both cases, the TPM bindings must then be [reset](system/security.md) to match the new value.
+PCR 12 is expected to keep the same value from one boot to the next. The expected value is read from the TPM whenever the PCR 4 binding is updated, and existing installs are automatically migrated to also bind PCR 12 on their first boot of an IncusOS version supporting it. Passing extra kernel command line arguments to a virtual machine through SMBIOS will change PCR 12 and require entering the recovery passphrase on the next boot. The same happens when booting a different UKI profile, as `systemd-stub` measures the selected profile into PCR 12. In both cases, once the passphrase is entered, IncusOS [re-seals the TPM](#re-seal-after-a-recovery-unlock) to the new value, so the following boots unlock without it.
 
 ### PCR 15
 PCR 15 is populated by systemd at various points during the boot process with system identity events, such as when the LUKS root volume is unlocked, the machine ID, and basic information about the root (`/`) file system. IncusOS binds its encryption to an uninitialized PCR 15 (all zeros), which allows for automatic decryption by the TPM in the initrd only. As part of opening the LUKS root volume in the initrd, systemd extends PCR 15 which changes its value. This prevents the TPM from unlocking the LUKS volume again once the system has booted.
@@ -152,9 +152,28 @@ Until then, the API and the CLI report the recovery keys as not retrieved. `incu
 For unattended installs, setting `security.recovery_passphrase_acknowledged` to `true` in the [install seed](seed.md) pre-acknowledges the hand-over: the installer records it on the ESP, and first boot carries it into the system state. The passphrase is then shown for one minute without asking for any words, and the recovery keys stay marked as not retrieved until they are retrieved through the API.
 
 ### Unlocking at the console
-When the TPM refuses to unlock the drive, the boot stops at a passphrase prompt. Type the eight words in lowercase, separated by single spaces, and press Enter. A typo is rejected and the prompt asks again. After IncusOS starts up, [reset the TPM bindings](system/security.md) so the next boot unlocks automatically.
+When the TPM refuses to unlock the drive, the boot stops at a passphrase prompt. Type the eight words in lowercase, separated by single spaces, and press Enter. A typo is rejected and the prompt asks again. After IncusOS starts up, it re-seals the TPM, as described below, so the next boot unlocks automatically.
 
 Systems installed before this change keep their existing recovery key, with its dashes, until it is replaced through the API.
+
+### Re-seal after a recovery unlock
+When the root volume was unlocked with a recovery passphrase instead of the TPM (typed at the console, or read from [`RESCUE_DATA`](recovery.md#unlocking-with-a-recovery-key-on-rescue_data)), IncusOS re-seals the TPM to the state the system just booted with, early during startup and once per boot:
+
+* With Secure Boot enabled, the TPM key slot of each encrypted volume is enrolled again for the current PCR 7.
+* With Secure Boot disabled, the PCR 4 binding is updated for the running image (or, when running from the backup image, for the newest image, which boots next), together with the current PCR 7 and the expected PCR 12.
+
+If the same PCR values were already enrolled, as after the TPM was cleared or replaced, the key slot is still enrolled anew so the new TPM can unseal it. No re-seal happens when the TPM unlocked the drive, nor when a Secure Boot variable update is pending (the volume then reads `unlocked (TPM; PCR update pending)` and the existing binding already matches the next boot).
+
+The result is kept in the security state and reported in plain words:
+
+* The console's alert line reads `✓ Unlocked with the recovery passphrase; the TPM is re-sealed to this system`, or, when the screen is wide enough, `The disk was unlocked with the recovery passphrase; the TPM has been re-sealed to this system's current state`.
+* `GET /1.0/system/security` reports `last_recovery_unlock` (when, RFC 3339), `reseal_status` (`re-sealed` or `reseal failed`) and `reseal_reason` (one short line, only on failure). The fields describe the most recent recovery unlock and stay until the next one. `incus admin os system security show` prints the same sentence after the state on a boot that used the passphrase.
+
+A failed re-seal never stops the system: it keeps running and the failure is not retried until the next boot. The console shows `✗ TPM not re-sealed (passphrase asked again): <reason>`, and the API and CLI say `the TPM could not be re-sealed: <reason>; the passphrase will be asked again next boot`. The journal has the full error. Once the cause is fixed, either boot again and type the passphrase, which tries the re-seal again, or [reset the TPM bindings](system/security.md#resetting-tpm-bindings) by hand, which also reboots the system.
+
+```{warning}
+The re-seal trusts the state the passphrase unlocked. As noted under [Implications](#implications), a refused unlock can point to a change made by someone else: if the cause isn't known, find it before typing the passphrase, since typing it makes that state the one the TPM unlocks from then on.
+```
 
 ### Useful tools
 systemd has `systemd-pcrlock` which is useful to inspect current PCR values and how they were computed during the boot process.
