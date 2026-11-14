@@ -67,12 +67,12 @@ See [automatic updates and rollback](arca-updates.md): restarts in the window, t
 
 After each OS update check, `GET /1.0/system/update` reports what the channel offers under `state`:
 
-* `available_version`: the newest OS version in the channel, as of `last_check`. It's empty when no successful check has seen one, and a successful check of a channel that holds no OS image clears it.
-* `update_available`: whether that check found the version newer than the running one and not yet applied. A version that failed before, or one older than the running version, isn't available.
+* `available_version`: the newest OS version in the channel, from the last valid answer of the update server. It's empty when no check has seen one, and a check that finds no OS image in the channel clears it.
+* `update_available`: whether that check found the version newer than the running one and not yet applied. A version that failed before, or one older than the running version, isn't available. Installing the update clears it, and so does starting up on the available version.
 
-A failed check changes neither field: they keep the values of the last successful OS check, and `last_error_kind` says why the latest check failed. Secure Boot and application checks don't change them.
+A check that fails before the update server gives a valid answer (`network`, `parse`, `signature` or `trust`) changes neither field, so they can be older than `last_check`. A check that fails after a valid answer, for example while downloading or installing the update, has already recorded what the server offered. Secure Boot and application checks don't change them.
 
-The console's updates page shows the version next to `Available`, with "Behind the channel" when `update_available` is set, "Waiting for a restart" when the version is installed but not running yet, "Up to date" when the system runs it, and "No update to apply" otherwise. `incus admin os system update show` prints the same.
+The console's updates page shows the version next to `Available`, with "Waiting for a restart" when the version is installed but not running yet, "Behind the channel" when `update_available` is set, "Up to date" when the system runs it, and "No update to apply" otherwise. When the last check failed, it adds "(the last check failed)". `incus admin os system update show` prints the version and the same words after the YAML.
 
 ## Update check failures
 
