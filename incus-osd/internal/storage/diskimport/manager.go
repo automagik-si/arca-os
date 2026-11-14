@@ -44,6 +44,7 @@ type Manager struct {
 	nextID int
 
 	resolve   func(string) (string, error)
+	exists    func(string) bool
 	udevRules string
 }
 
@@ -77,7 +78,13 @@ func NewManager(sys System, incus Incus) *Manager {
 }
 
 func buildManager(run Runner, sys System, incus Incus, root string) *Manager {
-	return &Manager{run: run, sys: sys, incus: incus, root: root, disks: map[string]*openDisk{}, resolve: filepath.EvalSymlinks, udevRules: defaultUdevRules}
+	return &Manager{run: run, sys: sys, incus: incus, root: root, disks: map[string]*openDisk{}, resolve: filepath.EvalSymlinks, exists: pathExists, udevRules: defaultUdevRules}
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+
+	return err == nil
 }
 
 // State returns the open drives and the copy jobs.
@@ -554,33 +561,47 @@ func (m *Manager) openLVM(ctx context.Context, d *openDisk, dev string, name str
 	// Registered first: a half-done activation is undone too.
 	d.undo = append(d.undo, undoStep{"vgchange", []string{"-an", "--config", readOnly, vg}})
 
-	_, err = m.run.Run(ctx, "", "vgchange", "-ay", "--config", readOnly, vg)
-	if err != nil {
-		return err
-	}
+	// The kernel refuses a thin pool in a read-only table: lvm2 then activates the rest and fails.
+	_, activateErr := m.run.Run(ctx, "", "vgchange", "-ay", "--config", readOnly, vg)
 
 	m.addLayer(d, "lvm")
 
-	out, err = m.run.Run(ctx, "", "lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_path,lv_active", vg)
+	out, err = m.run.Run(ctx, "", "lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_path,lv_active,segtype", vg)
 	if err != nil {
-		return err
+		return errors.Join(activateErr, err)
 	}
 
 	for line := range strings.SplitSeq(out, "\n") {
-		fields := strings.Split(strings.TrimSpace(line), "|")
-		if len(fields) != 3 || fields[0] == "" {
+		fields := strings.Split(line, "|")
+		if len(fields) != 4 {
+			continue
+		}
+
+		for i := range fields {
+			fields[i] = strings.TrimSpace(fields[i])
+		}
+
+		if fields[0] == "" {
 			continue
 		}
 
 		name := vg + "/" + fields[0]
 
-		// Incus and lvm2 thin snapshots set activation skip: such an LV has no device to read.
+		// Incus and lvm2 thin snapshots set activation skip, and a thin pool is not a block device.
 		switch {
-		case fields[2] == "":
-			d.unreadable = append(d.unreadable, name+": not active (activation skip)")
+		case fields[3] == "thin-pool":
+			d.unreadable = append(d.unreadable, name+": thin pool (not a block device)")
 
 			continue
-		case fields[1] == "":
+		case fields[2] == "" && fields[3] == "thin":
+			d.unreadable = append(d.unreadable, name+": thin volume (its pool cannot run read-only)")
+
+			continue
+		case fields[2] == "":
+			d.unreadable = append(d.unreadable, name+": not active")
+
+			continue
+		case fields[1] == "" || !m.exists(fields[1]):
 			d.unreadable = append(d.unreadable, name+": no device")
 
 			continue
