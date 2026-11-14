@@ -60,10 +60,10 @@ Before asking for the passphrase, the boot screen and the serial console say why
 won't unlock the drive when the cause can be told from the boot's measurements: the Secure
 Boot state or keys changed, a different OS image was started, or the boot parameters
 changed. Each message gives the way back, such as setting the firmware back or picking the
-sealed version in the boot menu, before falling back to the passphrase. A healthy boot prints
-nothing. A cleared or replaced TPM can't be told apart from a healthy boot this early, so no
-message is shown then: type the recovery passphrase and reset the TPM bindings. IncusOS
-doesn't re-seal by itself after a passphrase boot; resetting the TPM bindings does. See
+sealed version in the boot menu. The other way is the passphrase, which re-seals the TPM to
+the changed state as described above, so type it only if you made the change. A healthy boot
+prints nothing. A cleared or replaced TPM can't be told apart from a healthy boot this early,
+so no message is shown then: type the recovery passphrase. See
 [Why the TPM refused](security.md#why-the-tpm-refused).
 
 ```{note}

@@ -176,7 +176,7 @@ The re-seal trusts the state the passphrase unlocked. As noted under [Implicatio
 ```
 
 ### Why the TPM refused
-Each time IncusOS seals the drive to the TPM (first boot, an OS update or Secure Boot key change, a db/dbx update and a TPM binding reset), it writes a record of what it sealed to on the ESP, `/boot/arca-tpm-seal.json`:
+Each time IncusOS seals the drive to the TPM (first boot, an OS update or Secure Boot key change, a db/dbx update, a [re-seal after a recovery unlock](#re-seal-after-a-recovery-unlock) and a TPM binding reset), it writes a record of what it sealed to on the ESP, `/boot/arca-tpm-seal.json`:
 
 - `version`: the record's format, currently `1`
 - `uki_version`: the OS version the drive was sealed to
@@ -190,17 +190,17 @@ Before the passphrase prompt, the initrd reads the record from the ESP (where th
 
 | What changed | What the screen says | Way back |
 |---|---|---|
-| Secure Boot turned on or off, or Setup Mode entered or left | The Secure Boot state changed, sealed with one state, now another | Set the firmware back to the sealed state with the same keys and boot again |
-| PCR 7 with the same Secure Boot state | The Secure Boot keys changed | Restore the firmware's Secure Boot keys as they were and boot again |
-| PCR 4, only compared with Secure Boot off | A different OS image was started, with the sealed version | Pick the sealed version in the boot menu and boot again |
-| PCR 12, only compared with Secure Boot off | The boot parameters changed | Remove the extra kernel command line, credentials or add-ons and boot again |
-| No record, on a drive sealed before it existed | One line: if a passphrase prompt follows, type the recovery passphrase or the older recovery key | Type the passphrase or key, then reset the TPM bindings |
+| Secure Boot turned on or off, or Setup Mode entered or left | Secure Boot changed, sealed with one state, now another | Set the firmware back to the sealed state and boot again |
+| PCR 7 with the same Secure Boot state | Secure Boot keys changed | Restore the firmware's Secure Boot keys and boot again |
+| PCR 4, only compared with Secure Boot off | A different OS image was started | Pick the sealed version in the boot menu and boot again |
+| PCR 12, only compared with Secure Boot off | Boot parameters changed | Drop the extra command line, credentials or add-ons and boot again |
+| No record, on a drive sealed before it existed | One line: if asked, type the recovery passphrase or the older recovery key | Type the passphrase or key |
 
 A drive that `systemd-repart` created on this boot holds only its TPM keyslot and has no record yet; its first boot prints nothing.
 
-Each message also says that the recovery passphrase (eight words) or, on a drive installed before it, the older recovery key (with dashes) unlocks the drive at the prompt below. IncusOS doesn't re-seal by itself after such a boot: once it is up, [resetting the TPM bindings](system/security.md) with `incus admin os system security tpm-rebind` seals the drive to the new state. The changed values are shown shortened. When the record matches, nothing is printed. The check only explains: the boot, the prompt and its retries are unchanged.
+Each message also offers the other way: type the recovery passphrase (eight words) or, on a drive installed before it, the older recovery key (with dashes) at the prompt below. That [re-seals the TPM](#re-seal-after-a-recovery-unlock) to the changed state, so the next boot unlocks without a prompt: the screen says to type it only if the owner made the change. The changed values are shown shortened, and no line is longer than 79 characters. When the record matches, nothing is printed. The check only explains: the boot, the prompt and its retries are unchanged.
 
-A cleared or replaced TPM doesn't change the PCR values, so such a boot looks exactly like a healthy one before the unlock is tried, and the screen says nothing. The sealed key is then gone from the TPM: type the recovery passphrase at the prompt and reset the TPM bindings once IncusOS is up.
+A cleared or replaced TPM doesn't change the PCR values, so such a boot looks exactly like a healthy one before the unlock is tried, and the screen says nothing. The sealed key is then gone from the TPM: type the recovery passphrase at the prompt, which re-seals the drive to the new TPM.
 
 On a virtual machine, Secure Boot changes can't be tried with the development images, as the firmware refuses their test-signed boot loader once Secure Boot is turned on.
 
