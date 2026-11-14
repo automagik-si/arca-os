@@ -551,26 +551,43 @@ func (m *Manager) openLVM(ctx context.Context, d *openDisk, dev string, name str
 
 	readOnly := fmt.Sprintf(`global{metadata_read_only=1} activation{read_only_volume_list=["%s"]}`, vg)
 
+	// Registered first: a half-done activation is undone too.
+	d.undo = append(d.undo, undoStep{"vgchange", []string{"-an", "--config", readOnly, vg}})
+
 	_, err = m.run.Run(ctx, "", "vgchange", "-ay", "--config", readOnly, vg)
 	if err != nil {
 		return err
 	}
 
-	d.undo = append(d.undo, undoStep{"vgchange", []string{"-an", "--config", readOnly, vg}})
 	m.addLayer(d, "lvm")
 
-	out, err = m.run.Run(ctx, "", "lvs", "--noheadings", "-o", "lv_name,lv_path", vg)
+	out, err = m.run.Run(ctx, "", "lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_path,lv_active", vg)
 	if err != nil {
 		return err
 	}
 
 	for line := range strings.SplitSeq(out, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		fields := strings.Split(strings.TrimSpace(line), "|")
+		if len(fields) != 3 || fields[0] == "" {
 			continue
 		}
 
-		err = m.openLayer(ctx, d, fields[1], vg+"/"+fields[0], passphrase, depth+1)
+		name := vg + "/" + fields[0]
+
+		// Incus and lvm2 thin snapshots set activation skip: such an LV has no device to read.
+		switch {
+		case fields[2] == "":
+			d.unreadable = append(d.unreadable, name+": not active (activation skip)")
+
+			continue
+		case fields[1] == "":
+			d.unreadable = append(d.unreadable, name+": no device")
+
+			continue
+		default:
+		}
+
+		err = m.openLayer(ctx, d, fields[1], name, passphrase, depth+1)
 		if err != nil {
 			return err
 		}
