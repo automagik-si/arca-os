@@ -305,8 +305,9 @@ incus admin os system storage import-copy -d '{"serial":"S0EXAMPLE","filesystem"
 
 `kind` is `instance`, `volume` or `folder`; a folder or volume becomes a custom volume. A copied instance arrives
 stopped with `boot.autostart` set to false (the old value is kept in `user.import.autostart`), without its snapshots.
-`profiles` replaces the instance's profiles; networks and profiles it uses must exist. Incus stores the copy once
-before unpacking it, so the copy is refused unless that space is free.
+`profiles` replaces the instance's profiles; networks and profiles it uses must exist. Incus stores the whole copy in
+its backups volume before unpacking it into the pool, so a copy is refused unless both have room for it, counting the
+copies already running; when both are on the same zpool (as with the `local` pool), that zpool needs room for it twice.
 
 Close the drive when done; this undoes every step and makes the drive writable again:
 
