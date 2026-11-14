@@ -1,0 +1,16 @@
+[Unit]
+Description=Explain why the TPM will not unlock the root volume
+After=boot.mount initrd-swtpm.service systemd-tpm2-setup-early.service systemd-repart.service
+After=dev-gpt\x2dauto\x2droot\x2dluks.device
+Before=systemd-cryptsetup@root.service initrd-recovery-key.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=15
+
+EnvironmentFile=/usr/lib/os-release
+Environment=TTYS="/dev/tty1 /dev/ttyS0"
+
+ExecStart=/usr/bin/initrd-tpm-diagnosis.sh
