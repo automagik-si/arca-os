@@ -30,6 +30,8 @@ func main() {
 		switch os.Args[1] {
 		case "cleanup-root":
 			err = cleanupRoot("/sysroot")
+		case "diagnose-tpm":
+			diagnoseTPM(os.Stdout, os.Args[2:])
 		case "measure-pcrs":
 			err = measurePCRs()
 		case "seal-pcr15":

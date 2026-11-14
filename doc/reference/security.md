@@ -175,6 +175,35 @@ A failed re-seal never stops the system: it keeps running and the failure is not
 The re-seal trusts the state the passphrase unlocked. As noted under [Implications](#implications), a refused unlock can point to a change made by someone else: if the cause isn't known, find it before typing the passphrase, since typing it makes that state the one the TPM unlocks from then on.
 ```
 
+### Why the TPM refused
+Each time IncusOS seals the drive to the TPM (first boot, an OS update or Secure Boot key change, a db/dbx update, a [re-seal after a recovery unlock](#re-seal-after-a-recovery-unlock) and a TPM binding reset), it writes a record of what it sealed to on the ESP, `/boot/arca-tpm-seal.json`:
+
+- `version`: the record's format, currently `1`
+- `uki_version`: the OS version the drive was sealed to
+- `secure_boot_enabled` and `setup_mode`: the Secure Boot state
+- `pcr4`, `pcr7` and `pcr12`: the PCR values, as lowercase SHA-256 hex
+- `sealed_at`: when, in RFC 3339
+
+The record holds no secret, only public measurements. Failing to write it never fails the seal. Whenever the TPM unlocked the drive, IncusOS also rewrites a record that is missing, unreadable or no longer matches the measurements, so a drive sealed before the record existed gets one on its next boot. It does so at most once per boot, and never after a seal on that boot, whose record holds the next boot's values. The record must hold 64-digit hex PCR values and a numeric version, or it is ignored as unreadable.
+
+Before the passphrase prompt, the initrd reads the record from the ESP (where the initrd mounted it, or by mounting it read-only by its partition label when it isn't), compares the record with the boot's measurements, and, when they differ, explains the cause in a few plain lines on the screen and the serial console, with the way back:
+
+| What changed | What the screen says | Way back |
+|---|---|---|
+| Secure Boot turned on or off, or Setup Mode entered or left | Secure Boot changed, sealed with one state, now another | Set the firmware back to the sealed state and boot again |
+| PCR 7 with the same Secure Boot state | Secure Boot keys changed | Restore the firmware's Secure Boot keys and boot again |
+| PCR 4, only compared with Secure Boot off | A different OS image was started | Pick the sealed version in the boot menu and boot again |
+| PCR 12, only compared with Secure Boot off | Boot parameters changed | Drop the extra command line, credentials or add-ons and boot again |
+| No record, on a drive sealed before it existed | One line: if asked, type the recovery passphrase or the older recovery key | Type the passphrase or key |
+
+A drive that `systemd-repart` created on this boot holds only its TPM keyslot and has no record yet; its first boot prints nothing.
+
+Each message also offers the other way: type the recovery passphrase (eight words) or, on a drive installed before it, the older recovery key (with dashes) at the prompt below. That [re-seals the TPM](#re-seal-after-a-recovery-unlock) to the changed state, so the next boot unlocks without a prompt: the screen says to type it only if the owner made the change. The changed values are shown shortened, and no line is longer than 79 characters. When the record matches, nothing is printed. The check only explains: the boot, the prompt and its retries are unchanged.
+
+A cleared or replaced TPM doesn't change the PCR values, so such a boot looks exactly like a healthy one before the unlock is tried, and the screen says nothing. The sealed key is then gone from the TPM: type the recovery passphrase at the prompt, which re-seals the drive to the new TPM.
+
+On a virtual machine, Secure Boot changes can't be tried with the development images, as the firmware refuses their test-signed boot loader once Secure Boot is turned on.
+
 ### Useful tools
 systemd has `systemd-pcrlock` which is useful to inspect current PCR values and how they were computed during the boot process.
 

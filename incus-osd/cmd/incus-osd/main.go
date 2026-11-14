@@ -510,6 +510,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		slog.DebugContext(ctx, "Platform keyring entry", "name", key.Description, "key", key.Fingerprint)
 	}
 
+	// Heal a missing, unreadable or stale TPM seal state record before any seal below rewrites it.
+	repairSealState(ctx)
+
 	// If no encryption recovery keys have been defined for the root and swap partitions, this is a fresh install.
 	// Generate recovery keys and ensure we're binding against PCR15 to mitigate an attacker from bypassing the
 	// TPM encryption with a malicious root partition.
@@ -1388,4 +1391,17 @@ func startApplications(ctx context.Context, s *state.State) error {
 	}
 
 	return nil
+}
+
+// repairSealState rewrites the TPM seal state record when the TPM unlocked the volumes on this
+// boot and the record is missing, unreadable or no longer matches the measurements.
+func repairSealState(ctx context.Context) {
+	tpmAutoUnlocked, err := util.TPMAutoUnlocked()
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to read the TPM unlock state", "err", err)
+
+		return
+	}
+
+	secureboot.RepairSealState(tpmAutoUnlocked)
 }

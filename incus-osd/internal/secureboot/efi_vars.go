@@ -342,6 +342,8 @@ func appendEFIVarUpdate(ctx context.Context, efiUpdateFile string, varName strin
 		}
 	}
 
+	RecordSealState("", nil, newPCR7, nil)
+
 	return nil
 }
 

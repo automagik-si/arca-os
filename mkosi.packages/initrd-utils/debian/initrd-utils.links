@@ -14,3 +14,4 @@ usr/lib/systemd/system/initrd-startup-checks.service      usr/lib/systemd/system
 usr/lib/systemd/system/initrd-swtpm.service               usr/lib/systemd/system/cryptsetup.target.wants/initrd-swtpm.service
 usr/lib/systemd/system/initrd-swtpm.service               usr/lib/systemd/system/systemd-cryptsetup@root.service.wants/initrd-swtpm.service
 usr/lib/systemd/system/initrd-swtpm.service               usr/lib/systemd/system/systemd-repart.service.wants/initrd-swtpm.service
+usr/lib/systemd/system/initrd-tpm-diagnosis.service       usr/lib/systemd/system/systemd-cryptsetup@root.service.wants/initrd-tpm-diagnosis.service
