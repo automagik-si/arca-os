@@ -267,13 +267,13 @@ func TestDiagnoseSeal(t *testing.T) {
 		wayBack string
 		values  []string
 	}{
-		{"record missing", nil, same, SealRecordMissing, "type the recovery passphrase (eight words) or the older recovery key (with dashes)", nil},
-		{"secure boot enabled to setup mode", sbOn, with(same, func(m *Measurements) { m.SetupMode = true }), SealSecureBootState, "set the firmware to Secure Boot on with the same keys", []string{"Sealed with Secure Boot on, now Secure Boot in Setup Mode"}},
-		{"setup mode to secure boot enabled", setup, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealSecureBootState, "set the firmware to Secure Boot in Setup Mode", []string{"Sealed with Secure Boot in Setup Mode, now Secure Boot on"}},
-		{"secure boot disabled to enabled", sbOff, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealSecureBootState, "set the firmware to Secure Boot off", []string{"Sealed with Secure Boot off, now Secure Boot on"}},
-		{"pcr7 with the same secure boot state", sbOn, with(same, func(m *Measurements) { m.SecureBootEnabled = true; m.PCR7 = pcrA }), SealSecureBootKeys, "restore the firmware's Secure Boot keys", []string{"PCR7 sealed bbbbbbbbbbbbbbbb..., now aaaaaaaaaaaaaaaa..."}},
-		{"pcr4", sbOff, with(same, func(m *Measurements) { m.PCR4 = pcrC }), SealImage, "pick the sealed version in the boot menu", []string{"PCR4 sealed aaaaaaaaaaaaaaaa... (version 202611141118), now cccccccccccccccc..."}},
-		{"pcr12", sbOff, with(same, func(m *Measurements) { m.PCR12 = pcrA }), SealBootParameters, "remove the extra kernel command line", []string{"PCR12 sealed cccccccccccccccc..., now aaaaaaaaaaaaaaaa..."}},
+		{"record missing", nil, same, SealRecordMissing, "If asked, type the recovery passphrase (8 words) or older recovery key (dashes)", nil},
+		{"secure boot enabled to setup mode", sbOn, with(same, func(m *Measurements) { m.SetupMode = true }), SealSecureBootState, "Way back: set the firmware back to Secure Boot on, then boot again.", []string{"Sealed with Secure Boot on, now Secure Boot in Setup Mode."}},
+		{"setup mode to secure boot enabled", setup, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealSecureBootState, "Way back: set the firmware back to Secure Boot in Setup Mode, then boot again.", []string{"Sealed with Secure Boot in Setup Mode, now Secure Boot on."}},
+		{"secure boot disabled to enabled", sbOff, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealSecureBootState, "Way back: set the firmware back to Secure Boot off, then boot again.", []string{"Sealed with Secure Boot off, now Secure Boot on."}},
+		{"pcr7 with the same secure boot state", sbOn, with(same, func(m *Measurements) { m.SecureBootEnabled = true; m.PCR7 = pcrA }), SealSecureBootKeys, "Way back: restore the firmware's Secure Boot keys, then boot again.", []string{"PCR7 sealed bbbbbbbbbbbbbbbb..., now aaaaaaaaaaaaaaaa..."}},
+		{"pcr4", sbOff, with(same, func(m *Measurements) { m.PCR4 = pcrC }), SealImage, "Way back: pick version 202611141118 in the boot menu, then boot again.", []string{"PCR4 sealed aaaaaaaaaaaaaaaa..., now cccccccccccccccc..."}},
+		{"pcr12", sbOff, with(same, func(m *Measurements) { m.PCR12 = pcrA }), SealBootParameters, "Way back: drop the extra command line, credentials or add-ons, then boot again.", []string{"PCR12 sealed cccccccccccccccc..., now aaaaaaaaaaaaaaaa..."}},
 		{"all equal", sbOff, same, SealMatch, "", nil},
 		{"all equal with secure boot", sbOn, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealMatch, "", nil},
 		{"pcr4 and pcr12 aren't bound with secure boot", sbOn, Measurements{SecureBootEnabled: true, PCR4: pcrC, PCR7: pcrB, PCR12: pcrA}, SealMatch, "", nil},
@@ -300,15 +300,28 @@ func TestDiagnoseSeal(t *testing.T) {
 				return
 			}
 
+			// An 80-column console must not wrap a line.
+			for _, line := range lines {
+				if len(line) > 79 {
+					t.Fatalf("line longer than 79 characters: %q", line)
+				}
+			}
+
+			wants := append([]string{tt.wayBack}, tt.values...)
+
 			if cause == SealRecordMissing && len(lines) != 1 {
 				t.Fatalf("record missing: %d lines, want one", len(lines))
 			}
 
-			if cause != SealRecordMissing && (len(lines) < 3 || len(lines) > 6) {
-				t.Fatalf("%d lines, want 3 to 6:\n%s", len(lines), text)
+			if cause != SealRecordMissing {
+				if len(lines) != 5 {
+					t.Fatalf("%d lines, want 5:\n%s", len(lines), text)
+				}
+
+				wants = append(wants, "Or type the recovery passphrase (8 words) or older recovery key (dashes) below.", "That re-seals the TPM to this boot: type it only if you made the change.")
 			}
 
-			for _, want := range append([]string{tt.wayBack, "recovery passphrase (eight words) or the older recovery key (with dashes)", "incus admin os system security tpm-rebind"}, tt.values...) {
+			for _, want := range wants {
 				if !strings.Contains(text, want) {
 					t.Fatalf("message lacks %q:\n%s", want, text)
 				}

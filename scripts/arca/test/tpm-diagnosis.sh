@@ -111,26 +111,26 @@ check equal "the ESP was mounted read-only and released" mounted_ro
 
 setup 0 0 "$A" "$B" "$A"
 check pcr12 "boot parameters changed, with the way back" says \
-	"the boot parameters changed" "PCR12 sealed cccccccccccccccc..., now aaaaaaaaaaaaaaaa..." \
-	"Way back: remove the extra kernel command line" "recovery passphrase (eight words) or the older recovery key (with dashes)" "tpm-rebind"
+	"boot parameters changed since it was sealed" "PCR12 sealed cccccccccccccccc..., now aaaaaaaaaaaaaaaa..." \
+	"Way back: drop the extra command line, credentials or add-ons" "Or type the recovery passphrase (8 words) or older recovery key (dashes) below." "That re-seals the TPM to this boot"
 check pcr12 "five lines" lines 5
 
 setup 0 0 "$C" "$B" "$C"
 check pcr4 "a different OS image, with the way back" says \
-	"a different OS image" "(version 202611141118)" "Way back: pick the sealed version in the boot menu" "recovery passphrase (eight words) or the older recovery key (with dashes)"
+	"a different OS image" "Way back: pick version 202611141118 in the boot menu" "Or type the recovery passphrase (8 words) or older recovery key (dashes) below." "That re-seals the TPM to this boot"
 
 setup 0 0 "$A" "$C" "$C"
 check pcr7 "Secure Boot keys changed, with the way back" says \
-	"the Secure Boot keys changed" "Way back: restore the firmware's Secure Boot keys" "recovery passphrase (eight words) or the older recovery key (with dashes)"
+	"Secure Boot keys changed" "Way back: restore the firmware's Secure Boot keys" "Or type the recovery passphrase (8 words) or older recovery key (dashes) below." "That re-seals the TPM to this boot"
 
 setup 1 0 "$A" "$C" "$C"
 check sb-state "Secure Boot state changed, with the way back" says \
-	"the Secure Boot state changed" "Sealed with Secure Boot off, now Secure Boot on." \
-	"Way back: set the firmware to Secure Boot off with the same keys" "recovery passphrase (eight words) or the older recovery key (with dashes)"
+	"Secure Boot changed since it was sealed" "Sealed with Secure Boot off, now Secure Boot on." \
+	"Way back: set the firmware back to Secure Boot off" "Or type the recovery passphrase (8 words) or older recovery key (dashes) below." "That re-seals the TPM to this boot"
 
 setup 0 0 "$A" "$B" "$C"
 rm "$t/esp/arca-tpm-seal.json"
-check missing "an old disk gets the generic line" says "type the recovery passphrase (eight words) or the older recovery key (with dashes)" "tpm-rebind"
+check missing "an old disk gets the generic line" says "If asked, type the recovery passphrase (8 words) or older recovery key (dashes)"
 check missing "one line" lines 1
 luks2 '{"0":{}}'
 : >"$t/tty1"
@@ -140,7 +140,7 @@ check fresh "a volume created on this boot stays quiet" quiet
 setup 0 0 "$A" "$B" "$A"
 touch "$t/boot-mounted"
 cp "$t/esp/arca-tpm-seal.json" "$t/boot/"
-check mounted "an ESP already at /boot is read in place" says "the boot parameters changed"
+check mounted "an ESP already at /boot is read in place" says "boot parameters changed since it was sealed"
 check mounted "and not mounted again" test ! -e "$t/mount.log"
 
 setup 0 0 "$A" "$B" "$A"
@@ -177,6 +177,6 @@ setup 0 0 "$A" "$B" "$A"
 check bad-tty "a console that can't be opened doesn't stop the others" \
 	env T="$t" PATH="$t/bin:$PATH" TTYS="$t/missing/tty1 $t/ttyS0" BOOT_DIR="$t/boot" ESP_DEVICE="$t/esp" MOUNT_DIR="$t/mnt" \
 	EFIVARS_DIR="$t/efivars" PCR_DIR="$t/pcr" ROOT_LUKS="$t/root-luks" INITRD_UTILS="$t/initrd-utils" sh "$script"
-check bad-tty "the serial console still shows it" grep -qF "the boot parameters changed" "$t/ttyS0"
+check bad-tty "the serial console still shows it" grep -qF "boot parameters changed since it was sealed" "$t/ttyS0"
 
 [ "$fails" -eq 0 ]

@@ -229,13 +229,13 @@ func ReadSealState(path string) (*SealState, error) {
 }
 
 // ReadMeasurements reads the current Secure Boot state and PCRs from an efivars and a PCR directory.
-func ReadMeasurements(efivarsDir string, pcrDir string) Measurements {
+func ReadMeasurements(efivarsDir string, pcrsDir string) Measurements {
 	return Measurements{
 		SecureBootEnabled: efiFileFlag(filepath.Join(efivarsDir, "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c")),
 		SetupMode:         efiFileFlag(filepath.Join(efivarsDir, "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c")),
-		PCR4:              pcrFile(filepath.Join(pcrDir, "4")),
-		PCR7:              pcrFile(filepath.Join(pcrDir, "7")),
-		PCR12:             pcrFile(filepath.Join(pcrDir, "12")),
+		PCR4:              pcrFile(filepath.Join(pcrsDir, "4")),
+		PCR7:              pcrFile(filepath.Join(pcrsDir, "7")),
+		PCR12:             pcrFile(filepath.Join(pcrsDir, "12")),
 	}
 }
 
@@ -326,8 +326,8 @@ func pcrChanged(recorded string, current string) bool {
 
 // passphraseLines are the way back that always works.
 var passphraseLines = []string{
-	"Otherwise type the recovery passphrase (eight words) or the older recovery key (with dashes) below.",
-	"Nothing re-seals by itself: once the system is up, run incus admin os system security tpm-rebind",
+	"Or type the recovery passphrase (8 words) or older recovery key (dashes) below.",
+	"That re-seals the TPM to this boot: type it only if you made the change.",
 }
 
 // SealMessage returns the plain-words lines shown before the passphrase prompt, none on a match.
@@ -336,31 +336,31 @@ func SealMessage(cause SealCause, record *SealState, current Measurements) []str
 
 	switch cause { //nolint:exhaustive
 	case SealRecordMissing:
-		return []string{"If a passphrase prompt follows, type the recovery passphrase (eight words) or the older recovery key (with dashes), then run incus admin os system security tpm-rebind"}
+		return []string{"If asked, type the recovery passphrase (8 words) or older recovery key (dashes)"}
 	case SealSecureBootState:
 		sealed := secureBootState(record.SecureBootEnabled, record.SetupMode)
 		lines = append(lines,
-			"The TPM will not unlock the drive: the Secure Boot state changed since it was sealed.",
+			"The TPM won't unlock the drive: Secure Boot changed since it was sealed.",
 			"Sealed with "+sealed+", now "+secureBootState(current.SecureBootEnabled, current.SetupMode)+".",
-			"Way back: set the firmware to "+sealed+" with the same keys and boot again.",
+			"Way back: set the firmware back to "+sealed+", then boot again.",
 		)
 	case SealSecureBootKeys:
 		lines = append(lines,
-			"The TPM will not unlock the drive: the Secure Boot keys changed since it was sealed.",
+			"The TPM won't unlock the drive: Secure Boot keys changed since it was sealed.",
 			"PCR7 sealed "+shortPCR(record.PCR7)+", now "+shortPCR(current.PCR7)+".",
-			"Way back: restore the firmware's Secure Boot keys as they were and boot again.",
+			"Way back: restore the firmware's Secure Boot keys, then boot again.",
 		)
 	case SealImage:
 		lines = append(lines,
-			"The TPM will not unlock the drive: a different OS image was started than it was sealed to.",
-			"PCR4 sealed "+shortPCR(record.PCR4)+" ("+ukiVersionText(record)+"), now "+shortPCR(current.PCR4)+".",
-			"Way back: pick the sealed version in the boot menu and boot again.",
+			"The TPM won't unlock the drive: a different OS image was started.",
+			"PCR4 sealed "+shortPCR(record.PCR4)+", now "+shortPCR(current.PCR4)+".",
+			"Way back: pick "+ukiVersionText(record)+" in the boot menu, then boot again.",
 		)
 	case SealBootParameters:
 		lines = append(lines,
-			"The TPM will not unlock the drive: the boot parameters changed since it was sealed.",
+			"The TPM won't unlock the drive: boot parameters changed since it was sealed.",
 			"PCR12 sealed "+shortPCR(record.PCR12)+", now "+shortPCR(current.PCR12)+".",
-			"Way back: remove the extra kernel command line, credentials or add-ons and boot again.",
+			"Way back: drop the extra command line, credentials or add-ons, then boot again.",
 		)
 	default:
 		// A match has nothing to say.
@@ -398,7 +398,7 @@ func shortPCR(value string) string {
 // ukiVersionText names the sealed OS version, when known.
 func ukiVersionText(record *SealState) string {
 	if record.UKIVersion == "" {
-		return "version unknown"
+		return "the sealed version"
 	}
 
 	return "version " + record.UKIVersion
