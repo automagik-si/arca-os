@@ -6,15 +6,18 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/lxc/incus/v7/shared/subprocess"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lxc/incus-os/incus-osd/internal/providers"
@@ -318,4 +321,51 @@ func TestModalErrorLeadsWithTrust(t *testing.T) {
 	// Any other failure keeps its text.
 	require.Equal(t, "[red]Error[white] Failed to check for OS updates: boom (provider: images)",
 		modalErrorText("Failed to check for OS updates", errors.New("boom"), "images"))
+}
+
+func TestLastErrorIsShortAndClean(t *testing.T) {
+	t.Parallel()
+
+	// A network failure on a provider that authenticates with a query parameter.
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	require.NoError(t, l.Close())
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+l.Addr().String()+"/os/index.sjson?token=SECRET-TOKEN", nil)
+	require.NoError(t, err)
+
+	resp, netErr := http.DefaultClient.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+
+	require.Error(t, netErr)
+	require.Contains(t, netErr.Error(), "SECRET-TOKEN")
+
+	s := &state.State{}
+	recordCheck(t.Context(), s, fmt.Errorf("http request timed out after five seconds: %w", netErr))
+	require.Equal(t, ErrorKindNetwork, s.System.Update.State.LastErrorKind)
+	require.NotContains(t, s.System.Update.State.LastError, "SECRET-TOKEN")
+	require.NotContains(t, s.System.Update.State.LastError, "token=")
+	require.Contains(t, s.System.Update.State.LastError, "/os/index.sjson")
+
+	// A command that failed keeps neither its command line nor its output.
+	runErr := subprocess.NewRunError("openssl", []string{"smime", "-verify", "-CAfile", "/tmp/123456"}, errors.New("exit status 4"), nil, bytes.NewBufferString("Verification failure\nline two"))
+	recordCheck(t.Context(), s, runErr)
+	require.NotContains(t, s.System.Update.State.LastError, "/tmp/123456")
+	require.NotContains(t, s.System.Update.State.LastError, "-CAfile")
+	require.Contains(t, s.System.Update.State.LastError, "exit status 4")
+
+	// One line, of bounded length.
+	recordCheck(t.Context(), s, errors.New(strings.Repeat("x", 500)+"\nsecond line"))
+	require.NotContains(t, s.System.Update.State.LastError, "\n")
+	require.LessOrEqual(t, len(s.System.Update.State.LastError), 200)
+}
+
+func TestErrorKindOfVerifierFailures(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, ErrorKindParse, errorKind(fmt.Errorf("index: %w", util.ErrSMIMEDamaged)))
+	require.Equal(t, ErrorKindOther, errorKind(context.Canceled))
+	require.Equal(t, ErrorKindOther, errorKind(fmt.Errorf("unable to run openssl: %w", exec.ErrNotFound)))
 }

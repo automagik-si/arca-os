@@ -9,7 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
+
+	"github.com/lxc/incus/v7/shared/subprocess"
 
 	"github.com/lxc/incus-os/incus-osd/internal/providers"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
@@ -52,7 +56,7 @@ func errorKind(err error) string {
 	case errors.As(err, &urlErr), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded), errors.Is(err, providers.ErrServerResponse):
 		return ErrorKindNetwork
 	case errors.As(err, &syntaxErr), errors.As(err, &typeErr), errors.Is(err, gzip.ErrHeader), errors.Is(err, gzip.ErrChecksum),
-		errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, util.ErrSMIMEUnreadable):
+		errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, util.ErrSMIMEUnreadable), errors.Is(err, util.ErrSMIMEDamaged):
 		return ErrorKindParse
 	default:
 		return ErrorKindOther
@@ -102,7 +106,7 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 	}
 
 	st.LastErrorKind = errorKind(err)
-	st.LastError = err.Error()
+	st.LastError = shortError(err)
 
 	trustErr, ok := errors.AsType[*util.TrustError](err)
 	if !ok {
@@ -135,6 +139,31 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 	slog.ErrorContext(ctx, trustEscalation(st.TrustFailures))
 
 	return true
+}
+
+// lastErrorMax is the longest last_error kept in the update state.
+const lastErrorMax = 200
+
+// urlQuery matches a URL's query string, which may carry an authentication token.
+var urlQuery = regexp.MustCompile(`(https?://[^\s?"']*)\?[^\s"']*`)
+
+// shortError is err as one short line, without URL query strings or command lines.
+func shortError(err error) string {
+	msg := err.Error()
+
+	runErr, ok := errors.AsType[subprocess.RunError](err)
+	if ok {
+		msg = strings.Replace(msg, runErr.Error(), "command failed: "+runErr.Unwrap().Error(), 1)
+	}
+
+	msg, _, _ = strings.Cut(msg, "\n")
+	msg = urlQuery.ReplaceAllString(msg, "$1")
+
+	if len(msg) > lastErrorMax {
+		msg = strings.ToValidUTF8(msg[:lastErrorMax-len("…")], "") + "…"
+	}
+
+	return msg
 }
 
 // trustEscalation is the owner's warning after repeated trust failures.
