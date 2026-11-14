@@ -175,6 +175,11 @@ func TestRepairSealStateOncePerBootAndNeverAfterASeal(t *testing.T) { //nolint:p
 		t.Fatalf("the repair replaced the sealed next-boot PCR4 with %s", pcr4())
 	}
 
+	stale, err := os.ReadFile(SealStatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// A new boot: the first start repairs a stale record, a second start on that boot doesn't touch it.
 	_ = os.Remove(SealStateBootMarker)
 
@@ -184,12 +189,29 @@ func TestRepairSealStateOncePerBootAndNeverAfterASeal(t *testing.T) { //nolint:p
 		t.Fatalf("the first start didn't repair the stale record: %s", pcr4())
 	}
 
-	RecordSealState("", bytes.Repeat([]byte{0xCC}, 32), nil, nil)
+	err = os.WriteFile(SealStatePath, stale, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	RepairSealState(true)
 
 	if pcr4() != pcrC {
 		t.Fatalf("a second start on the same boot rewrote the record: %s", pcr4())
+	}
+
+	// A boot marker that can't be set means no repair: a later start couldn't tell it from a seal.
+	_ = os.Remove(SealStateBootMarker)
+
+	err = os.Symlink(filepath.Join(t.TempDir(), "gone", "marker"), SealStateBootMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	RepairSealState(true)
+
+	if pcr4() != pcrC {
+		t.Fatalf("the repair ran without a boot marker: %s", pcr4())
 	}
 }
 
