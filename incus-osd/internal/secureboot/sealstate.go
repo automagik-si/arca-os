@@ -71,6 +71,17 @@ func RecordSealState(ukiFile string, pcr4 []byte, pcr7 []byte, pcr12 []byte) {
 	}
 }
 
+// sealedVolume is the volume the initrd explains, so a seal records its state once this one is bound.
+const sealedVolume = "root"
+
+// beginSeal marks this boot before a seal changes a TPM binding, so a restart midway can't repair the record.
+func beginSeal() {
+	err := markSealStateBoot()
+	if err != nil {
+		slog.Warn("Failed to mark the TPM seal state for this boot", "err", err)
+	}
+}
+
 // markSealStateBoot records that this boot sealed or checked the seal state record.
 func markSealStateBoot() error {
 	err := os.MkdirAll(filepath.Dir(SealStateBootMarker), 0o700)
@@ -327,7 +338,7 @@ func pcrChanged(recorded string, current string) bool {
 // passphraseLines are the way back that always works.
 var passphraseLines = []string{
 	"Or type the recovery passphrase (8 words) or older recovery key (dashes) below.",
-	"That re-seals the TPM to this boot: type it only if you made the change.",
+	"That re-seals the TPM to this state: type it only if you made the change.",
 }
 
 // SealMessage returns the plain-words lines shown before the passphrase prompt, none on a match.
@@ -347,19 +358,19 @@ func SealMessage(cause SealCause, record *SealState, current Measurements) []str
 	case SealSecureBootKeys:
 		lines = append(lines,
 			"The TPM won't unlock the drive: Secure Boot keys changed since it was sealed.",
-			"PCR7 sealed "+shortPCR(record.PCR7)+", now "+shortPCR(current.PCR7)+".",
+			"PCR7 sealed "+shortPCR(record.PCR7)+", now "+shortPCR(current.PCR7),
 			"Way back: restore the firmware's Secure Boot keys, then boot again.",
 		)
 	case SealImage:
 		lines = append(lines,
 			"The TPM won't unlock the drive: a different OS image was started.",
-			"PCR4 sealed "+shortPCR(record.PCR4)+", now "+shortPCR(current.PCR4)+".",
+			"PCR4 sealed "+shortPCR(record.PCR4)+", now "+shortPCR(current.PCR4),
 			"Way back: pick "+ukiVersionText(record)+" in the boot menu, then boot again.",
 		)
 	case SealBootParameters:
 		lines = append(lines,
 			"The TPM won't unlock the drive: boot parameters changed since it was sealed.",
-			"PCR12 sealed "+shortPCR(record.PCR12)+", now "+shortPCR(current.PCR12)+".",
+			"PCR12 sealed "+shortPCR(record.PCR12)+", now "+shortPCR(current.PCR12),
 			"Way back: drop the extra command line, credentials or add-ons, then boot again.",
 		)
 	default:

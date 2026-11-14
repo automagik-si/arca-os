@@ -327,6 +327,10 @@ func TestDiagnoseSeal(t *testing.T) {
 				if len(line) > 79 {
 					t.Fatalf("line longer than 79 characters: %q", line)
 				}
+
+				if strings.Contains(line, "....") {
+					t.Fatalf("a shortened value runs into a full stop: %q", line)
+				}
 			}
 
 			wants := append([]string{tt.wayBack}, tt.values...)
@@ -340,7 +344,7 @@ func TestDiagnoseSeal(t *testing.T) {
 					t.Fatalf("%d lines, want 5:\n%s", len(lines), text)
 				}
 
-				wants = append(wants, "Or type the recovery passphrase (8 words) or older recovery key (dashes) below.", "That re-seals the TPM to this boot: type it only if you made the change.")
+				wants = append(wants, "Or type the recovery passphrase (8 words) or older recovery key (dashes) below.", "That re-seals the TPM to this state: type it only if you made the change.")
 			}
 
 			for _, want := range wants {
