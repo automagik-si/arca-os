@@ -56,6 +56,10 @@ func (p *trustProvider) GetOSUpdate(ctx context.Context) (providers.OSUpdate, er
 	return nil, p.fetch(ctx)
 }
 
+func (p *trustProvider) GetSecureBootCertUpdate(ctx context.Context) (providers.SecureBootCertUpdate, error) {
+	return nil, p.fetch(ctx)
+}
+
 func (p *trustProvider) GetApplicationUpdate(ctx context.Context, _ string) (providers.ApplicationUpdate, error) {
 	return nil, p.fetch(ctx)
 }
@@ -368,4 +372,85 @@ func TestErrorKindOfVerifierFailures(t *testing.T) {
 	require.Equal(t, ErrorKindParse, errorKind(fmt.Errorf("index: %w", util.ErrSMIMEDamaged)))
 	require.Equal(t, ErrorKindOther, errorKind(context.Canceled))
 	require.Equal(t, ErrorKindOther, errorKind(fmt.Errorf("unable to run openssl: %w", exec.ErrNotFound)))
+}
+
+func TestCheckSecureBootTrustStatus(t *testing.T) {
+	t.Parallel()
+
+	f := newTrustFixture(t)
+	f.server.serve(f.foreign)
+
+	// With Secure Boot on, this check runs first and stops the run on its error.
+	s := &state.State{}
+
+	require.Error(t, checkSecureBootWith(withCheckCycle(t.Context()), s, f.provider, nil, false))
+	require.Equal(t, TrustStatus, s.System.Update.State.Status)
+	require.Equal(t, 1, s.System.Update.State.TrustFailures)
+}
+
+func TestCheckApplicationsTrustStatus(t *testing.T) {
+	t.Parallel()
+
+	f := newTrustFixture(t)
+	f.server.serve(f.foreign)
+
+	s := &state.State{}
+
+	// The check goes on past each application, and ends on the trust status.
+	require.NoError(t, checkApplicationsWith(withCheckCycle(t.Context()), s, f.provider, nil, []string{"incus", "debug"}, false))
+	require.Equal(t, TrustStatus, s.System.Update.State.Status)
+	require.Equal(t, 1, s.System.Update.State.TrustFailures)
+
+	f.server.serve(f.trusted)
+
+	require.NoError(t, checkApplicationsWith(withCheckCycle(t.Context()), s, f.provider, nil, []string{"incus", "debug"}, false))
+	require.Equal(t, "Application update check completed", s.System.Update.State.Status)
+	require.Zero(t, s.System.Update.State.TrustFailures)
+}
+
+func TestFullCheckIsOneRun(t *testing.T) {
+	t.Parallel()
+
+	f := newTrustFixture(t)
+	f.server.serve(f.foreign)
+
+	// Secure Boot off: applications and the OS each ask the server.
+	applicationsStep := func(ctx context.Context, s *state.State, _ bool, force bool) error {
+		return checkApplicationsWith(ctx, s, f.provider, nil, []string{"incus"}, force)
+	}
+
+	osStep := func(ctx context.Context, s *state.State, _ bool, force bool) error {
+		return checkOSWith(ctx, s, f.provider, nil, force)
+	}
+
+	s := &state.State{}
+
+	require.Error(t, fullCheck(t.Context(), s, false, applicationsStep, osStep))
+	require.Equal(t, 1, s.System.Update.State.TrustFailures)
+
+	require.Error(t, fullCheck(t.Context(), s, false, applicationsStep, osStep))
+	require.Equal(t, 2, s.System.Update.State.TrustFailures)
+}
+
+// fakeModal records what the update modal shows.
+type fakeModal struct {
+	shown []string
+}
+
+func (m *fakeModal) Update(message string) {
+	m.shown = append(m.shown, message)
+}
+
+func TestShowModalErrorLeadsWithTrust(t *testing.T) {
+	t.Parallel()
+
+	f := newTrustFixture(t)
+	f.server.serve(f.foreign)
+
+	m := &fakeModal{}
+	showModalErrorOn(m, TrustStatus, f.provider.fetch(t.Context()), "images")
+
+	require.Len(t, m.shown, 1)
+	require.True(t, strings.HasPrefix(m.shown[0], "[red]"+TrustStatus), m.shown[0])
+	require.Contains(t, m.shown[0], f.newCA)
 }
