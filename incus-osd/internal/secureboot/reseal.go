@@ -108,13 +108,21 @@ func reseal(ctx context.Context, s *state.State) error {
 	return resealPCR4Binding(ctx, uki)
 }
 
-// resealReason is err as one short line, without the command line of a failed command.
+// resealReason is err as one short line: a failed command's exit status and first error line,
+// without its command line.
 func resealReason(err error) string {
 	msg := err.Error()
 
 	runErr, ok := errors.AsType[subprocess.RunError](err)
 	if ok {
-		msg = strings.Replace(msg, runErr.Error(), "command failed: "+runErr.Unwrap().Error(), 1)
+		short := "command failed: " + runErr.Unwrap().Error()
+
+		line := firstLine(runErr)
+		if line != "" {
+			short += ": " + line
+		}
+
+		msg = strings.Replace(msg, runErr.Error(), short, 1)
 	}
 
 	msg, _, _ = strings.Cut(msg, "\n")
@@ -124,4 +132,20 @@ func resealReason(err error) string {
 	}
 
 	return msg
+}
+
+// firstLine is the first non-empty line a failed command wrote to stderr.
+func firstLine(runErr subprocess.RunError) string {
+	if runErr.StdErr() == nil {
+		return ""
+	}
+
+	for line := range strings.Lines(runErr.StdErr().String()) {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+
+	return ""
 }

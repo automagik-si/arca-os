@@ -164,7 +164,7 @@ func TestResealFailure(t *testing.T) { //nolint:paralleltest // replaces the pac
 	}
 
 	sec := s.System.Security.State
-	if sec.ResealStatus != api.ResealStatusFailed || sec.ResealReason != "command failed: exit status 1" {
+	if sec.ResealStatus != api.ResealStatusFailed || sec.ResealReason != "command failed: exit status 1: Failed to enroll new TPM2 token" {
 		t.Fatalf("security state after a failed re-seal: %+v", sec)
 	}
 
