@@ -138,6 +138,32 @@ func TestHandOverWrongWords(t *testing.T) {
 	}
 }
 
+func TestHandOverOneWordWrong(t *testing.T) {
+	t.Parallel()
+
+	// Each word is checked: one right word alone never confirms.
+	for _, words := range [][2]string{{"ability", "absent"}, {"able", "above"}} {
+		c, h, n := startHandOver(t, true, time.Hour)
+
+		keyOf(c, tcell.KeyEnter, 0)
+		typeWords(c, words[0])
+		keyOf(c, tcell.KeyEnter, 0)
+		typeWords(c, words[1])
+		keyOf(c, tcell.KeyEnter, 0)
+
+		ho := handOverOf(c)
+		if ho.Confirm || !ho.Missed || pageOf(c) != pageRecovery || !h.held || rowOf(screenOf(t, c), "ability") < 0 {
+			t.Fatalf("%q did not show the passphrase again: %+v", words, ho)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+
+		if n.confirmed.Load() != 0 || n.other.Load() != 0 {
+			t.Fatalf("%q closed the page or confirmed the passphrase", words)
+		}
+	}
+}
+
 func TestHandOverRightWords(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +288,33 @@ func TestHandOverState(t *testing.T) {
 	s.System.Security.State.EncryptionRecoveryKeysRetrieved = true
 
 	waitFor(t, func() bool { return pageOf(c) == pageNone && !saved().RecoveryPassphrasePending })
+
+	// Acknowledged by the install seed: no words are asked, and closing the page
+	// ends the hand-over without marking the keys retrieved.
+	s.System.Security.State.EncryptionRecoveryKeysRetrieved = false
+	s.RecoveryPassphraseAcknowledged = true
+	s.RecoveryPassphrasePending = true
+
+	err = s.Save()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	HandOver(ctx, s)
+
+	if pageOf(c) != pageRecovery || handOverOf(c).Wait {
+		t.Fatalf("the acknowledged hand-over is not shown, or asks for words: %+v", handOverOf(c))
+	}
+
+	keyOf(c, tcell.KeyEnter, 0)
+
+	waitFor(t, func() bool { return pageOf(c) == pageNone && !saved().RecoveryPassphrasePending })
+
+	if saved().System.Security.State.EncryptionRecoveryKeysRetrieved {
+		t.Fatal("an acknowledged hand-over marked the keys retrieved")
+	}
+
+	s.RecoveryPassphraseAcknowledged = false
 
 	// A first key that is no passphrase is never shown, and nothing is pending.
 	s.System.Security.Config.EncryptionRecoveryKeys = []string{"cbdefghi-jklnrtuv"}
