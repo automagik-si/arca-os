@@ -262,8 +262,8 @@ func TestOpenGoesOnPastThinPool(t *testing.T) {
 
 	m, run, _, _ := newTest(t)
 	run.fail["vgchange -ay"] = true
-	run.answers["lvs "] = "  root|/dev/vg0/root|active|linear\n  IncusThinPool|/dev/vg0/IncusThinPool|active|thin-pool\n" +
-		"  containers_web|/dev/vg0/containers_web||thin\n  data|/dev/vg0/data|active|vdo-pool\n"
+	run.answers["lvs "] = "  root|/dev/vg0/root|active|linear\n  IncusThinPool|/dev/vg0/IncusThinPool|active|thin,pool\n" +
+		"  containers_web|/dev/vg0/containers_web||thin,sparse\n  data|/dev/vg0/data|active|vdo,pool\n"
 	run.fail["blockdev --setro /dev/vg0/data"] = true
 	m.exists = func(path string) bool { return path != "/dev/vg0/data" }
 
@@ -278,6 +278,29 @@ func TestOpenGoesOnPastThinPool(t *testing.T) {
 	}, disk.Unreadable)
 	require.Equal(t, -1, indexPrefix(run.cmds(), "blockdev --setro /dev/vg0/IncusThinPool"))
 	require.Equal(t, -1, indexPrefix(run.cmds(), "blockdev --setro /dev/vg0/data"))
+}
+
+// An LV extended into extents that don't follow on has several segments: it is still one LV.
+func TestOpenLVWithSegmentsOnce(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	run.answers["lvs "] = "  root|/dev/vg0/root|active|linear\n  root|/dev/vg0/root|active|linear\n" //nolint:dupword
+
+	disk, err := m.Open(context.Background(), testSerial, testPass)
+	require.NoError(t, err)
+	require.Len(t, disk.Filesystems, 1)
+
+	mounts := 0
+
+	for _, cmd := range run.cmds() {
+		if strings.HasPrefix(cmd, "mount ") && strings.Contains(cmd, " /dev/vg0/root ") {
+			mounts++
+		}
+	}
+
+	require.Equal(t, 1, mounts)
+	require.Contains(t, run.cmds(), "lvs --noheadings --separator | -o lv_name,lv_path,lv_active,lv_layout vg0", "per-LV fields only")
 }
 
 func TestFailedActivationIsUndone(t *testing.T) {
