@@ -56,6 +56,15 @@ passphrase will be asked again at the next boot, which also tries the re-seal ag
 Once the cause is fixed, you can also use the API to force-reset the TPM encryption
 bindings, which reboots the system.
 
+Before asking for the passphrase, the boot screen and the serial console say why the TPM
+won't unlock the drive when the cause can be told from the boot's measurements: the Secure
+Boot state or keys changed, a different OS image was started, or the boot parameters
+changed. Each message gives the way back, such as setting the firmware back or picking the
+sealed version in the boot menu, before falling back to the passphrase. A healthy boot prints
+nothing. A cleared or replaced TPM can't be told apart from a healthy boot this early, so no
+message is shown then: type the recovery passphrase and reset the TPM bindings. See
+[Why the TPM refused](security.md#why-the-tpm-refused).
+
 ```{note}
 When manually entering the recovery, keep in mind that the keyboard
 layout is a traditional United States layout. A generated recovery
