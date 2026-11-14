@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -246,13 +247,19 @@ func TestAddTreeKeysLinksByDevice(t *testing.T) {
 
 	var buf strings.Builder
 
+	var st syscall.Stat_t
+
+	require.NoError(t, syscall.Stat(filepath.Join(dir, "a"), &st))
+
+	seen := map[string]uint64{}
 	tb := newTarball(&buf)
-	tb.devOf = func(name string, _ uint64) uint64 {
-		if strings.HasPrefix(name, "backup/one") {
-			return 1
+	tb.devOf = func(name string, dev uint64) uint64 {
+		seen[name] = dev
+		if strings.HasPrefix(name, "backup/two") {
+			return dev + 1
 		}
 
-		return 2
+		return dev
 	}
 
 	require.NoError(t, tb.addTree(tree{dir: dir, prefix: "backup/one"}))
@@ -275,4 +282,5 @@ func TestAddTreeKeysLinksByDevice(t *testing.T) {
 
 	require.Equal(t, byte(tar.TypeReg), types["backup/two/a"], "the first file of the second tree is not a link into the first")
 	require.Equal(t, byte(tar.TypeLink), types["backup/two/b"])
+	require.Equal(t, st.Dev, seen["backup/one/a"], "the key holds the file's real device")
 }

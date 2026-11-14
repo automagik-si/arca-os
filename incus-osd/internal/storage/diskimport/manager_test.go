@@ -134,7 +134,7 @@ func newTest(t *testing.T) (*Manager, *fakeRunner, *fakeSystem, *fakeIncus) {
 		"blkid -p -s TYPE -o value /dev/vg0/root":  "btrfs",
 		"pvs ":              "  vg0\n",
 		"vgs ":              "  vg0\n",
-		"lvs ":              "  root|/dev/vg0/root|active\n",
+		"lvs ":              "  root|/dev/vg0/root|active|linear\n",
 		"blockdev --getro ": "1\n",
 	}, fail: map[string]bool{}}
 
@@ -147,6 +147,7 @@ func newTest(t *testing.T) (*Manager, *fakeRunner, *fakeSystem, *fakeIncus) {
 
 	m := buildManager(run, sys, incus, t.TempDir())
 	m.resolve = func(string) (string, error) { return testDev, nil }
+	m.exists = func(string) bool { return true }
 	m.udevRules = filepath.Join(t.TempDir(), "68-incus-os-import.rules")
 
 	return m, run, sys, incus

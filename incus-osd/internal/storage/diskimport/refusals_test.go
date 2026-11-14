@@ -245,15 +245,39 @@ func TestOpenSkipsInactiveLV(t *testing.T) {
 	t.Parallel()
 
 	m, run, _, _ := newTest(t)
-	run.answers["lvs "] = "  root|/dev/vg0/root|active\n  containers_web|/dev/vg0/containers_web|\n"
+	run.answers["lvs "] = "  root|/dev/vg0/root|active|linear\n  containers_web|/dev/vg0/containers_web||linear\n"
 	run.fail["blockdev --setro /dev/vg0/containers_web"] = true
 
 	disk, err := m.Open(context.Background(), testSerial, testPass)
 	require.NoError(t, err)
 	require.Len(t, disk.Filesystems, 1)
 	require.Equal(t, "vg0/root", disk.Filesystems[0].Name)
-	require.Contains(t, disk.Unreadable, "vg0/containers_web: not active (activation skip)")
+	require.Contains(t, disk.Unreadable, "vg0/containers_web: not active")
 	require.NotContains(t, run.cmds(), "blockdev --setro /dev/vg0/containers_web")
+}
+
+// The kernel refuses a thin pool in a read-only table: vgchange activates the rest, then fails.
+func TestOpenGoesOnPastThinPool(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	run.fail["vgchange -ay"] = true
+	run.answers["lvs "] = "  root|/dev/vg0/root|active|linear\n  IncusThinPool|/dev/vg0/IncusThinPool|active|thin-pool\n" +
+		"  containers_web|/dev/vg0/containers_web||thin\n  data|/dev/vg0/data|active|vdo-pool\n"
+	run.fail["blockdev --setro /dev/vg0/data"] = true
+	m.exists = func(path string) bool { return path != "/dev/vg0/data" }
+
+	disk, err := m.Open(context.Background(), testSerial, testPass)
+	require.NoError(t, err)
+	require.Len(t, disk.Filesystems, 1)
+	require.Equal(t, "vg0/root", disk.Filesystems[0].Name)
+	require.Equal(t, []string{
+		"vg0/IncusThinPool: thin pool (not a block device)",
+		"vg0/containers_web: thin volume (its pool cannot run read-only)",
+		"vg0/data: no device",
+	}, disk.Unreadable)
+	require.Equal(t, -1, indexPrefix(run.cmds(), "blockdev --setro /dev/vg0/IncusThinPool"))
+	require.Equal(t, -1, indexPrefix(run.cmds(), "blockdev --setro /dev/vg0/data"))
 }
 
 func TestFailedActivationIsUndone(t *testing.T) {
@@ -261,6 +285,7 @@ func TestFailedActivationIsUndone(t *testing.T) {
 
 	m, run, _, _ := newTest(t)
 	run.fail["vgchange -ay"] = true
+	run.fail["lvs "] = true
 
 	_, err := m.Open(context.Background(), testSerial, testPass)
 	require.Error(t, err)
