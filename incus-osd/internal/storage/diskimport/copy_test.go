@@ -235,3 +235,44 @@ func TestUnshift(t *testing.T) {
 	binary.LittleEndian.PutUint32(acl[8:], 1001000)
 	require.Equal(t, uint32(1000), binary.LittleEndian.Uint32(unshiftACL(acl, set)[8:]))
 }
+
+// Two trees from different file systems may hold the same inode number for different files.
+func TestAddTreeKeysLinksByDevice(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a"), "same inode")
+	require.NoError(t, os.Link(filepath.Join(dir, "a"), filepath.Join(dir, "b")))
+
+	var buf strings.Builder
+
+	tb := newTarball(&buf)
+	tb.devOf = func(name string, _ uint64) uint64 {
+		if strings.HasPrefix(name, "backup/one") {
+			return 1
+		}
+
+		return 2
+	}
+
+	require.NoError(t, tb.addTree(tree{dir: dir, prefix: "backup/one"}))
+	require.NoError(t, tb.addTree(tree{dir: dir, prefix: "backup/two"}))
+	require.NoError(t, tb.close())
+
+	types := map[string]byte{}
+	tr := tar.NewReader(strings.NewReader(buf.String()))
+
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+
+		types[hdr.Name] = hdr.Typeflag
+	}
+
+	require.Equal(t, byte(tar.TypeReg), types["backup/two/a"], "the first file of the second tree is not a link into the first")
+	require.Equal(t, byte(tar.TypeLink), types["backup/two/b"])
+}

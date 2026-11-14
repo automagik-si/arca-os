@@ -134,7 +134,7 @@ func newTest(t *testing.T) (*Manager, *fakeRunner, *fakeSystem, *fakeIncus) {
 		"blkid -p -s TYPE -o value /dev/vg0/root":  "btrfs",
 		"pvs ":              "  vg0\n",
 		"vgs ":              "  vg0\n",
-		"lvs ":              "  root /dev/vg0/root\n",
+		"lvs ":              "  root|/dev/vg0/root|active\n",
 		"blockdev --getro ": "1\n",
 	}, fail: map[string]bool{}}
 

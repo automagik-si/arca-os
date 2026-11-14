@@ -239,3 +239,35 @@ func TestHardLinksKeyedByDevice(t *testing.T) {
 	require.True(t, linked)
 	require.Equal(t, "backup/volume/a", first)
 }
+
+// Incus and lvm2 thin snapshots set activation skip, so an LV may have no device node.
+func TestOpenSkipsInactiveLV(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	run.answers["lvs "] = "  root|/dev/vg0/root|active\n  containers_web|/dev/vg0/containers_web|\n"
+	run.fail["blockdev --setro /dev/vg0/containers_web"] = true
+
+	disk, err := m.Open(context.Background(), testSerial, testPass)
+	require.NoError(t, err)
+	require.Len(t, disk.Filesystems, 1)
+	require.Equal(t, "vg0/root", disk.Filesystems[0].Name)
+	require.Contains(t, disk.Unreadable, "vg0/containers_web: not active (activation skip)")
+	require.NotContains(t, run.cmds(), "blockdev --setro /dev/vg0/containers_web")
+}
+
+func TestFailedActivationIsUndone(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	run.fail["vgchange -ay"] = true
+
+	_, err := m.Open(context.Background(), testSerial, testPass)
+	require.Error(t, err)
+
+	cmds := run.cmds()
+	deactivate := indexPrefix(cmds, "vgchange -an")
+	require.NotEqual(t, -1, deactivate, "a half-done activation is undone")
+	require.Less(t, deactivate, indexPrefix(cmds, "cryptsetup close"), "before the map closes")
+	require.Empty(t, m.State().Disks)
+}
