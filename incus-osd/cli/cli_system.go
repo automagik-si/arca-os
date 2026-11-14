@@ -297,7 +297,37 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 					endpoint:    "system/storage",
 				}
 
-				return []*cobra.Command{cleanupRootCmd.command(), createVolumeCmd.command(), deletePoolCmd.command(), deleteVolumeCmd.command(), encryptDriveCmd.command(), importEncryptedDriveCmd.command(), importPoolCmd.command(), wipeDriveCmd.command(), scrubPoolCmd.command(), trimPoolCmd.command(), rescanSCSICmd.command()}
+				// Drives opened read-only for import.
+				importShowCmd := cmdGenericShow{
+					os:          c.os,
+					name:        "import-show",
+					description: "Show the drives opened for import and the copies",
+					endpoint:    "system/storage/import",
+				}
+
+				importCmds := make([]*cobra.Command, 0, 5)
+				importCmds = append(importCmds, importShowCmd.command())
+
+				for _, action := range []struct{ name, description, confirm string }{
+					{"open", "Open a drive read-only for import", ""},
+					{"copy", "Copy an instance, volume or folder of an import drive into a pool", ""},
+					{"close", "Close an import drive", ""},
+					{"convert", "Wipe an import drive and make it a native pool", "wipe the drive and make it a pool"},
+				} {
+					cmd := cmdGenericRun{
+						os:          c.os,
+						name:        "import-" + action.name,
+						description: action.description,
+						action:      action.name,
+						endpoint:    "system/storage/import",
+						hasData:     true,
+						confirm:     action.confirm,
+					}
+
+					importCmds = append(importCmds, cmd.command())
+				}
+
+				return append([]*cobra.Command{cleanupRootCmd.command(), createVolumeCmd.command(), deletePoolCmd.command(), deleteVolumeCmd.command(), encryptDriveCmd.command(), importEncryptedDriveCmd.command(), importPoolCmd.command(), wipeDriveCmd.command(), scrubPoolCmd.command(), trimPoolCmd.command(), rescanSCSICmd.command()}, importCmds...)
 			},
 		},
 		{
