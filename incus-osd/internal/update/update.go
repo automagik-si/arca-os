@@ -481,6 +481,11 @@ func fetchAndApplyUpdate(ctx context.Context, s *state.State, t *tui.TUI, p prov
 		if errors.Is(err, providers.ErrNoUpdateAvailable) {
 			slog.DebugContext(ctx, ut.String()+" update provider doesn't currently have any update", "channel", s.System.Update.Config.Channel)
 
+			if ut == TypeOS {
+				s.System.Update.State.AvailableVersion = ""
+				s.System.Update.State.UpdateAvailable = false
+			}
+
 			return "", nil
 		}
 
@@ -498,21 +503,11 @@ func fetchAndApplyUpdate(ctx context.Context, s *state.State, t *tui.TUI, p prov
 			return "", errors.New("installed Secure Boot keys version (" + s.SecureBoot.Version + ") is newer than available update (" + update.Version() + "); skipping")
 		}
 	case TypeOS:
-		if osUpdateHeld(ctx, s, update.Version()) {
-			return "", nil
-		}
+		var skip bool
 
-		// If we're running from the backup image don't attempt to re-update to a broken version.
-		if !s.System.Update.State.NeedsReboot && s.OS.RunningFromBackup() && s.OS.NextRelease == update.Version() {
-			slog.WarnContext(ctx, "Latest "+s.OS.Name+" image version "+s.OS.NextRelease+" has been identified as problematic, skipping update")
-
-			return "", nil
-		}
-
-		updateNeeded = update.Version() != s.OS.RunningRelease && update.Version() != s.OS.NextRelease
-
-		if updateNeeded && s.OS.RunningRelease != update.Version() && !update.IsNewerThan(s.OS.RunningRelease) {
-			return "", errors.New("local " + s.OS.Name + " version (" + s.OS.RunningRelease + ") is newer than available update (" + update.Version() + "); skipping")
+		updateNeeded, skip, err = osUpdateNeeded(ctx, s, update)
+		if err != nil || skip {
+			return "", err
 		}
 	case TypeApplication:
 		app, err := applications.Load(ctx, s, appName)
@@ -561,6 +556,34 @@ func fetchAndApplyUpdate(ctx context.Context, s *state.State, t *tui.TUI, p prov
 	}
 
 	return "", nil
+}
+
+// osUpdateNeeded decides whether the offered OS version is applied or skipped, and records it as the channel's newest.
+func osUpdateNeeded(ctx context.Context, s *state.State, update providers.CommonUpdate) (bool, bool, error) {
+	// It's only available once found newer and not yet applied.
+	s.System.Update.State.AvailableVersion = update.Version()
+	s.System.Update.State.UpdateAvailable = false
+
+	if osUpdateHeld(ctx, s, update.Version()) {
+		return false, true, nil
+	}
+
+	// If we're running from the backup image don't attempt to re-update to a broken version.
+	if !s.System.Update.State.NeedsReboot && s.OS.RunningFromBackup() && s.OS.NextRelease == update.Version() {
+		slog.WarnContext(ctx, "Latest "+s.OS.Name+" image version "+s.OS.NextRelease+" has been identified as problematic, skipping update")
+
+		return false, true, nil
+	}
+
+	updateNeeded := update.Version() != s.OS.RunningRelease && update.Version() != s.OS.NextRelease
+
+	if updateNeeded && s.OS.RunningRelease != update.Version() && !update.IsNewerThan(s.OS.RunningRelease) {
+		return false, false, errors.New("local " + s.OS.Name + " version (" + s.OS.RunningRelease + ") is newer than available update (" + update.Version() + "); skipping")
+	}
+
+	s.System.Update.State.UpdateAvailable = updateNeeded
+
+	return updateNeeded, false, nil
 }
 
 func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update providers.CommonUpdate, appName string) (string, error) {

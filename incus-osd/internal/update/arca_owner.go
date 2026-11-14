@@ -37,6 +37,10 @@ type Summary struct {
 	TrustFailures  int
 	TrustEscalated bool
 
+	// The channel's newest OS version as of LastCheck, and whether that check found it to apply.
+	AvailableVersion string
+	UpdateAvailable  bool
+
 	// Status is one line for the screen.
 	Status string
 }
@@ -70,6 +74,9 @@ func Summarize(s *state.State, now time.Time) Summary {
 		PresentedCA:    st.PresentedCAFingerprint,
 		TrustFailures:  st.TrustFailures,
 		TrustEscalated: st.TrustEscalated,
+
+		AvailableVersion: st.AvailableVersion,
+		UpdateAvailable:  st.UpdateAvailable,
 	}
 
 	for _, v := range FailedVersions(s) {
