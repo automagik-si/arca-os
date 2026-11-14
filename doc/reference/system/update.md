@@ -63,6 +63,17 @@ config:
 
 See [automatic updates and rollback](arca-updates.md): restarts in the window, the health bake, rollback and the failed-version list.
 
+## Available version
+
+After each OS update check, `GET /1.0/system/update` reports what the channel offers under `state`:
+
+* `available_version`: the newest OS version in the channel, as of `last_check`. It's empty when no successful check has seen one, and a successful check of a channel that holds no OS image clears it.
+* `update_available`: whether that check found the version newer than the running one and not yet applied. A version that failed before, or one older than the running version, isn't available.
+
+A failed check changes neither field: they keep the values of the last successful OS check, and `last_error_kind` says why the latest check failed. Secure Boot and application checks don't change them.
+
+The console's updates page shows the version next to `Available`, with "Behind the channel" when `update_available` is set, "Waiting for a restart" when the version is installed but not running yet, "Up to date" when the system runs it, and "No update to apply" otherwise. `incus admin os system update show` prints the same.
+
 ## Update check failures
 
 When an update check fails, `GET /1.0/system/update` reports why under `state`:
