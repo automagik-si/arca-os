@@ -36,6 +36,7 @@ mkdir -p "$t/bin"
 cat >"$t/bin/fstrim" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$T/fstrim.log"
+[ ! -e "$T/fstrim-fails" ] || { echo "fstrim: /: FITRIM ioctl failed" >&2; exit 1; }
 echo "/: 1 GiB (1073741824 bytes) trimmed on /dev/sda2"
 EOF
 chmod +x "$t/bin/fstrim"
@@ -45,7 +46,7 @@ export ARCA_WORK_DIR=$W ARCA_OS_ARTIFACTS=$A
 
 # setup: two work trees, four versions, latest at the newest, and files that are not versions.
 setup() {
-	rm -rf "$t/srv" "$t/outside" "$t/fstrim.log"
+	rm -rf "$t/srv" "$t/outside" "$t/fstrim.log" "$t/fstrim-fails"
 	mkdir -p "$W/wt-a/.cache" "$W/other" "$A" "$t/outside"
 	echo x >"$W/wt-a/file"
 	echo x >"$W/wt-a/.cache/pkg"
@@ -119,6 +120,24 @@ check no-prune "exit 0" [ "$rc" -eq 0 ]
 check no-prune "keeps every version" left $'202611100001\n202611100002\n202611100003\n202611100004\n202611100005.tmp\nlatest\nnotes'
 check no-prune "still trims" trimmed
 
+# Autopublish's builds (marked autopublish.json, built with --no-latest) are left to its own retention.
+setup
+echo '{}' >"$A/202611100002/autopublish.json"
+echo '{}' >"$A/202611100004/autopublish.json"
+ln -sfn 202611100003 "$A/latest"
+run "$cb" --keep-artifacts 1
+check autopublish "exit 0" [ "$rc" -eq 0 ]
+check autopublish "keeps an older autopublish build" has 'artifact: keep 202611100002 (autopublish)'
+check autopublish "keeps the newest autopublish build" has 'artifact: keep 202611100004 (autopublish)'
+check autopublish "an autopublish build takes no retention slot" has 'artifact: keep 202611100003 (latest)'
+check autopublish "removes only the unmarked older build" left $'202611100002\n202611100003\n202611100004\n202611100005.tmp\nlatest\nnotes'
+check autopublish "names that removal" has 'artifact: remove 202611100001'
+
+setup
+touch "$t/fstrim-fails"
+run "$cb" --no-prune
+check trim-fails "a failed fstrim exits 1" [ "$rc" -eq 1 ]
+
 setup
 ln -s "$t/outside" "$W/escape"
 ln -s other "$W/alias"
@@ -127,7 +146,7 @@ for bad in '' . .. ../outside 'a/b' 'a b' escape alias; do
 	run "$cb" --work-tree "$bad"
 	check refuse "work tree '$bad' is refused with exit 2" [ "$rc" -eq 2 ]
 done
-for bad in 0 -1 x 2x ''; do
+for bad in 0 -1 x 2x '' 10000 99999999999999999999; do
 	run "$cb" --keep-artifacts "$bad"
 	check refuse "--keep-artifacts '$bad' is refused with exit 2" [ "$rc" -eq 2 ]
 done
@@ -204,6 +223,20 @@ check keep-tree "keeps the work tree" [ -d "$W/wt-a" ]
 check keep-tree "keeps the newest three" left $'202611100003\n202611100004\n202611100005.tmp\n202611100009\nlatest\nnotes'
 
 reset
+touch "$t/fstrim-fails"
+run "$bi" "$t/wt-a"
+check cleanup-failed "a failed cleanup after a good build exits 1" [ "$rc" -eq 1 ]
+check cleanup-failed "it says the build succeeded" grep -q 'the build succeeded (version 202611100009) but the cleanup failed' "$t/stderr"
+check cleanup-failed "the version just built is there" [ -d "$A/202611100009" ]
+
+reset
+echo '{}' >"$A/202611100001/autopublish.json"
+run "$bi" "$t/wt-a"
+check build-autopublish "exit 0" [ "$rc" -eq 0 ]
+check build-autopublish "keeps the autopublish build" has 'artifact: keep 202611100001 (autopublish)'
+check build-autopublish "prunes the unmarked ones only" left $'202611100001\n202611100004\n202611100005.tmp\n202611100009\nlatest\nnotes'
+
+reset
 mkdir -p "$W/wt-a"
 before=$(tree)
 run "$bi" "$t/wt-a" --dry-run
@@ -218,6 +251,9 @@ reset
 run "$bi" "$t/wt-a" --keep-artifacts 0
 check build-refuse "--keep-artifacts 0 is refused with exit 2" [ "$rc" -eq 2 ]
 check build-refuse "nothing is built" [ ! -e "$t/in-builder.log" ]
+run "$bi" "$t/wt-a" --keep-artifacts 99999999999999999999
+check build-refuse "an oversized --keep-artifacts is refused with exit 2" [ "$rc" -eq 2 ]
+check build-refuse "it builds nothing" [ ! -e "$t/in-builder.log" ]
 run "$bi" --project default "$t/wt-a"
 check build-refuse "a project outside arcaos-* is refused with exit 2" [ "$rc" -eq 2 ]
 
