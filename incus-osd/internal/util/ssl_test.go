@@ -2,6 +2,7 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,7 +13,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"math/big"
+	mrand "math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -404,4 +407,203 @@ func TestCertificateFingerprint(t *testing.T) {
 	require.Regexp(t, `^([0-9A-F]{2}:){31}[0-9A-F]{2}$`, fp)
 	require.Equal(t, strings.ToUpper(hex.EncodeToString(sum[:])), strings.ReplaceAll(fp, ":", ""))
 	require.Empty(t, CertificateFingerprint(nil))
+}
+
+// timedIdentity returns a leaf issued by parent that is valid only between notBefore and notAfter.
+func timedIdentity(t *testing.T, name string, parent *smimeIdentity, notBefore time.Time, notAfter time.Time) *smimeIdentity {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(7),
+		Subject:               pkix.Name{CommonName: name},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, parent.cert, key.Public(), parent.key)
+	require.NoError(t, err)
+
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	return &smimeIdentity{cert: cert, key: key}
+}
+
+// requireClean fails when err's text carries openssl's command line or a temporary path.
+func requireClean(t *testing.T, err error) {
+	t.Helper()
+
+	require.NotContains(t, err.Error(), "Failed to run")
+	require.NotContains(t, err.Error(), "-CAfile")
+	require.NotContains(t, err.Error(), os.TempDir())
+	require.NotContains(t, err.Error(), "\n")
+}
+
+func TestVerifySMIMECertificateValidity(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	expired := timedIdentity(t, "Expired leaf", expectedCA, time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour))
+	future := timedIdentity(t, "Future leaf", expectedCA, time.Now().Add(24*time.Hour), time.Now().Add(48*time.Hour))
+
+	for _, signer := range []*smimeIdentity{expired, future} {
+		message := signSMIME(t, "signed content", []*smimeIdentity{signer}, []*smimeIdentity{expectedCA})
+
+		_, err := VerifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, message)
+
+		var certErr *CertificateError
+
+		require.ErrorAs(t, err, &certErr, signer.cert.Subject.CommonName)
+		require.NotErrorAs(t, err, new(*SignatureError))
+		require.NotErrorAs(t, err, new(*TrustError))
+		requireClean(t, err)
+	}
+}
+
+func TestVerifySMIMECancelled(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 3, expectedCA, false)
+	message := signSMIME(t, "signed content", []*smimeIdentity{leaf}, []*smimeIdentity{expectedCA})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := VerifySMIMEWithRoot(ctx, root.cert, []*x509.Certificate{expectedCA.cert}, message)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorAs(t, err, new(*SignatureError))
+	require.NotErrorAs(t, err, new(*TrustError))
+}
+
+func TestVerifySMIMEWithoutOpenSSL(t *testing.T) { //nolint:paralleltest // sets PATH
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 3, expectedCA, false)
+	message := signSMIME(t, "signed content", []*smimeIdentity{leaf}, []*smimeIdentity{expectedCA})
+
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := VerifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, message)
+	require.ErrorIs(t, err, exec.ErrNotFound)
+	require.NotErrorAs(t, err, new(*SignatureError))
+	require.NotErrorAs(t, err, new(*TrustError))
+	requireClean(t, err)
+}
+
+func TestVerifySMIMEErrorsAreShort(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 3, expectedCA, false)
+	foreignCA := newSMIMEIdentity(t, "Foreign CA", 2, newSMIMEIdentity(t, "Foreign root", 1, nil, true), true)
+	foreignLeaf := newSMIMEIdentity(t, "Foreign leaf", 3, foreignCA, false)
+
+	message := signSMIME(t, "signed content", []*smimeIdentity{leaf}, []*smimeIdentity{expectedCA})
+
+	for _, m := range [][]byte{
+		bytes.Replace(message, []byte("signed content"), []byte("signed contenT"), 1),
+		[]byte("not a message\n"),
+		signSMIME(t, "signed content", []*smimeIdentity{foreignLeaf}, []*smimeIdentity{foreignCA}),
+	} {
+		_, err := VerifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, m)
+		require.Error(t, err)
+		requireClean(t, err)
+	}
+}
+
+func TestVerifySMIMEForgedIssuerName(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	foreignRoot := newSMIMEIdentity(t, "Foreign root", 1, nil, true)
+	fakeCA := newSMIMEIdentity(t, "Expected CA", 2, foreignRoot, true)
+	fakeLeaf := newSMIMEIdentity(t, "Fake leaf", 1, fakeCA, false)
+
+	require.Equal(t, expectedCA.cert.RawSubject, fakeCA.cert.RawSubject)
+
+	// The message carries the genuine CA next to the one that really issued the signer.
+	for _, chain := range [][]*smimeIdentity{{expectedCA, fakeCA}, {fakeCA, expectedCA}} {
+		message := signSMIME(t, "signed content", []*smimeIdentity{fakeLeaf}, chain)
+
+		_, err := VerifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, message)
+
+		var trustErr *TrustError
+
+		require.ErrorAs(t, err, &trustErr)
+		require.Equal(t, CertificateFingerprint(fakeCA.cert), trustErr.PresentedFingerprint)
+		require.NotEqual(t, trustErr.ExpectedFingerprint, trustErr.PresentedFingerprint)
+	}
+}
+
+func TestVerifySMIMEDamagedIsNotTrust(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	expectedCA := newSMIMEIdentity(t, "Expected CA", 2, root, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 3, expectedCA, false)
+	message := signSMIME(t, `{"updates":[]}`, []*smimeIdentity{leaf}, []*smimeIdentity{expectedCA})
+
+	const base64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+	// Damage a correctly signed message in a few random places, reproducibly.
+	r := mrand.New(mrand.NewSource(1)) //nolint:gosec // reproducible damage, not secrets
+	damagedChains := 0
+
+	for range 300 {
+		m := slices.Clone(message)
+		for range 1 + r.Intn(3) {
+			m[r.Intn(len(m))] = base64Chars[r.Intn(len(base64Chars))]
+		}
+
+		_, err := VerifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{expectedCA.cert}, m)
+		if err == nil {
+			continue
+		}
+
+		require.NotErrorAs(t, err, new(*TrustError), "damaged message reported as untrusted: %v", err)
+
+		if errors.Is(err, ErrSMIMEDamaged) {
+			damagedChains++
+		}
+	}
+
+	// Some of the damage hit the certificates, which openssl reports like an unknown issuer.
+	require.Positive(t, damagedChains)
+}
+
+func TestVerifySMIMEUpdateCAOutsideRoot(t *testing.T) {
+	t.Parallel()
+	requireOpenSSL(t)
+
+	root := newSMIMEIdentity(t, "Root", 1, nil, true)
+	otherRoot := newSMIMEIdentity(t, "Other root", 1, nil, true)
+	configuredCA := newSMIMEIdentity(t, "Configured CA", 2, otherRoot, true)
+	leaf := newSMIMEIdentity(t, "Leaf", 3, configuredCA, false)
+
+	// The configured update CA itself isn't under the trusted root.
+	message := signSMIME(t, "signed content", []*smimeIdentity{leaf}, []*smimeIdentity{configuredCA})
+
+	_, err := VerifySMIMEWithRoot(t.Context(), root.cert, []*x509.Certificate{configuredCA.cert}, message)
+
+	var trustErr *TrustError
+
+	require.ErrorAs(t, err, &trustErr)
+	require.Equal(t, CertificateFingerprint(configuredCA.cert), trustErr.PresentedFingerprint)
 }
