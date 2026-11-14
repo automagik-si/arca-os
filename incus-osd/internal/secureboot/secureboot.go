@@ -29,6 +29,9 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
+// luksVolumePartitions returns the LUKS volumes by name; tests replace it.
+var luksVolumePartitions = util.GetLUKSVolumePartitions
+
 var systemdStubGUID = [16]byte{0xf8, 0xd1, 0xc5, 0x55, 0xcd, 0x4, 0xb5, 0x46, 0x8a, 0x20, 0xe5, 0x6c, 0xbb, 0x30, 0x52, 0xd0}
 
 // Enabled checks if Secure Boot is currently enabled.
@@ -225,7 +228,7 @@ func UpdatePCR7Binding(ctx context.Context) error {
 		return err
 	}
 
-	luksVolumes, err := util.GetLUKSVolumePartitions(ctx)
+	luksVolumes, err := luksVolumePartitions(ctx)
 	if err != nil {
 		return err
 	}

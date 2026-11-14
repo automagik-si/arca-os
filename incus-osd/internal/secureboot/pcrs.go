@@ -197,9 +197,12 @@ func pcrBindingArgument(pcr4 []byte, pcr7 []byte, pcr12 []byte) string {
 	return arg + "+15:sha256=" + strings.Repeat("0", 64)
 }
 
+// pcrDir holds the TPM's SHA-256 PCR values, one file per index; tests replace it.
+var pcrDir = "/sys/class/tpm/tpm0/pcr-sha256/"
+
 // ReadPCR returns the current PCR value from the TPM.
 func ReadPCR(index string) ([]byte, error) {
-	pcrFile, err := os.Open("/sys/class/tpm/tpm0/pcr-sha256/" + index)
+	pcrFile, err := os.Open(pcrDir + index)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +214,7 @@ func ReadPCR(index string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	} else if numBytes != 64 {
-		return nil, fmt.Errorf("only read %d bytes from /sys/class/tpm/tpm0/pcr-sha256/"+index, numBytes)
+		return nil, fmt.Errorf("only read %d bytes from "+pcrDir+index, numBytes)
 	}
 
 	return hex.DecodeString(string(actualPCRBuf))
