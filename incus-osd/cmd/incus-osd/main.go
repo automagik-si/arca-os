@@ -510,6 +510,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		slog.DebugContext(ctx, "Platform keyring entry", "name", key.Description, "key", key.Fingerprint)
 	}
 
+	// Heal a missing, unreadable or stale TPM seal state record before any seal below rewrites it.
+	repairSealState(ctx)
+
 	// If no encryption recovery keys have been defined for the root and swap partitions, this is a fresh install.
 	// Generate recovery keys and ensure we're binding against PCR15 to mitigate an attacker from bypassing the
 	// TPM encryption with a malicious root partition.
@@ -613,9 +616,6 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 			}
 		}
 	}
-
-	// Disks sealed before the seal state record existed get one, once the TPM unlocked them.
-	recordMissingSealState(ctx)
 
 	// Enable swap, if present. Swap isn't normally activated until after exiting the initrd, and because we're not able to
 	// rely on the TPM to automatically unlock that partition, systemd cannot enable swap for us during system boot.
@@ -1393,14 +1393,9 @@ func startApplications(ctx context.Context, s *state.State) error {
 	return nil
 }
 
-// recordMissingSealState writes the TPM seal state record when there is none and the TPM
-// unlocked the volumes on this boot, as the current measurements are then the sealed ones.
-func recordMissingSealState(ctx context.Context) {
-	_, err := os.Stat(secureboot.SealStatePath)
-	if !os.IsNotExist(err) {
-		return
-	}
-
+// repairSealState rewrites the TPM seal state record when the TPM unlocked the volumes on this
+// boot and the record is missing, unreadable or no longer matches the measurements.
+func repairSealState(ctx context.Context) {
 	tpmAutoUnlocked, err := util.TPMAutoUnlocked()
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to read the TPM unlock state", "err", err)
@@ -1408,7 +1403,5 @@ func recordMissingSealState(ctx context.Context) {
 		return
 	}
 
-	if tpmAutoUnlocked {
-		secureboot.RecordSealState("", nil, nil, nil)
-	}
+	secureboot.RepairSealState(tpmAutoUnlocked)
 }

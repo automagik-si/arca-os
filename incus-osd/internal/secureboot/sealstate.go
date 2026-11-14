@@ -62,6 +62,34 @@ func RecordSealState(ukiFile string, pcr4 []byte, pcr7 []byte, pcr12 []byte) {
 	}
 }
 
+// RepairSealState rewrites a missing, unreadable or stale record from the current measurements,
+// but only when the TPM unlocked the volumes on this boot, as these are then the sealed ones.
+// Seals made later on this boot write their own record over it.
+func RepairSealState(tpmAutoUnlocked bool) {
+	if !tpmAutoUnlocked {
+		return
+	}
+
+	fresh := buildSealState("", nil, nil, nil)
+	current := Measurements{
+		SecureBootEnabled: fresh.SecureBootEnabled,
+		SetupMode:         fresh.SetupMode,
+		PCR4:              fresh.PCR4,
+		PCR7:              fresh.PCR7,
+		PCR12:             fresh.PCR12,
+	}
+
+	record, err := ReadSealState(SealStatePath)
+	if err == nil && DiagnoseSeal(record, current) == SealMatch {
+		return
+	}
+
+	err = writeSealState(SealStatePath, fresh)
+	if err != nil {
+		slog.Warn("Failed to repair the TPM seal state", "err", err)
+	}
+}
+
 // buildSealState gathers the seal state record from the given values and the firmware.
 func buildSealState(ukiFile string, pcr4 []byte, pcr7 []byte, pcr12 []byte) SealState {
 	if ukiFile == "" {
@@ -153,6 +181,17 @@ func ReadSealState(path string) (*SealState, error) {
 		return nil, errors.New("seal state record has no version")
 	}
 
+	// The ESP isn't authenticated and the record reaches the console, so only plain values pass.
+	for _, value := range []string{state.PCR4, state.PCR7, state.PCR12} {
+		if value != "" && !isPCRHex(value) {
+			return nil, errors.New("seal state record has a malformed PCR value")
+		}
+	}
+
+	if strings.Trim(state.UKIVersion, "0123456789") != "" || len(state.UKIVersion) > 32 {
+		return nil, errors.New("seal state record has a malformed version")
+	}
+
 	return state, nil
 }
 
@@ -185,13 +224,18 @@ func pcrFile(path string) string {
 	}
 
 	value := strings.ToLower(strings.TrimSpace(string(content)))
-
-	_, err = hex.DecodeString(value)
-	if err != nil || len(value) != 64 {
+	if !isPCRHex(value) {
 		return ""
 	}
 
 	return value
+}
+
+// isPCRHex reports whether a value is a SHA-256 PCR in hex.
+func isPCRHex(value string) bool {
+	_, err := hex.DecodeString(value)
+
+	return err == nil && len(value) == 64
 }
 
 // SealCause is why the boot's measurements no longer match the seal state record.

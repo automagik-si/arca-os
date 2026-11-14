@@ -106,6 +106,70 @@ func TestRecordSealStateWriteFailure(t *testing.T) { //nolint:paralleltest // re
 	}
 }
 
+func TestRepairSealState(t *testing.T) { //nolint:paralleltest // replaces package readers
+	stubSealReaders(t, map[string][]byte{"4": bytes.Repeat([]byte{0xAA}, 32), "7": bytes.Repeat([]byte{0xBB}, 32), "12": bytes.Repeat([]byte{0xCC}, 32)}, map[string][]byte{"SecureBoot": {0}, "SetupMode": {1}})
+
+	SealStatePath = filepath.Join(t.TempDir(), "arca-tpm-seal.json")
+	matching := `{"version":1,"uki_version":"1","secure_boot_enabled":false,"setup_mode":true,"pcr4":"` + pcrA + `","pcr7":"` + pcrB + `","pcr12":"` + pcrC + `","sealed_at":"x"}`
+	stale := strings.Replace(matching, pcrC, pcrA, 1)
+
+	tests := []struct {
+		name     string
+		record   string
+		unlocked bool
+		rewrite  bool
+	}{
+		{"missing", "", true, true},
+		{"unreadable", "{", true, true},
+		{"stale", stale, true, true},
+		{"matching", matching, true, false},
+		{"stale but the TPM didn't unlock", stale, false, false},
+	}
+
+	for _, tt := range tests {
+		_ = os.Remove(SealStatePath)
+
+		if tt.record != "" {
+			err := os.WriteFile(SealStatePath, []byte(tt.record), 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		RepairSealState(tt.unlocked)
+
+		raw, _ := os.ReadFile(SealStatePath)
+		rewritten := strings.Contains(string(raw), "2026-11-14T11:00:00Z")
+
+		if rewritten != tt.rewrite {
+			t.Fatalf("%s: rewritten %v, want %v: %s", tt.name, rewritten, tt.rewrite, raw)
+		}
+	}
+}
+
+func TestReadSealStateRejectsMalformed(t *testing.T) {
+	t.Parallel()
+
+	for name, record := range map[string]string{
+		"escape in a pcr":     `{"version":1,"pcr7":"\u001b[2J` + pcrB[:60] + `"}`,
+		"short pcr":           `{"version":1,"pcr4":"abcd"}`,
+		"escape in a version": `{"version":1,"uki_version":"1\u001b[31m"}`,
+		"no version":          `{"pcr4":"` + pcrA + `"}`,
+	} {
+		path := filepath.Join(t.TempDir(), "arca-tpm-seal.json")
+
+		err := os.WriteFile(path, []byte(record), 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = ReadSealState(path)
+		if err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}
+
 func TestReadMeasurements(t *testing.T) {
 	t.Parallel()
 
