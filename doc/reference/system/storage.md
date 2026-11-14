@@ -286,7 +286,8 @@ Opening a drive refuses the boot drive, pool members, remote drives, encrypted d
 serials, and any drive that is mounted, held by another device or given to an instance. Before anything is read, the
 drive and its partitions are set read-only in the kernel; LUKS is opened `--readonly`, LVM is activated read-only with
 read-only metadata, file systems are mounted read-only without journal replay, and zfs pools are imported with
-`readonly=on`. The passphrase of a LUKS layer (or of an encrypted zfs dataset) is given on the command's standard input
+`readonly=on`. The kernel cannot run an LVM thin pool read-only, so thin volumes (and logical volumes that are not
+active) are listed as unreadable while the rest of the drive opens. The passphrase of a LUKS layer (or of an encrypted zfs dataset) is given on the command's standard input
 only, and is never stored or logged.
 
 ```
