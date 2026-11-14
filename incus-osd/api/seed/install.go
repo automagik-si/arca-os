@@ -11,11 +11,15 @@ type Install struct {
 	Target                   *InstallTarget   `json:"target"                               yaml:"target"`                               // Optional selector for the target install disk; if not set, expect a single drive to be present.
 }
 
-// InstallSecurity defines a set of mutually exclusive options that allow IncusOS to run in a degraded security state.
-// !!THESE OPTIONS WILL REDUCE THE SYSTEM'S SECURITY COMPARED TO USING PROPERLY CONFIGURED SECURE BOOT AND A TPM!!
+// InstallSecurity defines a set of mutually exclusive options that allow IncusOS to run in a degraded security state,
+// and how the recovery passphrase is handed over on first boot.
+// !!THE MISSING_* OPTIONS WILL REDUCE THE SYSTEM'S SECURITY COMPARED TO USING PROPERLY CONFIGURED SECURE BOOT AND A TPM!!
 type InstallSecurity struct {
 	MissingTPM        bool `json:"missing_tpm"         yaml:"missing_tpm"`         // If true, and only if no physical TPM is present, allow fallback to swtpm-backed TPM implementation.
 	MissingSecureBoot bool `json:"missing_secure_boot" yaml:"missing_secure_boot"` // If true, and only if Secure Boot is in a disabled state, allow fallback to booting without Secure Boot checks.
+
+	// If true, first boot shows the recovery passphrase for a short time without waiting for the owner to confirm it.
+	RecoveryPassphraseAcknowledged bool `json:"recovery_passphrase_acknowledged" yaml:"recovery_passphrase_acknowledged"`
 }
 
 // InstallTarget defines options used to select the target install disk.
