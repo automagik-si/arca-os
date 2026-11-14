@@ -18,6 +18,7 @@
 # not started).
 # The whole run holds the builder lock that in-builder.sh takes (see there),
 # so a cleanup never races another build or a VM test.
+# ARCA_IN_BUILDER overrides the in-builder.sh it runs (tests).
 #
 # Exit codes: the build's on a failed build; otherwise 0, 1 when the cleanup
 # fails, or 2 when refused (usage, bad project, bad retention).
@@ -32,7 +33,7 @@ keep=2
 keep_tree=0
 dry=0
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 log() { printf 'build-image: %s\n' "$*" >&2; }
 die() { printf 'build-image: %s\n' "$*" >&2; exit 1; }
 refuse() { printf 'build-image: refused: %s\n' "$*" >&2; exit 2; }
