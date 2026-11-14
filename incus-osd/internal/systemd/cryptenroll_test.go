@@ -14,17 +14,24 @@ import (
 
 // stubTools puts fake systemd-cryptenroll and cryptsetup on PATH, each logging one
 // line per call: its name, its arguments, then NEWPASSWORD or its stdin after a "|".
-func stubTools(t *testing.T) (string, func() []string) {
+// The returned slots file lists one key per line; cryptsetup removes the first line
+// holding its key, or exits 2 when none does.
+func stubTools(t *testing.T) (string, func() []string, string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls.log")
+	slots := filepath.Join(dir, "slots")
 
-	for _, name := range []string{"systemd-cryptenroll", "cryptsetup"} {
-		script := "#!/bin/sh\nsecret=\"$NEWPASSWORD\"\n[ \"$0\" = \"" + filepath.Join(dir, "cryptsetup") + "\" ] && secret=\"$(cat)\"\n" +
-			"echo \"$(basename \"$0\") $*|$secret\" >> " + log + "\n"
+	scripts := map[string]string{
+		"systemd-cryptenroll": "secret=\"$NEWPASSWORD\"\necho \"systemd-cryptenroll $*|$secret\" >> " + log + "\n",
+		"cryptsetup": "secret=\"$(cat)\"\necho \"cryptsetup $*|$secret\" >> " + log + "\n" +
+			"grep -qxF \"$secret\" " + slots + " || exit 2\n" +
+			"awk -v k=\"$secret\" '!gone && $0 == k { gone = 1; next } { print }' " + slots + " > " + slots + ".new && mv " + slots + ".new " + slots + "\n",
+	}
 
-		err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700) //nolint:gosec
+	for name, body := range scripts {
+		err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o700) //nolint:gosec
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,11 +55,11 @@ func stubTools(t *testing.T) (string, func() []string) {
 		}
 
 		return strings.Split(strings.TrimSpace(string(body)), "\n")
-	}
+	}, slots
 }
 
 func TestGenerateRecoveryKeys(t *testing.T) { //nolint:paralleltest // sets PATH and the keys directory
-	keys, calls := stubTools(t)
+	keys, calls, _ := stubTools(t)
 
 	s := &state.State{}
 	s.System.Security.State.EncryptionRecoveryKeysRetrieved = true
@@ -111,11 +118,17 @@ func TestGenerateRecoveryKeys(t *testing.T) { //nolint:paralleltest // sets PATH
 }
 
 func TestWipeAllRecoveryKeys(t *testing.T) { //nolint:paralleltest // sets PATH and the keys directory
-	keys, calls := stubTools(t)
+	keys, calls, slots := stubTools(t)
 
 	own := "abandon ability able about above absent absorb abstract"
 
 	err := os.WriteFile(filepath.Join(keys, "recovery.root.key"), []byte(own), 0o400)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The user key was enrolled twice, as a retried AddEncryptionKey leaves it.
+	err = os.WriteFile(slots, []byte("user-key!\n"+own+"\nuser-key!\n"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,12 +150,22 @@ func TestWipeAllRecoveryKeys(t *testing.T) { //nolint:paralleltest // sets PATH 
 		t.Fatal(err)
 	}
 
+	remove := "cryptsetup luksRemoveKey --batch-mode --key-file=- /dev/test-root|user-key!"
 	want := []string{
-		"cryptsetup luksRemoveKey --batch-mode --key-file=- /dev/test-root|user-key!",
+		remove, remove, remove,
 		"systemd-cryptenroll --unlock-key-file=" + filepath.Join(keys, "recovery.swap.key") + " --wipe-slot=password /dev/test-swap|",
 	}
 
 	if got := calls(); !slices.Equal(got, want) {
 		t.Fatalf("calls %q, want %q", got, want)
+	}
+
+	left, err := os.ReadFile(slots) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(left) != own+"\n" {
+		t.Fatalf("slots left %q, want only the volume's own passphrase", left)
 	}
 }

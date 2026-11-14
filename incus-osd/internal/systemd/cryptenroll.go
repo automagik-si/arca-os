@@ -25,6 +25,9 @@ var keysDir = "/var/lib/incus-os/keys"
 // luksVolumePartitions returns the LUKS volumes by name; tests replace it.
 var luksVolumePartitions = util.GetLUKSVolumePartitions
 
+// luks2KeySlots is the number of keyslots a LUKS2 header holds.
+const luks2KeySlots = 32
+
 // GenerateRecoveryKeys utilizes systemd-cryptenroll to generate recovery keys for the
 // root and swap LUKS volumes. The logic depends on an existing tpm2-backed key being
 // enrolled and accessible, which should be the case on first boot.
@@ -217,11 +220,18 @@ func WipeAllRecoveryKeys(ctx context.Context, name string, volume string, keys [
 			continue
 		}
 
-		err := subprocess.RunCommandWithFds(ctx, strings.NewReader(key), nil, "cryptsetup", "luksRemoveKey", "--batch-mode", "--key-file=-", volume)
+		// Each call removes one slot, so repeat until exit code 2 says no slot holds the key.
+		for range luks2KeySlots {
+			err := subprocess.RunCommandWithFds(ctx, strings.NewReader(key), nil, "cryptsetup", "luksRemoveKey", "--batch-mode", "--key-file=-", volume)
+			if err == nil {
+				continue
+			}
 
-		// Exit code 2 means no slot holds this key, so there is nothing to remove.
-		var exitErr *exec.ExitError
-		if err != nil && (!errors.As(err, &exitErr) || exitErr.ExitCode() != 2) {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+				break
+			}
+
 			return err
 		}
 	}
