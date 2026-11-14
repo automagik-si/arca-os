@@ -41,8 +41,8 @@ func TestDiagnoseTPMRecordMissing(t *testing.T) {
 		want   string
 	}{
 		{"a fresh volume stays quiet", writeLUKS2(t, `{"0":{"type":"luks2"}}`), ""},
-		{"a sealed volume gets the hint", writeLUKS2(t, `{"1":{},"2":{},"3":{}}`), "type the 8-word recovery passphrase"},
-		{"an unreadable volume gets the hint", filepath.Join(dir, "none"), "type the 8-word recovery passphrase"},
+		{"a sealed volume gets the hint", writeLUKS2(t, `{"1":{},"2":{},"3":{}}`), "type the recovery passphrase (eight words) or the older recovery key (with dashes)"},
+		{"an unreadable volume gets the hint", filepath.Join(dir, "none"), "type the recovery passphrase (eight words) or the older recovery key (with dashes)"},
 	}
 
 	for _, tt := range tests {

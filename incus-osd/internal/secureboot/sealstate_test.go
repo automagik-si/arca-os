@@ -157,7 +157,7 @@ func TestDiagnoseSeal(t *testing.T) {
 		wayBack string
 		values  []string
 	}{
-		{"record missing", nil, same, SealRecordMissing, "type the 8-word recovery passphrase", nil},
+		{"record missing", nil, same, SealRecordMissing, "type the recovery passphrase (eight words) or the older recovery key (with dashes)", nil},
 		{"secure boot enabled to setup mode", sbOn, with(same, func(m *Measurements) { m.SetupMode = true }), SealSecureBootState, "set the firmware to Secure Boot on with the same keys", []string{"Sealed with Secure Boot on, now Secure Boot in Setup Mode"}},
 		{"setup mode to secure boot enabled", setup, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealSecureBootState, "set the firmware to Secure Boot in Setup Mode", []string{"Sealed with Secure Boot in Setup Mode, now Secure Boot on"}},
 		{"secure boot disabled to enabled", sbOff, with(same, func(m *Measurements) { m.SecureBootEnabled = true }), SealSecureBootState, "set the firmware to Secure Boot off", []string{"Sealed with Secure Boot off, now Secure Boot on"}},
@@ -198,7 +198,7 @@ func TestDiagnoseSeal(t *testing.T) {
 				t.Fatalf("%d lines, want 3 to 6:\n%s", len(lines), text)
 			}
 
-			for _, want := range append([]string{tt.wayBack, "8-word recovery passphrase", "incus admin os system security tpm-rebind"}, tt.values...) {
+			for _, want := range append([]string{tt.wayBack, "recovery passphrase (eight words) or the older recovery key (with dashes)", "incus admin os system security tpm-rebind"}, tt.values...) {
 				if !strings.Contains(text, want) {
 					t.Fatalf("message lacks %q:\n%s", want, text)
 				}

@@ -112,25 +112,25 @@ check equal "the ESP was mounted read-only and released" mounted_ro
 setup 0 0 "$A" "$B" "$A"
 check pcr12 "boot parameters changed, with the way back" says \
 	"the boot parameters changed" "PCR12 sealed cccccccccccccccc..., now aaaaaaaaaaaaaaaa..." \
-	"Way back: remove the extra kernel command line" "8-word recovery passphrase" "tpm-rebind"
+	"Way back: remove the extra kernel command line" "recovery passphrase (eight words) or the older recovery key (with dashes)" "tpm-rebind"
 check pcr12 "five lines" lines 5
 
 setup 0 0 "$C" "$B" "$C"
 check pcr4 "a different OS image, with the way back" says \
-	"a different OS image" "(version 202611141118)" "Way back: pick the sealed version in the boot menu" "8-word recovery passphrase"
+	"a different OS image" "(version 202611141118)" "Way back: pick the sealed version in the boot menu" "recovery passphrase (eight words) or the older recovery key (with dashes)"
 
 setup 0 0 "$A" "$C" "$C"
 check pcr7 "Secure Boot keys changed, with the way back" says \
-	"the Secure Boot keys changed" "Way back: restore the firmware's Secure Boot keys" "8-word recovery passphrase"
+	"the Secure Boot keys changed" "Way back: restore the firmware's Secure Boot keys" "recovery passphrase (eight words) or the older recovery key (with dashes)"
 
 setup 1 0 "$A" "$C" "$C"
 check sb-state "Secure Boot state changed, with the way back" says \
 	"the Secure Boot state changed" "Sealed with Secure Boot off, now Secure Boot on." \
-	"Way back: set the firmware to Secure Boot off with the same keys" "8-word recovery passphrase"
+	"Way back: set the firmware to Secure Boot off with the same keys" "recovery passphrase (eight words) or the older recovery key (with dashes)"
 
 setup 0 0 "$A" "$B" "$C"
 rm "$t/esp/arca-tpm-seal.json"
-check missing "an old disk gets the generic line" says "type the 8-word recovery passphrase" "tpm-rebind"
+check missing "an old disk gets the generic line" says "type the recovery passphrase (eight words) or the older recovery key (with dashes)" "tpm-rebind"
 check missing "one line" lines 1
 luks2 '{"0":{}}'
 : >"$t/tty1"

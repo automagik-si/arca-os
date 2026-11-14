@@ -249,8 +249,8 @@ func pcrChanged(recorded string, current string) bool {
 
 // passphraseLines are the way back that always works.
 var passphraseLines = []string{
-	"Otherwise type the 8-word recovery passphrase at the prompt below.",
-	"Once the system is up, reset the TPM binding: incus admin os system security tpm-rebind",
+	"Otherwise type the recovery passphrase (eight words) or the older recovery key (with dashes) below.",
+	"Nothing re-seals by itself: once the system is up, run incus admin os system security tpm-rebind",
 }
 
 // SealMessage returns the plain-words lines shown before the passphrase prompt, none on a match.
@@ -259,7 +259,7 @@ func SealMessage(cause SealCause, record *SealState, current Measurements) []str
 
 	switch cause { //nolint:exhaustive
 	case SealRecordMissing:
-		return []string{"If a passphrase prompt follows, type the 8-word recovery passphrase, then reset the TPM binding: incus admin os system security tpm-rebind"}
+		return []string{"If a passphrase prompt follows, type the recovery passphrase (eight words) or the older recovery key (with dashes), then run incus admin os system security tpm-rebind"}
 	case SealSecureBootState:
 		sealed := secureBootState(record.SecureBootEnabled, record.SetupMode)
 		lines = append(lines,
