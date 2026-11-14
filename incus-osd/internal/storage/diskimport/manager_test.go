@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -41,13 +43,15 @@ func (f *fakeRunner) Run(_ context.Context, stdin string, name string, args ...s
 		}
 	}
 
-	for prefix, out := range f.answers {
-		if strings.HasPrefix(cmd, prefix) {
-			return out, nil
+	best, out := "", ""
+
+	for prefix, answer := range f.answers {
+		if strings.HasPrefix(cmd, prefix) && len(prefix) > len(best) {
+			best, out = prefix, answer
 		}
 	}
 
-	return "", nil
+	return out, nil
 }
 
 func (f *fakeRunner) cmds() []string {
@@ -65,6 +69,9 @@ type fakeSystem struct {
 	pools     []string
 	wiped     []string
 	created   []string
+	spool     int64
+	target    int64
+	shared    bool
 }
 
 func (f *fakeSystem) Drives(context.Context) ([]api.SystemStorageDrive, error) {
@@ -89,7 +96,13 @@ func (f *fakeSystem) CreatePool(_ context.Context, name string, id string) error
 	return nil
 }
 
-func (*fakeSystem) FreeBytes() (int64, error) { return 1 << 40, nil }
+func (f *fakeSystem) Space(_ context.Context, _ string) (int64, int64, bool, error) {
+	if f.spool == 0 {
+		return 1 << 40, 1 << 40, false, nil
+	}
+
+	return f.spool, f.target, f.shared, nil
+}
 
 type fakeIncus struct {
 	sources map[string]string
@@ -119,9 +132,10 @@ func newTest(t *testing.T) (*Manager, *fakeRunner, *fakeSystem, *fakeIncus) {
 		"blkid -p -s TYPE -o value /dev/nvme9n1p1": "crypto_LUKS",
 		"blkid -p -s TYPE -o value /dev/mapper/":   "LVM2_member",
 		"blkid -p -s TYPE -o value /dev/vg0/root":  "btrfs",
-		"pvs ": "  vg0\n",
-		"vgs ": "  vg0\n",
-		"lvs ": "  root /dev/vg0/root\n",
+		"pvs ":              "  vg0\n",
+		"vgs ":              "  vg0\n",
+		"lvs ":              "  root /dev/vg0/root\n",
+		"blockdev --getro ": "1\n",
 	}, fail: map[string]bool{}}
 
 	sys := &fakeSystem{drives: []api.SystemStorageDrive{
@@ -133,6 +147,7 @@ func newTest(t *testing.T) (*Manager, *fakeRunner, *fakeSystem, *fakeIncus) {
 
 	m := buildManager(run, sys, incus, t.TempDir())
 	m.resolve = func(string) (string, error) { return testDev, nil }
+	m.udevRules = filepath.Join(t.TempDir(), "68-incus-os-import.rules")
 
 	return m, run, sys, incus
 }
@@ -197,20 +212,26 @@ func TestOpenReadOnlyStack(t *testing.T) {
 	require.Equal(t, "vg0/root", disk.Filesystems[0].Name)
 
 	cmds := run.cmds()
-	require.Equal(t, "blockdev --setro /dev/nvme9n1", cmds[1])
-	require.Equal(t, "blockdev --setro /dev/nvme9n1p1", cmds[2])
+	require.Equal(t, []string{"udevadm control --reload", "blockdev --setro /dev/nvme9n1", "blockdev --setro /dev/nvme9n1p1"}, cmds[1:4])
 
 	for _, c := range run.calls {
 		require.NotContains(t, c.cmd, testPass, "the passphrase never reaches a command line")
 
 		if c.stdin != "" {
 			require.True(t, strings.HasPrefix(c.cmd, "cryptsetup open --readonly "), c.cmd)
-			require.Equal(t, testPass+"\n", c.stdin)
+			require.Equal(t, testPass, c.stdin, "cryptsetup --key-file=- takes all of stdin as the key")
 		}
 	}
 
 	require.Contains(t, strings.Join(cmds, "\n"), `vgchange -ay --config global{metadata_read_only=1} activation{read_only_volume_list=["vg0"]} vg0`)
 	require.Contains(t, strings.Join(cmds, "\n"), "mount -t btrfs -o ro,rescue=nologreplay,subvolid=5 /dev/vg0/root")
+	requireReadOnlyBeforeUse(t, cmds)
+
+	rule, err := os.ReadFile(m.udevRules)
+	require.NoError(t, err)
+	require.Contains(t, string(rule), `ENV{DM_NAME}=="import-*"`)
+	require.Contains(t, string(rule), `ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"`)
+	require.Less(t, slices.Index(cmds, "udevadm control --reload"), indexPrefix(cmds, "cryptsetup open"), "udev must skip import maps before the first one appears")
 
 	_, err = m.Open(context.Background(), testSerial, testPass)
 	require.ErrorContains(t, err, "already open")
@@ -225,6 +246,109 @@ func TestOpenReadOnlyStack(t *testing.T) {
 	require.True(t, strings.HasPrefix(cmds[2], "cryptsetup close "))
 	require.Equal(t, "blockdev --setrw /dev/nvme9n1", cmds[len(cmds)-1])
 	require.Empty(t, m.State().Disks)
+}
+
+func indexPrefix(cmds []string, prefix string) int {
+	for i, c := range cmds {
+		if strings.HasPrefix(c, prefix) {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// requireReadOnlyBeforeUse checks that every device below the drive is confirmed read-only before it is probed or mounted.
+func requireReadOnlyBeforeUse(t *testing.T, cmds []string) {
+	t.Helper()
+
+	confirmed := map[string]bool{}
+
+	for _, c := range cmds {
+		f := strings.Fields(c)
+
+		switch {
+		case strings.HasPrefix(c, "blockdev --getro "):
+			confirmed[f[2]] = true
+		case strings.HasPrefix(c, "blkid -p "):
+			require.True(t, confirmed[f[len(f)-1]], "probed before confirmed read-only: %s", c)
+		case strings.HasPrefix(c, "mount -t ") && f[2] != "zfs":
+			require.True(t, confirmed[f[len(f)-2]], "mounted before confirmed read-only: %s", c)
+		default:
+		}
+	}
+}
+
+func TestOpenRefusesWritableLayer(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	run.answers["blockdev --getro /dev/vg0/root"] = "0\n"
+
+	_, err := m.Open(context.Background(), testSerial, testPass)
+	require.ErrorContains(t, err, "/dev/vg0/root is not read-only")
+
+	cmds := run.cmds()
+	require.Equal(t, -1, indexPrefix(cmds, "mount "), "nothing is mounted from a writable device")
+	require.Equal(t, "blockdev --setrw /dev/nvme9n1", cmds[len(cmds)-1])
+	require.Empty(t, m.State().Disks)
+}
+
+func TestCloseKeepsWhatFailed(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	ctx := context.Background()
+
+	_, err := m.Open(ctx, testSerial, testPass)
+	require.NoError(t, err)
+
+	run.calls = nil
+	run.fail["umount "] = true
+
+	require.Error(t, m.Close(ctx, testSerial))
+	require.Equal(t, []string{"umount"}, firstWords(run.cmds()), "nothing below a busy mount is closed")
+	require.Len(t, m.State().Disks, 1, "the drive stays listed so close can be retried")
+
+	delete(run.fail, "umount ")
+
+	run.calls = nil
+
+	require.NoError(t, m.Close(ctx, testSerial))
+	require.Equal(t, "umount", firstWords(run.cmds())[0])
+	require.Equal(t, "blockdev --setrw /dev/nvme9n1", run.cmds()[len(run.cmds())-1])
+	require.Empty(t, m.State().Disks)
+}
+
+func TestFailedOpenKeepsWhatItCouldNotUndo(t *testing.T) {
+	t.Parallel()
+
+	m, run, _, _ := newTest(t)
+	ctx := context.Background()
+
+	run.fail["mount "] = true
+	run.fail["vgchange -an"] = true
+
+	_, err := m.Open(ctx, testSerial, testPass)
+	require.Error(t, err)
+	require.NotContains(t, run.cmds(), "blockdev --setrw /dev/nvme9n1")
+
+	state := m.State().Disks
+	require.Len(t, state, 1)
+	require.Contains(t, strings.Join(state[0].Unreadable, " "), "partly open")
+
+	delete(run.fail, "vgchange -an")
+	require.NoError(t, m.Close(ctx, testSerial))
+	require.Empty(t, m.State().Disks)
+}
+
+func firstWords(cmds []string) []string {
+	ret := make([]string, 0, len(cmds))
+	for _, c := range cmds {
+		ret = append(ret, strings.Fields(c)[0])
+	}
+
+	return ret
 }
 
 func TestOpenPassphrase(t *testing.T) {
