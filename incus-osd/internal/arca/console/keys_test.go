@@ -16,6 +16,7 @@ import (
 // fakeHost is a console host whose redraws run at once.
 type fakeHost struct {
 	enabled bool
+	held    bool
 	log     *tview.TextView
 }
 
@@ -27,6 +28,7 @@ func (f *fakeHost) ArcaConsoleEnabled() bool            { return f.enabled }
 func (*fakeHost) QueueArcaUpdate(fn func())             { fn() }
 func (f *fakeHost) ArcaLogView() *tview.TextView        { return f.log }
 func (*fakeHost) ArcaLastLog() string                   { return "" }
+func (f *fakeHost) HoldArcaConsole(on bool)             { f.held = on }
 
 // keyOf types one key on the console.
 func keyOf(c *console, key tcell.Key, r rune) *tcell.EventKey {

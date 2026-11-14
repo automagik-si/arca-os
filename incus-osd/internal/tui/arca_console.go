@@ -26,6 +26,7 @@ type arcaConsole struct {
 	focus   tview.Primitive
 	enabled bool
 	hooked  bool // the L key and the refocus after a modal are installed
+	held    bool // the console stays on and the L key reaches it
 	calls   int  // redrawScreen calls so far, counted as upstream's redraw loop counts them
 	onClear func()
 }
@@ -144,6 +145,22 @@ func (t *TUI) OnArcaConsoleClear(f func()) {
 	c.mu.Lock()
 	c.onClear = f
 	c.mu.Unlock()
+}
+
+// HoldArcaConsole keeps the console on while held: it is turned back on if the L
+// key had turned it off, and the L key then reaches it as a typed letter. Holding
+// must not be called on the TUI's event loop; releasing may be.
+func (t *TUI) HoldArcaConsole(on bool) {
+	c := t.arcaConsole()
+
+	c.mu.Lock()
+	c.held = on
+	off := c.root != nil && !c.enabled
+	c.mu.Unlock()
+
+	if on && off {
+		t.EnableArcaConsole()
+	}
 }
 
 // arcaConsoleFrame runs first in redrawScreen. While a console is set and enabled
@@ -277,7 +294,7 @@ func (t *TUI) arcaConsoleToggle() bool {
 	c := t.arcaConsole()
 
 	c.mu.Lock()
-	if c.root == nil {
+	if c.root == nil || c.held {
 		c.mu.Unlock()
 
 		return false

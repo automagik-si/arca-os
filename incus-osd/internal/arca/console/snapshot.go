@@ -14,6 +14,7 @@ const (
 	pageDetails
 	pageHelp
 	pageUpdates
+	pageRecovery
 )
 
 // panel is the part of the dashboard the keys act on.
@@ -57,6 +58,9 @@ type Snapshot struct {
 	// Updates is the automatic updater's state; UpdateSel the failed version the keys act on.
 	Updates   Updates
 	UpdateSel int
+
+	// HandOver is the recovery passphrase page, while it is open.
+	HandOver handOver
 }
 
 // App is one installed application.
@@ -126,6 +130,7 @@ func (s Snapshot) Equal(o Snapshot) bool {
 		s.InstancesErr == o.InstancesErr &&
 		s.Selected == o.Selected && s.Page == o.Page && s.Focus == o.Focus &&
 		reflect.DeepEqual(s.Updates, o.Updates) && s.UpdateSel == o.UpdateSel &&
+		s.HandOver == o.HandOver &&
 		s.InstancesAt.Truncate(time.Minute).Equal(o.InstancesAt.Truncate(time.Minute)) &&
 		s.Now.Truncate(time.Minute).Equal(o.Now.Truncate(time.Minute))
 }

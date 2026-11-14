@@ -285,3 +285,46 @@ func TestFocusNotStolenFromPicker(t *testing.T) {
 	default:
 	}
 }
+
+func TestArcaConsoleHeld(t *testing.T) {
+	t.Parallel()
+
+	tt, screen, _ := newConsoleTUI(t)
+
+	console := newKeyBox()
+	tt.SetArcaConsole(console, console)
+
+	// Turned off by L, holding turns the console back on; L then reaches it.
+	screen.InjectKey(tcell.KeyRune, 'L', tcell.ModNone)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for tt.ArcaConsoleEnabled() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	tt.HoldArcaConsole(true)
+
+	if !tt.ArcaConsoleEnabled() {
+		t.Fatal("holding did not turn the console back on")
+	}
+
+	expectKey(t, screen, 'l', console, "the held console")
+	expectKey(t, screen, 'L', console, "the held console")
+
+	if !tt.ArcaConsoleEnabled() {
+		t.Fatal("L turned the held console off")
+	}
+
+	// Released, L toggles the console again.
+	tt.HoldArcaConsole(false)
+	screen.InjectKey(tcell.KeyRune, 'L', tcell.ModNone)
+
+	deadline = time.Now().Add(5 * time.Second)
+	for tt.ArcaConsoleEnabled() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if tt.ArcaConsoleEnabled() {
+		t.Fatal("L did not turn the released console off")
+	}
+}

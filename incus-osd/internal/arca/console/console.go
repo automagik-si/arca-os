@@ -37,6 +37,7 @@ type host interface {
 	QueueArcaUpdate(f func())
 	ArcaLogView() *tview.TextView
 	ArcaLastLog() string
+	HoldArcaConsole(on bool)
 }
 
 // sources are the console's inputs, one per field; tests replace them.
@@ -84,6 +85,7 @@ func run(ctx context.Context, s *state.State, h host, src sources) {
 
 	c := newConsole(h, src)
 	c.begin(ctx)
+	c.register()
 	c.collect(ctx)
 }
 
@@ -103,6 +105,9 @@ type console struct {
 	published bool
 
 	failMu sync.Mutex
+
+	// handOverDone runs once the recovery passphrase page closed, guarded by mu.
+	handOverDone func(confirmed bool)
 }
 
 func newConsole(h host, src sources) *console {

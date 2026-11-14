@@ -1,0 +1,24 @@
+ ARCA  —  Arca OS 202611030000                                         —  14:22
+ —
+┌─ Recovery passphrase ────────────────────────────────────────────────────────┐
+│ Confirm the passphrase: type its 2nd and 5th words.                          │
+│                                                                              │
+│ ▶ Word 2: _                                                                  │
+│   Word 5:                                                                    │
+│                                                                              │
+│ Lowercase letters. Enter moves on, then checks · Backspace erases            │
+│ Esc shows the passphrase again                                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
