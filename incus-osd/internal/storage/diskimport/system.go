@@ -33,8 +33,8 @@ type System interface {
 	// CreatePool creates an encrypted single-drive native pool and hands it to Incus.
 	CreatePool(ctx context.Context, name string, id string) error
 
-	// FreeBytes returns the space available to Incus for spooling an import.
-	FreeBytes() (int64, error)
+	// Space returns the free bytes of Incus' import spool and of the target pool, and whether they share one zpool.
+	Space(ctx context.Context, pool string) (int64, int64, bool, error)
 }
 
 // Incus is what the import needs from Incus.

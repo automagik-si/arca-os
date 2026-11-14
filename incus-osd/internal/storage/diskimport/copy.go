@@ -111,18 +111,17 @@ func (m *Manager) Copy(ctx context.Context, req api.SystemStorageImportCopyReque
 		return 0, err
 	}
 
-	free, err := m.sys.FreeBytes()
-	if err == nil && free < p.total+spoolMargin {
-		err = fmt.Errorf("not enough room: the copy needs %d bytes free to spool, %d are", p.total+spoolMargin, free)
-	}
+	// The check and the new job are one step, so two copies never count the same room.
+	m.mu.Lock()
 
+	err = m.checkSpace(ctx, req.TargetPool, p.total)
 	if err != nil {
+		m.mu.Unlock()
 		release()
 
 		return 0, err
 	}
 
-	m.mu.Lock()
 	m.nextID++
 	job := &copyJob{id: m.nextID, req: req, state: "running", total: p.total, started: time.Now()}
 	m.copies = append(m.copies, job)
@@ -166,6 +165,43 @@ func (m *Manager) reserve(req api.SystemStorageImportCopyRequest) (*openDisk, *f
 	}
 
 	return nil, nil, fmt.Errorf("no file system %q on drive %q", req.Filesystem, req.Serial)
+}
+
+// checkSpace refuses a copy without room; Incus spools the whole copy before unpacking it into the pool.
+func (m *Manager) checkSpace(ctx context.Context, pool string, total int64) error {
+	spool, target, shared, err := m.sys.Space(ctx, pool)
+	if err != nil {
+		return err
+	}
+
+	// Running copies keep their room until they end.
+	need := total
+
+	for _, job := range m.copies {
+		job.mu.Lock()
+		if job.state == "running" {
+			need += job.total
+		}
+		job.mu.Unlock()
+	}
+
+	if shared {
+		if target < 2*need+spoolMargin {
+			return fmt.Errorf("not enough room: the spool and pool %q share one pool that needs %d bytes free, %d are", pool, 2*need+spoolMargin, target)
+		}
+
+		return nil
+	}
+
+	if spool < need+spoolMargin {
+		return fmt.Errorf("not enough room: the spool needs %d bytes free, %d are", need+spoolMargin, spool)
+	}
+
+	if target < need+spoolMargin {
+		return fmt.Errorf("not enough room: pool %q needs %d bytes free, %d are", pool, need+spoolMargin, target)
+	}
+
+	return nil
 }
 
 func (m *Manager) runCopy(ctx context.Context, job *copyJob, p *plan) error {

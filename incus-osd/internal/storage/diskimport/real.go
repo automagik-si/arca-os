@@ -11,6 +11,7 @@ import (
 
 	incusclient "github.com/lxc/incus/v7/client"
 	incusapi "github.com/lxc/incus/v7/shared/api"
+	"github.com/lxc/incus/v7/shared/subprocess"
 	"golang.org/x/sys/unix"
 
 	"github.com/lxc/incus-os/incus-osd/api"
@@ -82,17 +83,53 @@ func (r realSystem) CreatePool(ctx context.Context, name string, id string) erro
 	})
 }
 
-func (realSystem) FreeBytes() (int64, error) {
-	for _, path := range []string{"/var/lib/incus/backups", "/var/lib/incus"} {
-		var st unix.Statfs_t
+func (realSystem) Space(ctx context.Context, pool string) (int64, int64, bool, error) {
+	const spoolPath = "/var/lib/incus/backups"
 
-		err := unix.Statfs(path, &st)
-		if err == nil {
-			return int64(st.Bavail) * st.Bsize, nil //nolint:gosec
-		}
+	var st unix.Statfs_t
+
+	err := unix.Statfs(spoolPath, &st)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("cannot read the free space of Incus' spool: %w", err)
 	}
 
-	return 0, errors.New("cannot read the free space of Incus' storage")
+	spool := int64(st.Bavail) * st.Bsize //nolint:gosec
+
+	c, err := incusclient.ConnectIncusUnixWithContext(ctx, incusSocket, nil)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	info, _, err := c.GetStoragePool(pool)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("pool %q: %w", pool, err)
+	}
+
+	res, err := c.GetStoragePoolResources(pool)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("pool %q: %w", pool, err)
+	}
+
+	target := int64(res.Space.Total) - int64(res.Space.Used) //nolint:gosec
+
+	// The spool is a zfs dataset on IncusOS; the same zpool as the target means both copies land there.
+	out, err := subprocess.RunCommandContext(ctx, "findmnt", "-n", "-o", "FSTYPE,SOURCE", "--target", spoolPath)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	fields := strings.Fields(out)
+	shared := len(fields) == 2 && fields[0] == "zfs" && info.Driver == "zfs" &&
+		zpoolOf(fields[1]) == zpoolOf(info.Config["source"])
+
+	return spool, target, shared, nil
+}
+
+// zpoolOf returns the zpool of a dataset name.
+func zpoolOf(dataset string) string {
+	pool, _, _ := strings.Cut(dataset, "/")
+
+	return pool
 }
 
 type realIncus struct{}
