@@ -160,6 +160,19 @@ check hang "a hanging diagnosis times out quietly" quiet
 check hang "within ten seconds" test $(($(date +%s) - start)) -lt 10
 unset INITRD_UTILS
 
+# stopped: systemd's SIGTERM while the diagnosis hangs still releases the read-only ESP mount.
+stopped() {
+	env T="$t" PATH="$t/bin:$PATH" TTYS="$t/tty1 $t/ttyS0" BOOT_DIR="$t/boot" ESP_DEVICE="$t/esp" MOUNT_DIR="$t/mnt" \
+		EFIVARS_DIR="$t/efivars" PCR_DIR="$t/pcr" ROOT_LUKS="$t/root-luks" INITRD_UTILS="$t/hang" sh "$script" &
+	local pid=$! rc=0
+	sleep 1
+	kill -TERM "$pid"
+	wait "$pid" || rc=$?
+	[ "$rc" -eq 0 ] && mounted_ro
+}
+setup 0 0 "$A" "$B" "$A"
+check stopped "a stopped diagnosis exits 0 and releases the ESP" stopped
+
 setup 0 0 "$A" "$B" "$A"
 check bad-tty "a console that can't be opened doesn't stop the others" \
 	env T="$t" PATH="$t/bin:$PATH" TTYS="$t/missing/tty1 $t/ttyS0" BOOT_DIR="$t/boot" ESP_DEVICE="$t/esp" MOUNT_DIR="$t/mnt" \
