@@ -211,7 +211,7 @@ func TestUpdatesPageUntrusted(t *testing.T) {
 		"Server CA   0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:",
 		"            DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02",
 		"Error       unable to verify S/MIME message due to its use of a missing",
-		"Available   202611030000   Behind the channel",
+		"Available   202611030000   Behind the channel (the last check failed)",
 	} {
 		if rowOf(screen, want) < 0 {
 			t.Fatalf("the page has no %q:\n%s", want, screenText(screen))
@@ -277,6 +277,7 @@ func TestUpdatesAvailableVersion(t *testing.T) {
 		{"latest", Updates{Current: "202611150123", Available: "202611150123"}, "Available   202611150123   Up to date"},
 		{"restart", Updates{Current: "202611010000", Pending: "202611150123", Available: "202611150123", UpdateAvailable: true}, "Available   202611150123   Waiting for a restart"},
 		{"held", Updates{Current: "202611010000", Available: "202611150123"}, "Available   202611150123   No update to apply"},
+		{"stale", Updates{Current: "202611010000", Available: "202611150123", UpdateAvailable: true, ErrorKind: "network"}, "Available   202611150123   Behind the channel (the last check failed)"},
 	} {
 		page := stripTags(strings.Join(updatesLines(tc.u, 0), "\n"))
 		if !strings.Contains(page, tc.want+"\n") {

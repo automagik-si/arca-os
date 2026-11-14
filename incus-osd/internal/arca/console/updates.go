@@ -286,15 +286,21 @@ func availableText(u Updates) string {
 
 	v := safe(u.Available) + "   "
 
+	// The version is from the last valid answer of the update server, which may predate a failed check.
+	stale := ""
+	if u.ErrorKind != "" {
+		stale = tagDim + " (the last check failed)" + tagReset
+	}
+
 	switch {
 	case u.Available == u.Pending:
-		return v + tagWarn + "Waiting for a restart" + tagReset
+		return v + tagWarn + "Waiting for a restart" + tagReset + stale
 	case u.UpdateAvailable:
-		return v + tagWarn + "Behind the channel" + tagReset
+		return v + tagWarn + "Behind the channel" + tagReset + stale
 	case u.Available == u.Current:
-		return v + tagOK + "Up to date" + tagReset
+		return v + tagOK + "Up to date" + tagReset + stale
 	default:
-		return v + tagDim + "No update to apply" + tagReset
+		return v + tagDim + "No update to apply" + tagReset + stale
 	}
 }
 
