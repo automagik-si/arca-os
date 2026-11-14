@@ -136,6 +136,8 @@ The passphrase is enrolled as a traditional LUKS password slot on the root and s
 ### Hand-over at first boot
 After generating the passphrase, the console shows it once, with what it is, when it will be asked for, that Arca keeps a copy in its encrypted settings, and that losing it means losing the drive. The owner then confirms it by typing its second and fifth words. A wrong answer shows the passphrase again and doesn't count; only a correct answer marks the recovery keys as retrieved. The system keeps starting while the page waits, and the page also closes once the keys are marked retrieved through the API. If IncusOS restarts before the hand-over is done, the page shows again.
 
+The console is also drawn on the serial port, so serial console captures and BMC logs keep a copy of the passphrase.
+
 Until then, the API and the CLI report the recovery keys as not retrieved. `incus admin os system security show` prints the passphrase in two groups of four words, for reading it over.
 
 For unattended installs, setting `security.recovery_passphrase_acknowledged` to `true` in the [install seed](seed.md) pre-acknowledges the hand-over: the installer records it on the ESP, and first boot carries it into the system state. The passphrase is then shown for one minute without asking for any words, and the recovery keys stay marked as not retrieved until they are retrieved through the API.
