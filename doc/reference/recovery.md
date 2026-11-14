@@ -51,8 +51,9 @@ automatic decryption of the install drive at boot time.
 
 ```{note}
 When manually entering the recovery, keep in mind that the keyboard
-layout is a traditional United States layout and that the recovery key
-must be typed as is, including the dashes.
+layout is a traditional United States layout. A generated recovery
+passphrase is eight lowercase words separated by single spaces; a key from
+an older install must be typed as is, including the dashes.
 ```
 
 Alternatively, with the recovery key(s), you can remove the affected drive(s) to a different

@@ -125,6 +125,26 @@ Any unexpected change to PCR values will cause auto-unlock to fail, and require 
 
 One other thing to be aware of involves the annual rotation of the Secure Boot key that is used to sign the IncusOS images. IncusOS will automatically handle the transition, but if for some reason you need to boot into the recovery image that was signed by the prior year's Secure Boot key you will need to use a recovery password to boot. This is because the `systemd-boot` stub will be signed with the new Secure Boot key, but the recovery UKI is signed by the old one. This will cause a mismatch between expected and actual PCR values. After a second update signed by the new Secure Boot key is installed, the issue goes away because both UKI images will be signed with the same one that was used to sign the `systemd-boot` stub.
 
+## Recovery passphrase
+On first boot, IncusOS generates the recovery passphrase of the main system drive. It is the credential the owner types at the console when the TPM refuses to unlock the drive, so it is made to be read and typed: eight lowercase English words separated by single spaces, for example `abandon ability able about above absent absorb abstract` (never use this one).
+
+### Strength
+The words come from the 2048-word [BIP39 English list](https://github.com/trezor/python-mnemonic/blob/master/src/mnemonic/wordlist/english.txt) (MIT License, Copyright (c) 2013-2016 Pavol Rusnak), embedded in `incus-osd`. Each word is drawn independently from the system's random source and carries 11 bits, so a passphrase carries 88 bits. No two words of the list share their first four letters, which makes a typing mistake easy to spot.
+
+The passphrase is enrolled as a traditional LUKS password slot on the root and swap volumes. Each volume also has its own passphrase, which IncusOS keeps in `/var/lib/incus-os/keys/` to update the TPM bindings; it is never shown.
+
+### Hand-over at first boot
+After generating the passphrase, the console shows it once, with what it is, when it will be asked for, that Arca keeps a copy in its encrypted settings, and that losing it means losing the drive. The owner then confirms it by typing its second and fifth words. A wrong answer shows the passphrase again and doesn't count; only a correct answer marks the recovery keys as retrieved. The system keeps starting while the page waits, and the page also closes once the keys are marked retrieved through the API. If IncusOS restarts before the hand-over is done, the page shows again.
+
+Until then, the API and the CLI report the recovery keys as not retrieved. `incus admin os system security show` prints the passphrase in two groups of four words, for reading it over.
+
+For unattended installs, setting `security.recovery_passphrase_acknowledged` to `true` in the [install seed](seed.md) pre-acknowledges the hand-over: the installer records it on the ESP, and first boot carries it into the system state. The passphrase is then shown for one minute without asking for any words, and the recovery keys stay marked as not retrieved until they are retrieved through the API.
+
+### Unlocking at the console
+When the TPM refuses to unlock the drive, the boot stops at a passphrase prompt. Type the eight words in lowercase, separated by single spaces, and press Enter. A typo is rejected and the prompt asks again. After IncusOS starts up, [reset the TPM bindings](system/security.md) so the next boot unlocks automatically.
+
+Systems installed before this change keep their existing recovery key, with its dashes, until it is replaced through the API.
+
 ### Useful tools
 systemd has `systemd-pcrlock` which is useful to inspect current PCR values and how they were computed during the boot process.
 

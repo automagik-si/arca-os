@@ -46,6 +46,10 @@ The structure is defined in [`api/seed/install.go`](https://github.com/lxc/incus
 - `security`: An optional struct to enable IncusOS to run in a degraded security
   state. WARNING: This shouldn't be set unless you know exactly what you are doing
   and understand the security implications.
+   - `recovery_passphrase_acknowledged`: If true, first boot shows the
+     [recovery passphrase](security.md#recovery-passphrase) for one minute without
+     waiting for the owner to confirm it. Meant for unattended installs; the
+     recovery keys stay marked as not retrieved until they are retrieved through the API.
 
 - `target`: An optional struct used to determine the install target device.
   If not specified, IncusOS will expect a single unused drive to be present
