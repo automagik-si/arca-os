@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"debug/pe"
@@ -206,13 +207,72 @@ func UpdatePCR4Binding(ctx context.Context, ukiFile string) error {
 	pcrBindingArg := pcrBindingArgument(newPCR4, pcr7, pcr12)
 
 	for name, volume := range luksVolumes {
-		_, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-key-file=/var/lib/incus-os/keys/recovery."+name+".key", "--tpm2-device=auto", "--wipe-slot=tpm2", "--tpm2-pcrlock=", pcrBindingArg, volume)
+		err := enrollTPM2(ctx, name, volume, pcrBindingArg)
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// UpdatePCR7Binding re-enrolls the TPM token of every LUKS volume for the current PCR7, the
+// binding used while Secure Boot is enabled. It runs after a recovery unlock, so the next boot
+// unlocks with the TPM again.
+func UpdatePCR7Binding(ctx context.Context) error {
+	pcr7, err := ReadPCR("7")
+	if err != nil {
+		return err
+	}
+
+	luksVolumes, err := util.GetLUKSVolumePartitions(ctx)
+	if err != nil {
+		return err
+	}
+
+	pcrBindingArg := pcrBindingArgument(nil, pcr7, nil)
+
+	for name, volume := range luksVolumes {
+		err := enrollTPM2(ctx, name, volume, pcrBindingArg)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// enrollTPM2 replaces the volume's TPM token with one bound to pcrBindingArg, unlocking with the
+// volume's key file. When systemd-cryptenroll finds the same PCR set enrolled it does nothing, which
+// leaves a token the TPM can no longer unseal after it was cleared or replaced, so a throwaway
+// policy is enrolled first to force a fresh one.
+func enrollTPM2(ctx context.Context, name string, volume string, pcrBindingArg string) error {
+	keyFile := "--unlock-key-file=/var/lib/incus-os/keys/recovery." + name + ".key"
+
+	_, stderr, err := subprocess.RunCommandSplit(ctx, nil, nil, "systemd-cryptenroll", keyFile, "--tpm2-device=auto", "--wipe-slot=tpm2", "--tpm2-pcrlock=", pcrBindingArg, volume)
+	if err != nil {
+		return err
+	}
+
+	if !strings.Contains(stderr, "This PCR set is already enrolled, executing no operation.") {
+		return nil
+	}
+
+	randomPCR := make([]byte, 32)
+
+	_, err = rand.Read(randomPCR)
+	if err != nil {
+		return err
+	}
+
+	_, err = subprocess.RunCommandContext(ctx, "systemd-cryptenroll", keyFile, "--tpm2-device=auto", "--wipe-slot=tpm2", "--tpm2-pcrlock=", pcrBindingArgument(nil, randomPCR, nil), volume)
+	if err != nil {
+		return err
+	}
+
+	_, err = subprocess.RunCommandContext(ctx, "systemd-cryptenroll", keyFile, "--tpm2-device=auto", "--wipe-slot=tpm2", "--tpm2-pcrlock=", pcrBindingArg, volume)
+
+	return err
 }
 
 // UKIHasDifferentSecureBootCertificate returns a boolean indicating if a provided UKI is signed
