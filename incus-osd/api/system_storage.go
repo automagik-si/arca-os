@@ -7,6 +7,8 @@ type SystemStorageConfig struct {
 	ScrubSchedule string              `json:"scrub_schedule" yaml:"scrub_schedule"`
 	TrimSchedule  string              `json:"trim_schedule"  yaml:"trim_schedule"`
 	Pools         []SystemStoragePool `incusos:"-"           json:"pools,omitempty" yaml:"pools,omitempty"`
+	// Serials of drives that no wipe, encrypt, import or convert may touch.
+	ProtectedSerials []string `json:"protected_serials,omitempty" yaml:"protected_serials,omitempty"`
 }
 
 // SystemStorageState represents additional state for the system's local storage.
