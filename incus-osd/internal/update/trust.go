@@ -132,13 +132,13 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 
 	st.TrustEscalated = true
 
-	slog.ErrorContext(ctx, TrustEscalation(st.TrustFailures))
+	slog.ErrorContext(ctx, trustEscalation(st.TrustFailures))
 
 	return true
 }
 
-// TrustEscalation is the owner's warning after repeated trust failures.
-func TrustEscalation(failures int) string {
+// trustEscalation is the owner's warning after repeated trust failures.
+func trustEscalation(failures int) string {
 	return "No updates for " + strconv.Itoa(failures) + " checks: the update server's signing key is not trusted; " +
 		"compare the CA fingerprints under Updates and see the security reference"
 }

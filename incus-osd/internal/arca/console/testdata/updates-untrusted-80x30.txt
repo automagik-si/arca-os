@@ -1,0 +1,30 @@
+ ARCA  —  Arca OS 202611030000                                         —  14:22
+ —
+┌─ Updates ────────────────────────────────────────────────────────────────────┐
+│ ✗ No updates for 3 checks: the server's signing key is not trusted           │
+│ Fix: a reinstall or a CA-migration release (see the security reference).     │
+│                                                                              │
+│ Automatic   On   o switches on / off                                         │
+│ Restarts    03:00-05:00   [ ] move by an hour                                │
+│ Status      Update server key is not trusted by this system                  │
+│ Embedded CA 70:79:C3:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:                 │
+│             DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:01                  │
+│ Server CA   0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:                 │
+│             DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02                  │
+│ Error       unable to verify S/MIME message due to its use of a missing or un│
+│ Current     202611010000                                                     │
+│ Previous    —                                                                │
+│ Good        202611010000                                                     │
+│ Pending     —                                                                │
+│ Last check  2026-11-03 14:00                                                 │
+│ Last result —                                                                │
+│                                                                              │
+│ Failed versions   r tries the selected one again                             │
+│ None                                                                         │
+│                                                                              │
+│ c checks for updates now · Esc closes this page                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

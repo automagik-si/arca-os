@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -171,6 +172,12 @@ func TestCheckOSTrustFailure(t *testing.T) {
 	require.Equal(t, f.newCA, st.PresentedCAFingerprint)
 	require.Equal(t, 1, st.TrustFailures)
 	require.False(t, st.TrustEscalated)
+
+	// The console's summary leads with the same phrase.
+	sum := Summarize(s, time.Now())
+	require.Equal(t, TrustStatus, sum.Status)
+	require.Equal(t, f.updateCA, sum.EmbeddedCA)
+	require.Equal(t, f.newCA, sum.PresentedCA)
 
 	// Network and parse failures keep the count and the fingerprints.
 	f.server.serve(f.garbled)

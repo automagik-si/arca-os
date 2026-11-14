@@ -1,11 +1,14 @@
 package console
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+
+	osupdate "github.com/lxc/incus-os/incus-osd/internal/update"
 )
 
 // fakeActions records the owner's actions and changes the fake updater like the real one.
@@ -149,5 +152,102 @@ func TestUpdatesPage(t *testing.T) {
 
 	if pageOf(c) != pageNone {
 		t.Fatal("Esc did not close the updates page")
+	}
+}
+
+// untrusted is an updater whose update server's key isn't trusted, after three checks.
+func untrusted() Updates {
+	return Updates{
+		Automatic:      true,
+		Window:         "03:00-05:00",
+		Status:         osupdate.TrustStatus,
+		LastCheck:      time.Date(2026, 11, 3, 14, 0, 0, 0, time.UTC),
+		Current:        "202611010000",
+		Good:           "202611010000",
+		ErrorKind:      osupdate.ErrorKindTrust,
+		LastError:      "unable to verify S/MIME message due to its use of a missing or unverifiable CA",
+		EmbeddedCA:     "70:79:C3:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:01",
+		PresentedCA:    "0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02",
+		TrustFailures:  3,
+		TrustEscalated: true,
+	}
+}
+
+func TestUpdatesPageUntrusted(t *testing.T) {
+	t.Parallel()
+
+	u := untrusted()
+
+	src := staticSources()
+	src.updates = u.clone
+	src.actions = &fakeActions{u: &u}
+
+	c := newConsole(&fakeHost{}, src)
+	c.readUpdates()
+
+	// The alert line warns once three checks failed.
+	screen := draw(t, c.snap.clone(), 80, 30)
+	if rowOf(screen, "✗ No updates for 3 checks: the server's signing key is not trusted") < 0 {
+		t.Fatalf("the alert line doesn't warn about the update server:\n%s", screenText(screen))
+	}
+
+	keyOf(c, tcell.KeyRune, 'U')
+
+	c.mu.Lock()
+	snap := c.snap.clone()
+	c.mu.Unlock()
+
+	screen = draw(t, snap, 80, 30)
+	golden(t, "updates-untrusted-80x30.txt", screen)
+
+	for _, want := range []string{
+		"Status      " + osupdate.TrustStatus,
+		"Embedded CA 70:79:C3:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:",
+		"            DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:01",
+		"Server CA   0E:4A:16:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:",
+		"            DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:02",
+		"Error       unable to verify S/MIME message due to its use of a missing",
+	} {
+		if rowOf(screen, want) < 0 {
+			t.Fatalf("the page has no %q:\n%s", want, screenText(screen))
+		}
+	}
+
+	// The failure is in the colour of failures.
+	for _, sub := range []string{osupdate.TrustStatus, "70:79:C3", "0E:4A:16"} {
+		fg, _, _ := cellStyle(t, screen, rowOf(screen, sub), sub)
+		if fg != tcell.ColorRed {
+			t.Fatalf("%q is %v, not red", sub, fg)
+		}
+	}
+}
+
+func TestUpdatesTrustBeforeEscalation(t *testing.T) {
+	t.Parallel()
+
+	u := untrusted()
+	u.TrustFailures = 1
+	u.TrustEscalated = false
+
+	// The page shows the mismatch from the first failure, without the alert.
+	tag, text := updatesAlert(u)
+	if tag != "" || text != "" {
+		t.Fatalf("alert before three failures: %q", text)
+	}
+
+	page := strings.Join(updatesLines(u, 0), "\n")
+	for _, want := range []string{osupdate.TrustStatus, "70:79:C3", "0E:4A:16"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the page has no %q:\n%s", want, page)
+		}
+	}
+
+	// Another failure kind shows no fingerprints.
+	u.ErrorKind = osupdate.ErrorKindNetwork
+	u.Status = "Failed to check for OS updates"
+
+	page = strings.Join(updatesLines(u, 0), "\n")
+	if strings.Contains(page, "Embedded CA") {
+		t.Fatalf("fingerprints shown for a network failure:\n%s", page)
 	}
 }
