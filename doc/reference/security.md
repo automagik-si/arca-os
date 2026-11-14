@@ -184,7 +184,7 @@ Each time IncusOS seals the drive to the TPM (first boot, an OS update or Secure
 - `pcr4`, `pcr7` and `pcr12`: the PCR values, as lowercase SHA-256 hex
 - `sealed_at`: when, in RFC 3339
 
-The record holds no secret, only public measurements. Failing to write it never fails the seal. Whenever the TPM unlocked the drive, IncusOS also rewrites a record that is missing, unreadable or no longer matches the measurements, so a drive sealed before the record existed gets one on its next boot. The record must hold lowercase hex PCR values and a numeric version, or it is ignored as unreadable.
+The record holds no secret, only public measurements. Failing to write it never fails the seal. Whenever the TPM unlocked the drive, IncusOS also rewrites a record that is missing, unreadable or no longer matches the measurements, so a drive sealed before the record existed gets one on its next boot. It does so at most once per boot, and never after a seal on that boot, whose record holds the next boot's values. The record must hold 64-digit hex PCR values and a numeric version, or it is ignored as unreadable.
 
 Before the passphrase prompt, the initrd reads the record from the ESP (where the initrd mounted it, or by mounting it read-only by its partition label when it isn't), compares the record with the boot's measurements, and, when they differ, explains the cause in a few plain lines on the screen and the serial console, with the way back:
 
