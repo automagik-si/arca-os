@@ -15,6 +15,7 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/rest/response"
 	"github.com/lxc/incus-os/incus-osd/internal/scheduling"
 	"github.com/lxc/incus-os/incus-osd/internal/storage"
+	"github.com/lxc/incus-os/incus-osd/internal/storage/diskimport"
 	"github.com/lxc/incus-os/incus-osd/internal/zfs"
 )
 
@@ -146,6 +147,11 @@ func (s *Server) apiSystemStorage(w http.ResponseWriter, r *http.Request) {
 
 		// Update trim schedule in state.
 		s.state.System.Storage.Config.TrimSchedule = storageStruct.Config.TrimSchedule
+
+		// A request without the field keeps the list; an empty list clears it.
+		if storageStruct.Config.ProtectedSerials != nil {
+			s.state.System.Storage.Config.ProtectedSerials = storageStruct.Config.ProtectedSerials
+		}
 
 		// Create or update a pool.
 		if len(storageStruct.Config.Pools) == 0 {
@@ -309,6 +315,13 @@ func (s *Server) apiSystemStorageWipeDrive(w http.ResponseWriter, r *http.Reques
 
 	if wipeStruct.ID == "" {
 		_ = response.BadRequest(errors.New("no drive specified")).Render(w)
+
+		return
+	}
+
+	err = diskimport.RefuseProtected(r.Context(), s.importSystem, wipeStruct.ID)
+	if err != nil {
+		_ = response.BadRequest(err).Render(w)
 
 		return
 	}
@@ -834,6 +847,13 @@ func (s *Server) apiSystemStorageEncryptDrive(w http.ResponseWriter, r *http.Req
 
 	if encryptStruct.ID == "" {
 		_ = response.BadRequest(errors.New("no drive specified")).Render(w)
+
+		return
+	}
+
+	err = diskimport.RefuseProtected(r.Context(), s.importSystem, encryptStruct.ID)
+	if err != nil {
+		_ = response.BadRequest(err).Render(w)
 
 		return
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/internal/scheduling"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/storage/diskimport"
 )
 
 // Server holds the internal state of the REST API server.
@@ -20,6 +21,8 @@ type Server struct {
 	jobScheduler *scheduling.Scheduler
 	listener     net.Listener
 	state        *state.State
+	importSystem diskimport.System
+	diskImport   *diskimport.Manager
 }
 
 // NewServer returns a REST API server object.
@@ -29,7 +32,10 @@ func NewServer(_ context.Context, l net.Listener, s *state.State, j *scheduling.
 		jobScheduler: j,
 		listener:     l,
 		state:        s,
+		importSystem: diskimport.NewSystem(s),
 	}
+
+	server.diskImport = diskimport.NewManager(server.importSystem, diskimport.NewIncus())
 
 	return &server, nil
 }
@@ -92,6 +98,11 @@ func (s *Server) Serve() error {
 	router.HandleFunc("/1.0/system/storage/:cleanup-root", s.apiSystemStorageCleanupRoot)
 	router.HandleFunc("/1.0/system/storage/:create-volume", s.apiSystemStorageCreateVolume)
 	router.HandleFunc("/1.0/system/storage/:import-encrypted-drive", s.apiSystemStorageImportEncryptedDrive)
+	router.HandleFunc("/1.0/system/storage/import", s.apiSystemStorageImport)
+	router.HandleFunc("/1.0/system/storage/import/:close", s.apiSystemStorageImportClose)
+	router.HandleFunc("/1.0/system/storage/import/:convert", s.apiSystemStorageImportConvert)
+	router.HandleFunc("/1.0/system/storage/import/:copy", s.apiSystemStorageImportCopy)
+	router.HandleFunc("/1.0/system/storage/import/:open", s.apiSystemStorageImportOpen)
 	router.HandleFunc("/1.0/system/storage/:encrypt-drive", s.apiSystemStorageEncryptDrive)
 	router.HandleFunc("/1.0/system/storage/:delete-pool", s.apiSystemStorageDeletePool)
 	router.HandleFunc("/1.0/system/storage/:delete-volume", s.apiSystemStorageDeleteVolume)
