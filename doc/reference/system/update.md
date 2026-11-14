@@ -63,6 +63,25 @@ config:
 
 See [automatic updates and rollback](arca-updates.md): restarts in the window, the health bake, rollback and the failed-version list.
 
+## Update check failures
+
+When an update check fails, `GET /1.0/system/update` reports why under `state`:
+
+* `last_error_kind`: why the last check failed. It's empty after a successful check.
+   * `network`: the server can't be reached or doesn't return the file.
+   * `parse`: the index or a file is malformed, or the certificates in the signed index are damaged.
+   * `signature`: the signature doesn't match the signed content.
+   * `trust`: the index is signed under a CA other than the one this system expects, or that CA doesn't chain to the root CA this system trusts.
+   * `other`: anything else, including a signing certificate that has expired or isn't valid yet (check the system clock), or a check that was cancelled.
+* `last_error`: a one-line summary of the error, without URL query strings.
+* `embedded_ca_fingerprint` and `presented_ca_fingerprint`: for a `trust` failure, the SHA-256 fingerprints of the update CA this system expects and of the CA the server's signature was issued by.
+* `trust_failures`: consecutive checks that failed with `trust`. Network and parse failures don't reset it; a successful check does, and clears the fingerprints.
+* `trust_escalated`: set once `trust_failures` reaches three.
+
+A `trust` failure sets the status to "Update server key is not trusted by this system". The console's updates page shows both fingerprints, and after three such checks the alert line says the system hasn't received updates. `incus admin os system update show` prints the same details.
+
+The system keeps running and keeps checking on its normal schedule, but it won't install anything from that server until the CAs match. See [update server trust](../security.md#update-server-trust) for what to do.
+
 ## Manually checking for an update
 
 You can instruct IncusOS to check for an update at any time by running

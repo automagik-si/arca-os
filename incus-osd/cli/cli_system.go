@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -356,7 +357,12 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 			}
 		}
 
-		if sub.name != "security" {
+		switch sub.name {
+		case "security":
+		case "update":
+			f = func(data json.RawMessage) { printUpdateNote(os.Stderr, data) }
+
+		default:
 			f = nil
 		}
 
@@ -400,4 +406,45 @@ func passphraseGroups(key string) []string {
 	}
 
 	return []string{strings.Join(words[:4], " "), strings.Join(words[4:], " ")}
+}
+
+// printUpdateNote prints a note on the last failed update check, if any.
+func printUpdateNote(w io.Writer, data json.RawMessage) {
+	var update api.SystemUpdate
+
+	err := json.Unmarshal(data, &update)
+	if err != nil {
+		return
+	}
+
+	_, _ = fmt.Fprint(w, updateFailureNote(update.State))
+}
+
+// updateFailureNote describes the last failed update check, with both CAs when the update
+// server isn't trusted, or returns "" when the last check succeeded.
+func updateFailureNote(st api.SystemUpdateState) string {
+	if st.LastErrorKind == "" {
+		return ""
+	}
+
+	note := "\nUpdate status: " + st.Status + "\n  Last error (" + st.LastErrorKind + "): " + st.LastError + "\n"
+
+	if st.EmbeddedCAFingerprint != "" || st.PresentedCAFingerprint != "" {
+		note += "  Embedded CA:  " + orUnknown(st.EmbeddedCAFingerprint) + "\n"
+		note += "  Presented CA: " + orUnknown(st.PresentedCAFingerprint) + "\n"
+	}
+
+	if st.TrustFailures > 0 {
+		note += fmt.Sprintf("  Consecutive trust failures: %d\n", st.TrustFailures)
+	}
+
+	return note
+}
+
+func orUnknown(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+
+	return v
 }

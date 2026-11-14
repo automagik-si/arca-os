@@ -15,3 +15,6 @@ var ErrRegistrationUnsupported = errors.New("registration unsupported")
 
 // ErrDeregistrationUnsupported is returned if the provider doesn't (currently) support deregistration.
 var ErrDeregistrationUnsupported = errors.New("deregistration unsupported")
+
+// ErrServerResponse is returned when the update server doesn't return an expected file.
+var ErrServerResponse = errors.New("server failed to return expected file")

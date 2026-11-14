@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,11 @@ type Updates struct {
 	FailedIDs []string
 
 	LastResult, LastReason, NeedsOwner string
+
+	// The last check's failure; the CAs are set when the update server isn't trusted.
+	ErrorKind, LastError, EmbeddedCA, PresentedCA string
+	TrustFailures                                 int
+	TrustEscalated                                bool
 }
 
 // clone returns a copy of u that shares no slice with it.
@@ -67,6 +73,13 @@ func liveUpdates(s *state.State) Updates {
 		LastResult: sum.LastResult,
 		LastReason: sum.LastReason,
 		NeedsOwner: sum.NeedsOwner,
+
+		ErrorKind:      sum.ErrorKind,
+		LastError:      sum.Error,
+		EmbeddedCA:     sum.EmbeddedCA,
+		PresentedCA:    sum.PresentedCA,
+		TrustFailures:  sum.TrustFailures,
+		TrustEscalated: sum.TrustEscalated,
 	}
 
 	for _, line := range sum.Failed {
@@ -200,6 +213,16 @@ func updatesLines(u Updates, sel int) []string {
 			tagDim+"Automatic updates are paused; o turns them back on."+tagReset, "")
 	}
 
+	if u.TrustEscalated {
+		lines = append(lines, tagBad+safe(trustWarning(u.TrustFailures))+tagReset,
+			tagDim+"Fix: a reinstall or a CA-migration release (see the security reference)."+tagReset, "")
+	}
+
+	status := safe(printable(u.Status))
+	if u.ErrorKind == osupdate.ErrorKindTrust {
+		status = tagBad + status + tagReset
+	}
+
 	auto := tagWarn + "Off" + tagReset
 	if u.Automatic {
 		auto = tagOK + "On" + tagReset
@@ -208,7 +231,16 @@ func updatesLines(u Updates, sel int) []string {
 	lines = append(lines,
 		field("Automatic", auto+tagDim+"   o switches on / off"+tagReset),
 		field("Restarts", safe(u.Window)+timeText(", next at ", u.NextWindow)+tagDim+"   [ ] move by an hour"+tagReset),
-		field("Status", safe(printable(u.Status))),
+		field("Status", status),
+	)
+
+	if u.ErrorKind == osupdate.ErrorKindTrust {
+		lines = append(lines, fingerprintLines("Embedded CA", u.EmbeddedCA)...)
+		lines = append(lines, fingerprintLines("Server CA", u.PresentedCA)...)
+		lines = append(lines, field("Error", tagBad+orDash(safe(printable(u.LastError)))+tagReset))
+	}
+
+	lines = append(lines,
 		field("Current", orDash(u.Current)),
 		field("Previous", orDash(u.Previous)),
 		field("Good", orDash(u.Good)),
@@ -236,6 +268,22 @@ func updatesLines(u Updates, sel int) []string {
 	}
 
 	return append(lines, "", tagDim+"c checks for updates now · Esc closes this page"+tagReset)
+}
+
+// trustWarning is the owner's warning after repeated trust failures.
+func trustWarning(failures int) string {
+	return "✗ No updates for " + strconv.Itoa(failures) + " checks: the server's signing key is not trusted"
+}
+
+// fingerprintLines shows a SHA-256 fingerprint on two lines, so it fits the page.
+func fingerprintLines(label, fp string) []string {
+	const half = 16 * 3
+
+	if len(fp) <= half {
+		return []string{field(label, tagBad+orDash(safe(fp))+tagReset)}
+	}
+
+	return []string{field(label, tagBad+safe(fp[:half])+tagReset), field("", tagBad+safe(fp[half:])+tagReset)}
 }
 
 func orDash(v string) string {
@@ -277,6 +325,8 @@ func updatesAlert(u Updates) (string, string) {
 	switch {
 	case u.NeedsOwner != "":
 		return tagBad, "✗ Needs you: " + u.NeedsOwner + " (U updates)"
+	case u.TrustEscalated:
+		return tagBad, trustWarning(u.TrustFailures) + " (U updates)"
 	case u.Pending != "" || strings.HasPrefix(u.Status, "Checking") || strings.HasPrefix(u.Status, "Went back"):
 		return tagWarn, "● " + u.Status
 	default:

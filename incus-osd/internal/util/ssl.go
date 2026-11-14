@@ -3,6 +3,7 @@ package util
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -100,12 +101,141 @@ func UpdateSystemCustomCACerts(pemCerts []string) error {
 	return nil
 }
 
+// TrustError is an S/MIME message whose signer doesn't chain to the trusted root and
+// expected intermediate CA. Fingerprints are SHA-256, uppercase and colon-separated.
+type TrustError struct {
+	// RootFingerprint is the root CA this system trusts.
+	RootFingerprint string
+
+	// ExpectedFingerprint is the intermediate CA the signer must be issued by.
+	ExpectedFingerprint string
+
+	// PresentedFingerprint and PresentedSubject are the signer's issuer as the message
+	// presents it; the fingerprint is empty when the message doesn't carry that certificate.
+	PresentedFingerprint string
+	PresentedSubject     string
+
+	msg string
+	err error
+}
+
+func (e *TrustError) Error() string {
+	return e.msg
+}
+
+func (e *TrustError) Unwrap() error {
+	return e.err
+}
+
+// SignatureError is an S/MIME message whose signature doesn't verify.
+type SignatureError struct {
+	err error
+}
+
+func (*SignatureError) Error() string {
+	return "invalid S/MIME signature"
+}
+
+func (e *SignatureError) Unwrap() error {
+	return e.err
+}
+
+// CertificateError is an S/MIME message whose signer chains to the root CA but whose
+// certificates aren't valid, for example because one has expired.
+type CertificateError struct {
+	reason string
+	err    error
+}
+
+func (e *CertificateError) Error() string {
+	return "S/MIME signing certificate isn't valid: " + e.reason
+}
+
+func (e *CertificateError) Unwrap() error {
+	return e.err
+}
+
+// ErrSMIMEUnreadable is returned for a message that isn't S/MIME at all.
+var ErrSMIMEUnreadable = errors.New("unable to read S/MIME message")
+
+// ErrSMIMEDamaged is returned for a message whose certificates are damaged.
+var ErrSMIMEDamaged = errors.New("S/MIME message is damaged")
+
+// smimeFormatError is a message that can't be read or is damaged; kind is the sentinel.
+type smimeFormatError struct {
+	kind error
+	err  error
+}
+
+func (e *smimeFormatError) Error() string {
+	return e.kind.Error()
+}
+
+func (e *smimeFormatError) Unwrap() []error {
+	return []error{e.kind, e.err}
+}
+
+// opensslError is a failure to run openssl, which says nothing about the message.
+type opensslError struct {
+	err error
+}
+
+func (e *opensslError) Error() string {
+	cause := e.err
+
+	runErr, ok := errors.AsType[subprocess.RunError](e.err)
+	if ok {
+		cause = runErr.Unwrap()
+	}
+
+	return "unable to run openssl to verify S/MIME message: " + cause.Error()
+}
+
+func (e *opensslError) Unwrap() error {
+	return e.err
+}
+
+// smimeTrustFailures are openssl's verify errors for a chain that doesn't reach the root CA.
+var smimeTrustFailures = []string{
+	"Verify error: unable to get local issuer certificate",
+	"Verify error: unable to get issuer certificate",
+	"Verify error: self-signed certificate in certificate chain",
+	"Verify error: self signed certificate in certificate chain",
+}
+
+// CertificateFingerprint returns the certificate's SHA-256 fingerprint, uppercase and colon-separated.
+func CertificateFingerprint(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+
+	sum := sha256.Sum256(cert.Raw)
+	parts := make([]string, 0, len(sum))
+
+	for _, b := range sum {
+		parts = append(parts, fmt.Sprintf("%02X", b))
+	}
+
+	return strings.Join(parts, ":")
+}
+
 // VerifySMIME first verifies the provided S/MIME-signed message using the root CA as a trust
 // anchor. Then, if validation succeeded, it ensures the message has exactly one signer whose
 // certificate was issued by one of the expected intermediate CAs. `openssl smime ...` doesn't
 // provide a way to do this, so we must perform a manual check ourselves. Upon success, the
 // verified plain-text message is returned.
 func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificate, message []byte) (*bytes.Buffer, error) {
+	// Load the embedded certificates.
+	embeddedCerts, err := certs.GetEmbeddedCertificates()
+	if err != nil {
+		return nil, err
+	}
+
+	return VerifySMIMEWithRoot(ctx, embeddedCerts.RootCACertificate, expectedIntermediateCAs, message)
+}
+
+// VerifySMIMEWithRoot is VerifySMIME using the provided root CA as the trust anchor.
+func VerifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expectedIntermediateCAs []*x509.Certificate, message []byte) (*bytes.Buffer, error) {
 	if len(expectedIntermediateCAs) == 0 {
 		return nil, errors.New("at least one intermediate CA must be provided when performing S/MIME validation")
 	}
@@ -116,17 +246,6 @@ func VerifySMIME(ctx context.Context, expectedIntermediateCAs []*x509.Certificat
 		}
 	}
 
-	// Load the embedded certificates.
-	embeddedCerts, err := certs.GetEmbeddedCertificates()
-	if err != nil {
-		return nil, err
-	}
-
-	return verifySMIMEWithRoot(ctx, embeddedCerts.RootCACertificate, expectedIntermediateCAs, message)
-}
-
-// verifySMIMEWithRoot verifies the message using the provided root CA as a trust anchor.
-func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expectedIntermediateCAs []*x509.Certificate, message []byte) (*bytes.Buffer, error) {
 	// Get the root CA.
 	var rootCABuf bytes.Buffer
 
@@ -174,31 +293,11 @@ func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expected
 
 	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), verified, "openssl", smimeVerifyArgs(rootCAFile.Name(), signerFile.Name())...)
 	if err != nil {
-		// Return a nicer error if verification failed due to a missing/unverifiable CA.
-		if strings.Contains(err.Error(), "Verify error: unable to get local issuer certificate") {
-			return nil, errors.New("unable to verify S/MIME message due to its use of a missing or unverifiable CA")
-		}
-
-		return nil, err
+		return nil, smimeVerifyError(ctx, rootCA, expectedIntermediateCAs, message, err)
 	}
 
 	// Get the now-verified message's certificate chain.
-	certChain := bytes.NewBuffer(nil)
-
-	err = subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), certChain, "openssl", "smime", "-pk7out")
-	if err != nil {
-		return nil, err
-	}
-
-	// openssl seems to output PEM even if `-outform DER` was provided in the command
-	// above. So, we need to take an extra step to decode the output before it can be
-	// parsed as pkcs7.
-	block, _ := pem.Decode(certChain.Bytes())
-	if block == nil {
-		return nil, errors.New("unable to parse PEM-encoded pkcs7 data")
-	}
-
-	pkcs, err := pkcs7.Parse(block.Bytes)
+	pkcs, err := smimePKCS7(ctx, message)
 	if err != nil {
 		return nil, err
 	}
@@ -227,10 +326,134 @@ func verifySMIMEWithRoot(ctx context.Context, rootCA *x509.Certificate, expected
 			}
 		}
 
-		return nil, errors.New("S/MIME message contained a valid signature, but was not signed by one of the following expected intermediate CAs: '" + strings.Join(expectedSubjects, "', '") + "'")
+		trustErr := newTrustError(rootCA, expectedIntermediateCAs, pkcs.Certificates, signer)
+		trustErr.msg = "S/MIME message contained a valid signature, but was not signed by one of the following expected intermediate CAs: '" + strings.Join(expectedSubjects, "', '") + "'"
+
+		return nil, trustErr
 	}
 
 	return verified, nil
+}
+
+// smimeVerifyError tells a chain that doesn't reach the root CA apart from a bad signature,
+// invalid certificates, a damaged message and a failure to run openssl.
+func smimeVerifyError(ctx context.Context, rootCA *x509.Certificate, expectedIntermediateCAs []*x509.Certificate, message []byte, err error) error {
+	ctxErr := ctx.Err()
+	if ctxErr != nil {
+		return ctxErr
+	}
+
+	runErr, ran := errors.AsType[subprocess.RunError](err)
+	if !ran || runErr.StdErr() == nil {
+		return &opensslError{err: err}
+	}
+
+	stderr := runErr.StdErr().String()
+
+	if strings.Contains(stderr, "Error reading S/MIME message") {
+		return &smimeFormatError{kind: ErrSMIMEUnreadable, err: err}
+	}
+
+	_, reason, isVerifyError := strings.Cut(stderr, "Verify error: ")
+	if !isVerifyError {
+		if strings.Contains(stderr, "signature failure") || strings.Contains(stderr, "digest failure") {
+			return &SignatureError{err: err}
+		}
+
+		return &opensslError{err: err}
+	}
+
+	reason, _, _ = strings.Cut(reason, "\n")
+
+	isTrust := slices.ContainsFunc(smimeTrustFailures, func(failure string) bool {
+		return strings.Contains(stderr, failure)
+	})
+	if !isTrust {
+		return &CertificateError{reason: reason, err: err}
+	}
+
+	// Read what the message presents, even though it doesn't verify.
+	pkcs, parseErr := smimePKCS7(ctx, message)
+	if parseErr != nil {
+		return &smimeFormatError{kind: ErrSMIMEDamaged, err: err}
+	}
+
+	signer := pkcs.GetOnlySigner()
+	trustErr := newTrustError(rootCA, expectedIntermediateCAs, pkcs.Certificates, signer)
+
+	if !presentsOtherIssuer(rootCA, expectedIntermediateCAs, trustErr, signer) {
+		return &smimeFormatError{kind: ErrSMIMEDamaged, err: err}
+	}
+
+	trustErr.msg = "unable to verify S/MIME message due to its use of a missing or unverifiable CA"
+	trustErr.err = err
+
+	return trustErr
+}
+
+// presentsOtherIssuer reports whether a chain that doesn't reach the root CA is a trust mismatch:
+// the signer names or presents another issuer, or the expected CA itself isn't under the root.
+// Otherwise the message's certificates were damaged.
+func presentsOtherIssuer(rootCA *x509.Certificate, expectedIntermediateCAs []*x509.Certificate, trustErr *TrustError, signer *x509.Certificate) bool {
+	if signer == nil {
+		return false
+	}
+
+	for _, ca := range expectedIntermediateCAs {
+		if bytes.Equal(signer.RawIssuer, ca.RawSubject) && signer.CheckSignatureFrom(ca) == nil {
+			return !bytes.Equal(ca.RawIssuer, rootCA.RawSubject) || ca.CheckSignatureFrom(rootCA) != nil
+		}
+	}
+
+	namesExpected := slices.ContainsFunc(expectedIntermediateCAs, func(ca *x509.Certificate) bool {
+		return bytes.Equal(signer.RawIssuer, ca.RawSubject)
+	})
+
+	return !namesExpected || trustErr.PresentedFingerprint != ""
+}
+
+// newTrustError returns a trust error naming the signer's issuer among the presented certificates.
+func newTrustError(rootCA *x509.Certificate, expectedIntermediateCAs []*x509.Certificate, presented []*x509.Certificate, signer *x509.Certificate) *TrustError {
+	trustErr := &TrustError{
+		RootFingerprint:     CertificateFingerprint(rootCA),
+		ExpectedFingerprint: CertificateFingerprint(expectedIntermediateCAs[0]),
+	}
+
+	if signer == nil {
+		return trustErr
+	}
+
+	trustErr.PresentedSubject = signer.Issuer.String()
+
+	for _, cert := range presented {
+		if bytes.Equal(cert.RawSubject, signer.RawIssuer) && signer.CheckSignatureFrom(cert) == nil {
+			trustErr.PresentedFingerprint = CertificateFingerprint(cert)
+
+			break
+		}
+	}
+
+	return trustErr
+}
+
+// smimePKCS7 returns the message's PKCS #7 structure, without verifying it.
+func smimePKCS7(ctx context.Context, message []byte) (*pkcs7.PKCS7, error) {
+	certChain := bytes.NewBuffer(nil)
+
+	err := subprocess.RunCommandWithFds(ctx, bytes.NewReader(message), certChain, "openssl", "smime", "-pk7out")
+	if err != nil {
+		return nil, err
+	}
+
+	// openssl seems to output PEM even if `-outform DER` was provided in the command
+	// above. So, we need to take an extra step to decode the output before it can be
+	// parsed as pkcs7.
+	block, _ := pem.Decode(certChain.Bytes())
+	if block == nil {
+		return nil, errors.New("unable to parse PEM-encoded pkcs7 data")
+	}
+
+	return pkcs7.Parse(block.Bytes)
 }
 
 // smimeVerifyArgs returns the openssl arguments to verify a message trusting only the root CA

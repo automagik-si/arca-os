@@ -1880,18 +1880,43 @@ definitions:
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateState:
         properties:
+            embedded_ca_fingerprint:
+                description: EmbeddedCAFingerprint is the SHA-256 of the update CA this system expects.
+                type: string
+                x-go-name: EmbeddedCAFingerprint
             health:
                 $ref: '#/definitions/SystemUpdateHealth'
             last_check:
                 format: date-time
                 type: string
                 x-go-name: LastCheck
+            last_error:
+                description: LastError is the last check's failure, as reported by the update provider.
+                type: string
+                x-go-name: LastError
+            last_error_kind:
+                description: 'LastErrorKind is why the last check failed: "network", "parse", "signature", "trust", "other", or empty.'
+                type: string
+                x-go-name: LastErrorKind
             needs_reboot:
                 type: boolean
                 x-go-name: NeedsReboot
+            presented_ca_fingerprint:
+                description: PresentedCAFingerprint is the SHA-256 of the CA the update server's signature was issued by.
+                type: string
+                x-go-name: PresentedCAFingerprint
             status:
                 type: string
                 x-go-name: Status
+            trust_escalated:
+                description: TrustEscalated is set once the owner has been warned about repeated trust failures.
+                type: boolean
+                x-go-name: TrustEscalated
+            trust_failures:
+                description: TrustFailures counts consecutive checks where the update server's key wasn't trusted.
+                format: int64
+                type: integer
+                x-go-name: TrustFailures
         title: SystemUpdateState holds information about the current update state.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api

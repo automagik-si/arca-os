@@ -29,6 +29,14 @@ type Summary struct {
 	LastReason string
 	NeedsOwner string
 
+	// The last update check's failure, and the CAs when the update server isn't trusted.
+	ErrorKind      string
+	Error          string
+	EmbeddedCA     string
+	PresentedCA    string
+	TrustFailures  int
+	TrustEscalated bool
+
 	// Status is one line for the screen.
 	Status string
 }
@@ -40,6 +48,7 @@ func Summarize(s *state.State, now time.Time) Summary {
 
 	h := s.UpdateHealth
 	cfg := s.System.Update.Config
+	st := s.System.Update.State
 	w := RestartWindow(cfg)
 
 	sum := Summary{
@@ -54,6 +63,13 @@ func Summarize(s *state.State, now time.Time) Summary {
 		LastResult: h.LastResult,
 		LastReason: h.LastReason,
 		NeedsOwner: h.NeedsOwner,
+
+		ErrorKind:      st.LastErrorKind,
+		Error:          st.LastError,
+		EmbeddedCA:     st.EmbeddedCAFingerprint,
+		PresentedCA:    st.PresentedCAFingerprint,
+		TrustFailures:  st.TrustFailures,
+		TrustEscalated: st.TrustEscalated,
 	}
 
 	for _, v := range FailedVersions(s) {
@@ -71,6 +87,8 @@ func Summarize(s *state.State, now time.Time) Summary {
 	b := h.Bake
 
 	switch {
+	case sum.ErrorKind == ErrorKindTrust:
+		sum.Status = TrustStatus
 	case h.NeedsOwner != "":
 		sum.Status = "Needs you: " + h.NeedsOwner
 	case b != nil && b.Started != "" && b.Version == s.OS.RunningRelease && b.Rollback:
