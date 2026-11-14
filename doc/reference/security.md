@@ -68,6 +68,15 @@ KEK, db, and dbx updates are signed offline and then made available via a Provid
 - An attacker could block IncusOS update checks to prevent application of Secure Boot key updates
 - Each `.auth` file is signed by a KEK certificate already enrolled on the machine IncusOS is running on. If the file is tampered with, enrollment will fail, so there is no special need to protect or checksum received updates.
 
+## Update server trust
+
+IncusOS only installs updates whose signed index chains to the root CA and update CA embedded in the running image (or the provider's `update_ca`). If the update server signs with a CA this system doesn't trust, the update check reports a `trust` failure with the SHA-256 fingerprints of the expected and presented CAs (see [update check failures](system/update.md#update-check-failures)).
+
+The system won't fix this by itself. Compare both fingerprints with the ones the update server publishes:
+
+- If the presented CA is the legitimate newer CA, the system needs a release that migrates it to that CA, or a reinstall from a current image.
+- If it isn't, the server or the path to it isn't the expected one; don't override `update_ca` to make the check pass.
+
 ## Use of TPM PCRs
 IncusOS relies on five PCRs (4, 7, 11, 12 & 15) to bind disk encryption keys.
 
