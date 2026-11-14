@@ -72,6 +72,7 @@ type images struct {
 
 	serverURL string
 	updateCA  *x509.Certificate
+	rootCA    *x509.Certificate // The embedded root CA when nil.
 	authParam bool
 	token     string
 	client    *http.Client
@@ -374,6 +375,15 @@ func (p *images) load(ctx context.Context) error {
 	return nil
 }
 
+// verify checks the signed index against the update CA, under the root CA.
+func (p *images) verify(ctx context.Context, message []byte) (*bytes.Buffer, error) {
+	if p.rootCA != nil {
+		return util.VerifySMIMEWithRoot(ctx, p.rootCA, []*x509.Certificate{p.updateCA}, message)
+	}
+
+	return util.VerifySMIME(ctx, []*x509.Certificate{p.updateCA}, message)
+}
+
 func (p *images) checkRelease(ctx context.Context) (*apiupdate.UpdateFull, error) {
 	// Acquire lock.
 	p.releaseMu.Lock()
@@ -406,7 +416,7 @@ func (p *images) checkRelease(ctx context.Context) (*apiupdate.UpdateFull, error
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, errors.New("server failed to return expected file")
+			return nil, ErrServerResponse
 		}
 
 		bodyContents, err := io.ReadAll(resp.Body)
@@ -415,7 +425,7 @@ func (p *images) checkRelease(ctx context.Context) (*apiupdate.UpdateFull, error
 		}
 
 		// Validate signed index.
-		verified, err := util.VerifySMIME(ctx, []*x509.Certificate{p.updateCA}, bodyContents)
+		verified, err := p.verify(ctx, bodyContents)
 		if err != nil {
 			return nil, err
 		}
@@ -443,7 +453,7 @@ func (p *images) checkRelease(ctx context.Context) (*apiupdate.UpdateFull, error
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, errors.New("server failed to return expected file")
+			return nil, ErrServerResponse
 		}
 
 		// Parse the update list.
