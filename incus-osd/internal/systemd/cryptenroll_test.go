@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lxc/incus-os/incus-osd/internal/passphrase"
+	"github.com/lxc/incus-os/incus-osd/internal/secureboot"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
 
@@ -40,13 +41,15 @@ func stubTools(t *testing.T) (string, func() []string, string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	keys := t.TempDir()
-	oldKeys, oldVolumes := keysDir, luksVolumePartitions
+	oldKeys, oldVolumes, oldSeal := keysDir, luksVolumePartitions, secureboot.SealStatePath
 	keysDir = keys
 	luksVolumePartitions = func(context.Context) (map[string]string, error) {
 		return map[string]string{"root": "/dev/test-root", "swap": "/dev/test-swap"}, nil
 	}
 
-	t.Cleanup(func() { keysDir, luksVolumePartitions = oldKeys, oldVolumes })
+	secureboot.SealStatePath = filepath.Join(dir, "arca-tpm-seal.json")
+
+	t.Cleanup(func() { keysDir, luksVolumePartitions, secureboot.SealStatePath = oldKeys, oldVolumes, oldSeal })
 
 	return keys, func() []string {
 		body, err := os.ReadFile(log) //nolint:gosec
@@ -114,6 +117,22 @@ func TestGenerateRecoveryKeys(t *testing.T) { //nolint:paralleltest // sets PATH
 
 	if len(log) != 6 {
 		t.Fatalf("%d calls, want 6: %q", len(log), log)
+	}
+
+	_, err = secureboot.ReadSealState(secureboot.SealStatePath)
+	if err != nil {
+		t.Fatalf("no seal state record: %v", err)
+	}
+}
+
+func TestGenerateRecoveryKeysSealStateWriteFailure(t *testing.T) { //nolint:paralleltest // sets PATH and the keys directory
+	stubTools(t)
+
+	secureboot.SealStatePath = filepath.Join(t.TempDir(), "missing", "arca-tpm-seal.json")
+
+	err := GenerateRecoveryKeys(context.Background(), &state.State{})
+	if err != nil {
+		t.Fatalf("a failed seal state write failed the seal: %v", err)
 	}
 }
 

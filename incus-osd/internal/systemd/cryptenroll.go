@@ -111,6 +111,9 @@ func GenerateRecoveryKeys(ctx context.Context, s *state.State) error {
 		}
 	}
 
+	// Record the state the volumes are sealed to, so the initrd can explain a refusal.
+	secureboot.RecordSealState("", nil, nil, nil)
+
 	return nil
 }
 

@@ -139,6 +139,7 @@ func PerformOSFactoryReset(ctx context.Context, resetSeed *api.SystemReset) erro
 	_ = os.RemoveAll("/boot/swtpm/")
 	_ = os.Remove("/boot/sb-disabled")
 	_ = os.Remove("/boot/recovery-passphrase-acknowledged")
+	_ = os.Remove("/boot/arca-tpm-seal.json")
 
 	// Fourth, wipe system partitions (swap, root, and local-data).
 	for _, partitionIndex := range []string{"9", "10", "11"} {

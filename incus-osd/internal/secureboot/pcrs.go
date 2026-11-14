@@ -79,7 +79,9 @@ func ForceUpdatePCRBindings(ctx context.Context, s *state.State) error {
 	}
 
 	// Extract the signing certificate from the UKI we're running from.
-	ukiCert, err := getPublicKeyFromUKI(util.CurrentUKIPath(s.OS.Name, s.OS.RunningRelease))
+	ukiFile := util.CurrentUKIPath(s.OS.Name, s.OS.RunningRelease)
+
+	ukiCert, err := getPublicKeyFromUKI(ukiFile)
 	if err != nil {
 		return err
 	}
@@ -171,6 +173,12 @@ func ForceUpdatePCRBindings(ctx context.Context, s *state.State) error {
 				}
 			}
 		}
+	}
+
+	if sbEnabled {
+		RecordSealState(ukiFile, pcr4, pcr7, nil)
+	} else {
+		RecordSealState(ukiFile, pcr4, pcr7, pcr12)
 	}
 
 	// Once complete, immediately reboot the system which should then auto-unlock.

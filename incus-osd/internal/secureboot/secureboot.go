@@ -127,8 +127,10 @@ func HandleSecureBootKeyChange(ctx context.Context, ukiFile string, usrImageFile
 	pcrBindingArg := pcrBindingArgument(nil, newPCR7, nil)
 
 	// When Secure Boot is disabled, we also bind to PCR4 and PCR12.
+	var pcr12 []byte
+
 	if !sbEnabled {
-		pcr12, err := computeNewPCR12Value(eventLog)
+		pcr12, err = computeNewPCR12Value(eventLog)
 		if err != nil {
 			return err
 		}
@@ -147,6 +149,8 @@ func HandleSecureBootKeyChange(ctx context.Context, ukiFile string, usrImageFile
 			return err
 		}
 	}
+
+	RecordSealState(ukiFile, newPCR4, newPCR7, pcr12)
 
 	return nil
 }
@@ -215,6 +219,8 @@ func UpdatePCR4Binding(ctx context.Context, ukiFile string) error {
 			return err
 		}
 	}
+
+	RecordSealState(ukiFile, newPCR4, pcr7, pcr12)
 
 	return nil
 }

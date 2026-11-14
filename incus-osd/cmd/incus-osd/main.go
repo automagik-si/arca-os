@@ -614,6 +614,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 	}
 
+	// Disks sealed before the seal state record existed get one, once the TPM unlocked them.
+	recordMissingSealState(ctx)
+
 	// Enable swap, if present. Swap isn't normally activated until after exiting the initrd, and because we're not able to
 	// rely on the TPM to automatically unlock that partition, systemd cannot enable swap for us during system boot.
 	_, err = os.Stat("/dev/mapper/swap")
@@ -1388,4 +1391,24 @@ func startApplications(ctx context.Context, s *state.State) error {
 	}
 
 	return nil
+}
+
+// recordMissingSealState writes the TPM seal state record when there is none and the TPM
+// unlocked the volumes on this boot, as the current measurements are then the sealed ones.
+func recordMissingSealState(ctx context.Context) {
+	_, err := os.Stat(secureboot.SealStatePath)
+	if !os.IsNotExist(err) {
+		return
+	}
+
+	tpmAutoUnlocked, err := util.TPMAutoUnlocked()
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to read the TPM unlock state", "err", err)
+
+		return
+	}
+
+	if tpmAutoUnlocked {
+		secureboot.RecordSealState("", nil, nil, nil)
+	}
 }
