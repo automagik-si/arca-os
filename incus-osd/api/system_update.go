@@ -39,6 +39,24 @@ type SystemUpdateState struct {
 
 	Health *SystemUpdateHealth `json:"health,omitempty" yaml:"health,omitempty"`
 
+	// LastErrorKind is why the last check failed: "network", "parse", "signature", "trust", "other", or empty.
+	LastErrorKind string `json:"last_error_kind,omitempty" yaml:"last_error_kind,omitempty"`
+
+	// LastError is the last check's failure, as reported by the update provider.
+	LastError string `json:"last_error,omitempty" yaml:"last_error,omitempty"`
+
+	// EmbeddedCAFingerprint is the SHA-256 of the update CA this system expects.
+	EmbeddedCAFingerprint string `json:"embedded_ca_fingerprint,omitempty" yaml:"embedded_ca_fingerprint,omitempty"`
+
+	// PresentedCAFingerprint is the SHA-256 of the CA the update server's signature was issued by.
+	PresentedCAFingerprint string `json:"presented_ca_fingerprint,omitempty" yaml:"presented_ca_fingerprint,omitempty"`
+
+	// TrustFailures counts consecutive checks where the update server's key wasn't trusted.
+	TrustFailures int `json:"trust_failures,omitempty" yaml:"trust_failures,omitempty"`
+
+	// TrustEscalated is set once the owner has been warned about repeated trust failures.
+	TrustEscalated bool `json:"trust_escalated,omitempty" yaml:"trust_escalated,omitempty"`
+
 	PendingMaintenanceWindowCheck bool `json:"-"`
 }
 
