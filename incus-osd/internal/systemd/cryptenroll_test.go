@@ -169,3 +169,44 @@ func TestWipeAllRecoveryKeys(t *testing.T) { //nolint:paralleltest // sets PATH 
 		t.Fatalf("slots left %q, want only the volume's own passphrase", left)
 	}
 }
+
+func TestDeleteEncryptionKey(t *testing.T) { //nolint:paralleltest // sets PATH and the keys directory
+	keys, calls, _ := stubTools(t)
+
+	common := "abandon ability able about above absent absorb abstract"
+
+	for _, vol := range []string{"root", "swap"} {
+		err := os.WriteFile(filepath.Join(keys, "recovery."+vol+".key"), []byte("zoo zoo zoo zoo zoo zoo zoo "+vol), 0o400)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := &state.State{}
+	s.System.Security.Config.EncryptionRecoveryKeys = []string{common, "user-key!"}
+
+	err := DeleteEncryptionKey(context.Background(), s, "user-key!")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The passphrase has no symbol, so it must be re-added without the strength check.
+	if !slices.Equal(s.System.Security.Config.EncryptionRecoveryKeys, []string{common}) {
+		t.Fatalf("keys left %q, want only the passphrase", s.System.Security.Config.EncryptionRecoveryKeys)
+	}
+
+	log := calls()
+
+	for _, vol := range []string{"root", "swap"} {
+		readd := "systemd-cryptenroll --unlock-key-file=" + filepath.Join(keys, "recovery."+vol+".key") + " --password /dev/test-" + vol + "|" + common
+		if !slices.Contains(log, readd) {
+			t.Fatalf("the passphrase was not re-enrolled on %s: %q", vol, log)
+		}
+
+		for _, c := range log {
+			if strings.HasSuffix(c, "/dev/test-"+vol+"|user-key!") && !strings.HasPrefix(c, "cryptsetup luksRemoveKey") {
+				t.Fatalf("the deleted key was enrolled again: %q", c)
+			}
+		}
+	}
+}
