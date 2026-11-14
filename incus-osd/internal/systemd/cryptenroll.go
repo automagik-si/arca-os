@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -11,55 +13,53 @@ import (
 	"github.com/muesli/crunchy"
 
 	"github.com/lxc/incus-os/incus-osd/api"
+	"github.com/lxc/incus-os/incus-osd/internal/passphrase"
 	"github.com/lxc/incus-os/incus-osd/internal/secureboot"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
+// keysDir holds each LUKS volume's own recovery passphrase; tests replace it.
+var keysDir = "/var/lib/incus-os/keys"
+
+// luksVolumePartitions returns the LUKS volumes by name; tests replace it.
+var luksVolumePartitions = util.GetLUKSVolumePartitions
+
 // GenerateRecoveryKeys utilizes systemd-cryptenroll to generate recovery keys for the
 // root and swap LUKS volumes. The logic depends on an existing tpm2-backed key being
 // enrolled and accessible, which should be the case on first boot.
 //
-// A unique recovery key will be generated and saved to disk for each LUKS volume, which
-// IncusOS will then use when performing future cryptsetup actions.
+// A unique recovery passphrase will be generated and saved to disk for each LUKS volume,
+// which IncusOS will then use when performing future cryptsetup actions.
 //
-// If no encryption recovery keys currently exist in state, a second common recovery key
-// will also be generated and reported via the security API. Each LUKS volume will enroll
-// all encryption recovery keys from state in addition to the generated unique recovery key.
+// If no encryption recovery keys currently exist in state, a second common recovery
+// passphrase will also be generated and reported via the security API. Each LUKS volume
+// will enroll all encryption recovery keys from state in addition to its own passphrase.
 //
 // This setup is required so IncusOS can always have a known-good recovery key even if
-// the TPM is not in a state that can be used to unlock the LUKS volumes. systemd-cryptenroll
-// differentiates between "recovery" and "password" passphrases. We rely on this in
-// later code to distinguish between IncusOS (recovery) and user-provided (password)
-// encryption keys.
+// the TPM is not in a state that can be used to unlock the LUKS volumes. Every passphrase
+// is eight words (see the passphrase package) enrolled as a traditional "password" slot,
+// so it can be typed at the console when the TPM refuses to unlock a volume.
 func GenerateRecoveryKeys(ctx context.Context, s *state.State) error {
 	// Get the underlying LUKS partitions.
-	luksVolumes, err := util.GetLUKSVolumePartitions(ctx)
+	luksVolumes, err := luksVolumePartitions(ctx)
 	if err != nil {
 		return err
 	}
 
-	// On first boot, generate a common recovery key that will be used for both volumes and reported via the security API.
+	// On first boot, generate a common recovery passphrase that will be used for both volumes and reported via the security API.
 	if len(s.System.Security.Config.EncryptionRecoveryKeys) == 0 {
-		commonRecoveryPassword, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-tpm2-device=auto", "--recovery-key", luksVolumes["root"])
+		commonRecoveryPassword, err := passphrase.Generate()
 		if err != nil {
 			return err
 		}
 
-		commonRecoveryPassword = strings.TrimSuffix(commonRecoveryPassword, "\n")
-
-		// Wipe that common recovery key, since we must manually enroll it on both volumes as a traditional "password" key.
-		_, err = subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-tpm2-device=auto", "--wipe-slot=recovery", luksVolumes["root"])
-		if err != nil {
-			return err
-		}
-
-		// Save the new recovery key to state.
+		// Save the new recovery passphrase to state.
 		s.System.Security.Config.EncryptionRecoveryKeys = append(s.System.Security.Config.EncryptionRecoveryKeys, commonRecoveryPassword)
 		s.System.Security.State.EncryptionRecoveryKeysRetrieved = false
 	}
 
-	// Generate and save unique recovery keys for each volume.
+	// Generate and save unique recovery passphrases for each volume.
 	for volumeName, volumeDev := range luksVolumes {
 		// Wipe any existing recovery or password keys.
 		_, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-tpm2-device=auto", "--wipe-slot=recovery,password", volumeDev)
@@ -67,16 +67,19 @@ func GenerateRecoveryKeys(ctx context.Context, s *state.State) error {
 			return err
 		}
 
-		// Enroll a new recovery password.
-		recoveryPassword, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-tpm2-device=auto", "--recovery-key", volumeDev)
+		recoveryPassword, err := passphrase.Generate()
 		if err != nil {
 			return err
 		}
 
-		recoveryPassword = strings.TrimSuffix(recoveryPassword, "\n")
+		// Enroll it as a password; systemd-cryptenroll reads it from the NEWPASSWORD environment variable.
+		_, _, err = subprocess.RunCommandSplit(ctx, append(os.Environ(), "NEWPASSWORD="+recoveryPassword), nil, "systemd-cryptenroll", "--unlock-tpm2-device=auto", "--password", volumeDev)
+		if err != nil {
+			return err
+		}
 
-		// Write the recovery password to disk.
-		f, err := os.Create("/var/lib/incus-os/keys/recovery." + volumeName + ".key")
+		// Write the recovery passphrase to disk.
+		f, err := os.Create(filepath.Join(keysDir, "recovery."+volumeName+".key"))
 		if err != nil {
 			return err
 		}
@@ -130,14 +133,14 @@ func AddEncryptionKey(ctx context.Context, s *state.State, key string, skipKeyVa
 	}
 
 	// Get the underlying LUKS partitions.
-	luksVolumes, err := util.GetLUKSVolumePartitions(ctx)
+	luksVolumes, err := luksVolumePartitions(ctx)
 	if err != nil {
 		return err
 	}
 
 	// Add the new encryption password. Need to pass to systemd-cryptenroll via NEWPASSWORD environment variable.
 	for name, volume := range luksVolumes {
-		_, _, err := subprocess.RunCommandSplit(ctx, append(os.Environ(), "NEWPASSWORD="+key), nil, "systemd-cryptenroll", "--unlock-key-file=/var/lib/incus-os/keys/recovery."+name+".key", "--password", volume)
+		_, _, err := subprocess.RunCommandSplit(ctx, append(os.Environ(), "NEWPASSWORD="+key), nil, "systemd-cryptenroll", "--unlock-key-file="+filepath.Join(keysDir, "recovery."+name+".key"), "--password", volume)
 		if err != nil {
 			return err
 		}
@@ -161,14 +164,14 @@ func DeleteEncryptionKey(ctx context.Context, s *state.State, key string) error 
 	}
 
 	// Get the underlying LUKS partitions.
-	luksVolumes, err := util.GetLUKSVolumePartitions(ctx)
+	luksVolumes, err := luksVolumePartitions(ctx)
 	if err != nil {
 		return err
 	}
 
-	// First, wipe all recovery and password slots.
+	// First, remove every key from state.
 	for name, volume := range luksVolumes {
-		err := WipeAllRecoveryKeys(ctx, name, volume)
+		err := WipeAllRecoveryKeys(ctx, name, volume, s.System.Security.Config.EncryptionRecoveryKeys)
 		if err != nil {
 			return err
 		}
@@ -177,13 +180,13 @@ func DeleteEncryptionKey(ctx context.Context, s *state.State, key string) error 
 	existingKeys := s.System.Security.Config.EncryptionRecoveryKeys
 	s.System.Security.Config.EncryptionRecoveryKeys = []string{}
 
-	// Re-add remaining keys.
+	// Re-add remaining keys. They were checked when added, and a generated passphrase has no symbol.
 	for _, existingKey := range existingKeys {
 		if existingKey == key {
 			continue
 		}
 
-		err := AddEncryptionKey(ctx, s, existingKey, false)
+		err := AddEncryptionKey(ctx, s, existingKey, true)
 		if err != nil {
 			return err
 		}
@@ -192,11 +195,38 @@ func DeleteEncryptionKey(ctx context.Context, s *state.State, key string) error 
 	return nil
 }
 
-// WipeAllRecoveryKeys will wipe all password key slots for the provided volume.
-func WipeAllRecoveryKeys(ctx context.Context, name string, volume string) error {
-	_, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-key-file=/var/lib/incus-os/keys/recovery."+name+".key", "--wipe-slot=password", volume)
+// WipeAllRecoveryKeys removes the given encryption recovery keys from the provided volume.
+// The volume's own passphrase is a password slot too, so the keys are removed one by one; a
+// volume whose key file still holds a recovery-type key has every password slot wiped instead.
+func WipeAllRecoveryKeys(ctx context.Context, name string, volume string, keys []string) error {
+	keyFile := filepath.Join(keysDir, "recovery."+name+".key")
 
-	return err
+	own, err := os.ReadFile(keyFile) //nolint:gosec
+	if err != nil {
+		return err
+	}
+
+	if !passphrase.Valid(string(own)) {
+		_, err := subprocess.RunCommandContext(ctx, "systemd-cryptenroll", "--unlock-key-file="+keyFile, "--wipe-slot=password", volume)
+
+		return err
+	}
+
+	for _, key := range keys {
+		if key == string(own) {
+			continue
+		}
+
+		err := subprocess.RunCommandWithFds(ctx, strings.NewReader(key), nil, "cryptsetup", "luksRemoveKey", "--batch-mode", "--key-file=-", volume)
+
+		// Exit code 2 means no slot holds this key, so there is nothing to remove.
+		var exitErr *exec.ExitError
+		if err != nil && (!errors.As(err, &exitErr) || exitErr.ExitCode() != 2) {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ListEncryptedVolumes returns a list of each encrypted volume and its status.
