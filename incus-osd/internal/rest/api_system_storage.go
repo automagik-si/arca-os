@@ -90,6 +90,7 @@ func (s *Server) apiSystemStorage(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.state.System.Storage.Config.Pools = pools
+		info.DataMounts = storage.DataMountStatus(s.state.System.Storage.Config.DataMounts)
 
 		ret := api.SystemStorage{
 			State:  info,
@@ -112,6 +113,18 @@ func (s *Server) apiSystemStorage(w http.ResponseWriter, r *http.Request) {
 			_ = response.BadRequest(err).Render(w)
 
 			return
+		}
+
+		// Check the data mounts before changing anything.
+		var dataMounts []api.SystemStorageDataMount
+
+		if storageStruct.Config.DataMounts != nil {
+			dataMounts, err = storage.ValidateDataMounts(storageStruct.Config.DataMounts)
+			if err != nil {
+				_ = response.BadRequest(err).Render(w)
+
+				return
+			}
 		}
 
 		// Apply new schedule to the job scheduler.
@@ -151,6 +164,12 @@ func (s *Server) apiSystemStorage(w http.ResponseWriter, r *http.Request) {
 		// A request without the field keeps the list; an empty list clears it.
 		if storageStruct.Config.ProtectedSerials != nil {
 			s.state.System.Storage.Config.ProtectedSerials = storageStruct.Config.ProtectedSerials
+		}
+
+		// Same for the data mounts; new ones are mounted now, a removed one stays mounted until reboot.
+		if dataMounts != nil {
+			s.state.System.Storage.Config.DataMounts = dataMounts
+			storage.MountDataMounts(r.Context(), dataMounts)
 		}
 
 		// Create or update a pool.
