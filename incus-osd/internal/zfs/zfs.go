@@ -1076,6 +1076,11 @@ func ScrubAllPools(ctx context.Context, _ *state.State) error {
 	return defaultActivityRunner.runOnAllPools(ctx, scrubActivity)
 }
 
+// ResumePausedScrubs resumes the scrubs left paused when incus-osd last stopped.
+func ResumePausedScrubs(ctx context.Context) error {
+	return defaultActivityRunner.resumePausedScrubs(ctx)
+}
+
 // TrimZpool trims the specified pool.
 func TrimZpool(ctx context.Context, poolName string) error {
 	pool, err := getPool(ctx, poolName)

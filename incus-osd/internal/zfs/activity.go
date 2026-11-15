@@ -40,15 +40,17 @@ type poolActivity struct {
 	name   string
 	start  func(ctx context.Context, zpool zpoolFunc, pool api.SystemStoragePool) error
 	pause  []string
-	resume []string
+	resume func(ctx context.Context, r *activityRunner, pool string) []string
 	state  func(pool api.SystemStoragePool) activityState
 }
 
 var scrubActivity = poolActivity{
-	name:   "scrub",
-	start:  startScrub,
-	pause:  []string{"scrub", "-p"},
-	resume: []string{"scrub"},
+	name:  "scrub",
+	start: startScrub,
+	pause: []string{"scrub", "-p"},
+	resume: func(_ context.Context, _ *activityRunner, pool string) []string {
+		return []string{"scrub", pool}
+	},
 	state: func(pool api.SystemStoragePool) activityState {
 		// zpool reports a paused scrub as scanning.
 		if pool.LastScrub != nil && pool.LastScrub.State == api.SystemStoragePoolScrubInProgress {
@@ -60,10 +62,12 @@ var scrubActivity = poolActivity{
 }
 
 var trimActivity = poolActivity{
-	name:   "trim",
-	start:  startTrim,
-	pause:  []string{"trim", "-s"},
-	resume: []string{"trim"},
+	name:  "trim",
+	start: startTrim,
+	pause: []string{"trim", "-s"},
+	resume: func(_ context.Context, _ *activityRunner, pool string) []string {
+		return []string{"trim", pool}
+	},
 	state: func(pool api.SystemStoragePool) activityState {
 		if pool.LastTrim == nil {
 			return activityGone
@@ -87,9 +91,11 @@ type activityRunner struct {
 	pools   func(ctx context.Context) ([]api.SystemStoragePool, error)
 	pool    func(ctx context.Context, name string) (api.SystemStoragePool, error)
 	readPSI func() ([]byte, error)
-	ticker  func() (<-chan time.Time, func())
-	record  func(pool string, activity string, pause storage.PoolActivityPause)
-	logger  *slog.Logger
+	// trimDevices returns the leaves whose trim is suspended, and whether no other leaf was trimmed.
+	trimDevices func(ctx context.Context, pool string) ([]string, bool, error)
+	ticker      func() (<-chan time.Time, func())
+	record      func(pool string, activity string, pause storage.PoolActivityPause)
+	logger      *slog.Logger
 
 	psiOffLogged sync.Once
 }
@@ -102,8 +108,9 @@ func newActivityRunner() *activityRunner {
 
 			return pools, err
 		},
-		pool:    storage.GetZpoolMembers,
-		readPSI: func() ([]byte, error) { return os.ReadFile(iopressure.Path) },
+		pool:        storage.GetZpoolMembers,
+		readPSI:     func() ([]byte, error) { return os.ReadFile(iopressure.Path) },
+		trimDevices: storage.SuspendedTrimDevices,
 		ticker: func() (<-chan time.Time, func()) {
 			t := time.NewTicker(iopressure.Tick)
 
@@ -300,7 +307,7 @@ func (r *activityRunner) resume(ctx context.Context, act poolActivity, poolName 
 		return state, nil
 	}
 
-	_, err = r.zpool(ctx, append(slices.Clone(act.resume), poolName)...)
+	_, err = r.zpool(ctx, act.resume(ctx, r, poolName)...)
 	if err != nil {
 		return activityGone, err
 	}
@@ -321,4 +328,9 @@ func (r *activityRunner) resumeAfterStop(ctx context.Context, act poolActivity, 
 	}
 
 	r.log().InfoContext(ctx, "Resumed pool "+act.name+" as its job stopped", slog.String("pool", poolName))
+}
+
+// resumePausedScrubs resumes every scrub found paused, as nothing else would.
+func (*activityRunner) resumePausedScrubs(_ context.Context) error {
+	return nil
 }

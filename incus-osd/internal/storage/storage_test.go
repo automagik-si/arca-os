@@ -262,7 +262,7 @@ func TestPoolActivityPauseReadsBackThroughAPI(t *testing.T) {
 		LastTrim:  &api.SystemStoragePoolTrimStatus{State: api.SystemStoragePoolTrimFinished},
 	}
 
-	applyPoolActivityPauses(&pool)
+	applyPoolActivityPauses(pool.Name, pool.LastScrub, pool.LastTrim)
 
 	raw, err := json.Marshal(pool)
 	require.NoError(t, err)
@@ -281,7 +281,7 @@ func TestPoolActivityPauseReadsBackThroughAPI(t *testing.T) {
 
 	// Pools IncusOS never paused report nothing.
 	other := api.SystemStoragePool{Name: "pause-api-other", LastScrub: &api.SystemStoragePoolScrubStatus{}}
-	applyPoolActivityPauses(&other)
+	applyPoolActivityPauses(other.Name, other.LastScrub, other.LastTrim)
 	require.False(t, other.LastScrub.Paused)
 	require.Zero(t, other.LastScrub.Pauses)
 }
