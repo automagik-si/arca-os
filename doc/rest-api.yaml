@@ -1546,6 +1546,22 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: Errors
+            pause_reason:
+                type: string
+                x-go-name: PauseReason
+            paused:
+                description: Set while IncusOS holds a scrub it started because of high IO pressure.
+                type: boolean
+                x-go-name: Paused
+            paused_since:
+                format: date-time
+                type: string
+                x-go-name: PausedSince
+            pauses:
+                description: Number of pauses during the current or last scrub IncusOS started.
+                format: int64
+                type: integer
+                x-go-name: Pauses
             progress:
                 type: string
                 x-go-name: Progress
@@ -1592,6 +1608,22 @@ definitions:
                 format: date-time
                 type: string
                 x-go-name: LastActionTime
+            pause_reason:
+                type: string
+                x-go-name: PauseReason
+            paused:
+                description: Set while IncusOS holds a trim it started because of high IO pressure.
+                type: boolean
+                x-go-name: Paused
+            paused_since:
+                format: date-time
+                type: string
+                x-go-name: PausedSince
+            pauses:
+                description: Number of pauses during the current or last trim IncusOS started.
+                format: int64
+                type: integer
+                x-go-name: Pauses
             progress:
                 type: string
                 x-go-name: Progress

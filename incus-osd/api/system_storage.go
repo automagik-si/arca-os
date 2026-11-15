@@ -101,6 +101,13 @@ type SystemStoragePoolScrubStatus struct {
 	EndTime   time.Time                   `json:"end_time"`
 	Progress  string                      `json:"progress"`
 	Errors    int                         `json:"errors"`
+
+	// Set while IncusOS holds a scrub it started because of high IO pressure.
+	Paused      bool      `json:"paused"`
+	PausedSince time.Time `json:"paused_since"`
+	PauseReason string    `json:"pause_reason"`
+	// Number of pauses during the current or last scrub IncusOS started.
+	Pauses int `json:"pauses"`
 }
 
 // SystemStoragePoolTrimState represents the state of a trim in a pool.
@@ -127,6 +134,13 @@ type SystemStoragePoolTrimStatus struct {
 	LastActionTime time.Time                  `json:"last_action_time"`
 	Progress       string                     `json:"progress"`
 	Errors         int                        `json:"errors"`
+
+	// Set while IncusOS holds a trim it started because of high IO pressure.
+	Paused      bool      `json:"paused"`
+	PausedSince time.Time `json:"paused_since"`
+	PauseReason string    `json:"pause_reason"`
+	// Number of pauses during the current or last trim IncusOS started.
+	Pauses int `json:"pauses"`
 }
 
 // SystemStorageDrive defines a struct that holds information about a specific drive.
