@@ -17,6 +17,17 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
+// luksKeysDir, luksMapperDir and runCryptsetup let tests stand in for the key store and cryptsetup.
+var (
+	luksKeysDir   = "/var/lib/incus-os/keys"
+	luksMapperDir = "/dev/mapper"
+	runCryptsetup = func(ctx context.Context, args ...string) error {
+		_, err := subprocess.RunCommandContext(ctx, "cryptsetup", args...)
+
+		return err
+	}
+)
+
 type cryptsetupLuksDumpPartialParse struct {
 	Tokens map[string]struct {
 		Type     string `json:"type"`
@@ -62,7 +73,7 @@ func ImportEncryptedDrive(ctx context.Context, devPath string, key string) error
 	}
 
 	devName := filepath.Base(devPath)
-	keyfilePath := "/var/lib/incus-os/keys/luks." + devName + ".key"
+	keyfilePath := filepath.Join(luksKeysDir, "luks."+devName+".key")
 
 	// Decode encryption key into raw bytes.
 	rawKey, err := base64.StdEncoding.DecodeString(key)
@@ -74,21 +85,39 @@ func ImportEncryptedDrive(ctx context.Context, devPath string, key string) error
 		return fmt.Errorf("expected a 32 byte raw encryption key, got %d bytes", len(rawKey))
 	}
 
-	// Write the key to disk.
-	err = os.WriteFile(keyfilePath, rawKey, 0o0600)
+	// The stored key is only replaced by one proven to open the drive, so a failure here never loses it.
+	tmp, err := os.CreateTemp(luksKeysDir, "import-*.tmp")
 	if err != nil {
 		return err
+	}
+
+	defer os.Remove(tmp.Name()) //nolint:errcheck
+
+	_, err = tmp.Write(rawKey)
+	if err != nil {
+		_ = tmp.Close()
+
+		return err
+	}
+
+	err = tmp.Close()
+	if err != nil {
+		return err
+	}
+
+	// Test the key against a keyslot, even if the drive is already unlocked.
+	err = runCryptsetup(ctx, "open", "--test-passphrase", "--type=luks", "--key-file", tmp.Name(), devPath)
+	if err != nil {
+		return fmt.Errorf("the key does not open %s: %w", devPath, err)
 	}
 
 	// Unlock the drive.
-	err = unlockDrive(ctx, devPath)
+	err = openDrive(ctx, devPath, tmp.Name())
 	if err != nil {
-		_ = os.Remove(keyfilePath)
-
 		return err
 	}
 
-	return nil
+	return os.Rename(tmp.Name(), keyfilePath)
 }
 
 // DecryptDrives decrypts all LUKS encrypted drives on the system where a key is available.
@@ -185,21 +214,20 @@ func LUKSBoundToPCR(ctx context.Context, devPath string, pcrIndex int) (bool, er
 }
 
 func unlockDrive(ctx context.Context, devPath string) error {
-	devName := filepath.Base(devPath)
-	keyfilePath := "/var/lib/incus-os/keys/luks." + devName + ".key"
+	return openDrive(ctx, devPath, filepath.Join(luksKeysDir, "luks."+filepath.Base(devPath)+".key"))
+}
 
-	_, err := os.Stat("/dev/mapper/luks-" + devName)
+// openDrive opens devPath with keyfile, unless it is already open.
+func openDrive(ctx context.Context, devPath string, keyfile string) error {
+	devName := filepath.Base(devPath)
+
+	_, err := os.Stat(filepath.Join(luksMapperDir, "luks-"+devName))
 	if err == nil {
 		// Already unlocked.
 		return nil
 	}
 
-	_, err = subprocess.RunCommandContext(ctx, "cryptsetup", "open", "--type=luks", "-d", keyfilePath, devPath, "luks-"+devName)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return runCryptsetup(ctx, "open", "--type=luks", "-d", keyfile, devPath, "luks-"+devName)
 }
 
 func lockDrive(ctx context.Context, devPath string) error {
