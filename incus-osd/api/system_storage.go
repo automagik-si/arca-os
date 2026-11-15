@@ -102,11 +102,13 @@ type SystemStoragePoolScrubStatus struct {
 	Progress  string                      `json:"progress"`
 	Errors    int                         `json:"errors"`
 
-	// Set while IncusOS holds a scrub it started because of high IO pressure.
-	Paused      bool      `json:"paused"`
+	// Paused is set while the scrub is paused; IncusOS pauses the scrubs it runs while IO pressure is high.
+	Paused bool `json:"paused"`
+	// PausedSince is when the scrub was paused.
 	PausedSince time.Time `json:"paused_since"`
-	PauseReason string    `json:"pause_reason"`
-	// Number of pauses during the current or last scrub IncusOS started.
+	// PauseReason says why IncusOS paused the scrub, such as "io pressure: full avg10 23.4".
+	PauseReason string `json:"pause_reason"`
+	// Pauses counts the pauses during the current or last scrub IncusOS ran.
 	Pauses int `json:"pauses"`
 }
 
@@ -135,11 +137,13 @@ type SystemStoragePoolTrimStatus struct {
 	Progress       string                     `json:"progress"`
 	Errors         int                        `json:"errors"`
 
-	// Set while IncusOS holds a trim it started because of high IO pressure.
-	Paused      bool      `json:"paused"`
+	// Paused is set while the trim is paused; IncusOS pauses the trims it runs while IO pressure is high.
+	Paused bool `json:"paused"`
+	// PausedSince is when the trim was paused.
 	PausedSince time.Time `json:"paused_since"`
-	PauseReason string    `json:"pause_reason"`
-	// Number of pauses during the current or last trim IncusOS started.
+	// PauseReason says why IncusOS paused the trim, such as "io pressure: full avg10 23.4".
+	PauseReason string `json:"pause_reason"`
+	// Pauses counts the pauses during the current or last trim IncusOS ran.
 	Pauses int `json:"pauses"`
 }
 
