@@ -22,6 +22,11 @@ import (
 )
 
 var (
+	// osDir, processState and reboot let tests run a backup and a restore in a fixture directory.
+	osDir        = "/var/lib/incus-os"
+	processState = processNewState
+	reboot       = systemd.SystemReboot
+
 	recoveryKeyRegex = regexp.MustCompile(`^recovery\..+\.key$`)
 	keyFileRegex     = regexp.MustCompile(`^(luks|zpool)\..+\.key$`)
 )
@@ -36,13 +41,13 @@ func GetOSBackup() ([]byte, error) {
 	zw := gzip.NewWriter(&ret)
 	tw := tar.NewWriter(zw)
 
-	files, err := os.ReadDir("/var/lib/incus-os/")
+	files, err := os.ReadDir(osDir + "/")
 	if err != nil {
 		return nil, err
 	}
 
 	writeFile := func(name string) error {
-		fd, err := os.Open(filepath.Join("/var/lib/incus-os/", name))
+		fd, err := os.Open(filepath.Join(osDir+"/", name))
 		if err != nil {
 			return err
 		}
@@ -78,7 +83,7 @@ func GetOSBackup() ([]byte, error) {
 				return nil, errors.New("backup cannot contain directories")
 			}
 
-			keyFiles, err := os.ReadDir("/var/lib/incus-os/keys/")
+			keyFiles, err := os.ReadDir(osDir + "/keys/")
 			if err != nil {
 				return nil, err
 			}
@@ -131,7 +136,7 @@ func ApplyOSBackup(ctx context.Context, s *state.State, buf io.Reader, skipOptio
 	defer reverter.Fail()
 
 	// Backup the current /var/lib/incus-os/.
-	err := os.Rename("/var/lib/incus-os/", "/var/lib/incus-os.bak/")
+	err := os.Rename(osDir+"/", osDir+".bak/")
 	if err != nil {
 		return err
 	}
@@ -139,35 +144,35 @@ func ApplyOSBackup(ctx context.Context, s *state.State, buf io.Reader, skipOptio
 	// If we encounter an error, restore things to the state prior to starting.
 	reverter.Add(func() {
 		// Restore the backup directory.
-		_ = os.RemoveAll("/var/lib/incus-os/")
-		_ = os.Rename("/var/lib/incus-os.bak/", "/var/lib/incus-os/")
+		_ = os.RemoveAll(osDir + "/")
+		_ = os.Rename(osDir+".bak/", osDir+"/")
 
 		// Ensure we load the old state back.
-		oldState, _ := state.LoadOrCreate("/var/lib/incus-os/state.txt")
+		oldState, _ := state.LoadOrCreate(osDir + "/state.txt")
 		s = oldState
 	})
 
 	// Create a new /var/lib/incus-os/.
-	err = os.MkdirAll("/var/lib/incus-os/keys/", 0o700)
+	err = os.MkdirAll(osDir+"/keys/", 0o700)
 	if err != nil {
 		return err
 	}
 
 	// Copy any existing system-specific encryption recovery keys.
-	existingFiles, err := os.ReadDir("/var/lib/incus-os.bak/keys/")
+	existingFiles, err := os.ReadDir(osDir + ".bak/keys/")
 	if err != nil {
 		return err
 	}
 
 	for _, file := range existingFiles {
 		if recoveryKeyRegex.MatchString(file.Name()) {
-			src, err := os.Open(filepath.Join("/var/lib/incus-os.bak/keys", file.Name()))
+			src, err := os.Open(filepath.Join(osDir+".bak/keys", file.Name()))
 			if err != nil {
 				return err
 			}
 			defer src.Close() //nolint:revive
 
-			dst, err := os.Create(filepath.Join("/var/lib/incus-os/keys", file.Name()))
+			dst, err := os.Create(filepath.Join(osDir+"/keys", file.Name()))
 			if err != nil {
 				return err
 			}
@@ -282,14 +287,14 @@ func ApplyOSBackup(ctx context.Context, s *state.State, buf io.Reader, skipOptio
 		}
 
 		// Encryption keys live under keys/, regardless of where the backup has them.
-		dstPath := "/var/lib/incus-os/" + filename
+		dstPath := osDir + "/" + filename
 		if keyFileRegex.MatchString(filename) {
-			dstPath = "/var/lib/incus-os/keys/" + filename
+			dstPath = osDir + "/keys/" + filename
 		}
 
 		// If told to skip restoring local pool key, copy the existing one from the backup directory.
 		if filename == "zpool.local.key" && slices.Contains(skipOptions, "local-data-encryption-key") {
-			err := copyFile("/var/lib/incus-os.bak/keys/zpool.local.key", dstPath)
+			err := copyFile(osDir+".bak/keys/zpool.local.key", dstPath)
 			if err != nil {
 				return err
 			}
@@ -306,13 +311,13 @@ func ApplyOSBackup(ctx context.Context, s *state.State, buf io.Reader, skipOptio
 
 	// Process the new state and make necessary adjustments to the system
 	// so the actual system state matches.
-	err = processNewState(ctx, s, skipOptions)
+	err = processState(ctx, s, skipOptions)
 	if err != nil {
 		return errors.New("unable to process state from backup: " + err.Error())
 	}
 
 	// Remove the old /var/lib/incus-os/ backup.
-	err = os.RemoveAll("/var/lib/incus-os.bak/")
+	err = os.RemoveAll(osDir + ".bak/")
 	if err != nil {
 		return err
 	}
@@ -321,11 +326,11 @@ func ApplyOSBackup(ctx context.Context, s *state.State, buf io.Reader, skipOptio
 
 	// Finally, reboot the system as an easy way to ensure service, network, and application
 	// configurations match the new state.
-	return systemd.SystemReboot(ctx)
+	return reboot(ctx)
 }
 
 func processNewState(ctx context.Context, s *state.State, skipOptions []string) error {
-	newState, err := state.LoadOrCreate("/var/lib/incus-os/state.txt")
+	newState, err := state.LoadOrCreate(osDir + "/state.txt")
 	if err != nil {
 		return err
 	}

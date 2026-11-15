@@ -1016,6 +1016,14 @@ func registerJobs(s *state.State) error {
 		return err
 	}
 
+	// Register the data mount scrub job.
+	err = jobScheduler.RegisterJob(scheduling.JobName(storage.DataMountScrubJob), storage.DataMountScrubSchedule, func(ctx context.Context, _ *state.State) error {
+		return storage.ScrubDataMounts(ctx, s.System.Storage.Config.DataMounts)
+	}, nil)
+	if err != nil {
+		return err
+	}
+
 	// Register the SMART metrics export job.
 	err = jobScheduler.RegisterJob(scheduling.JobName(storage.SMARTMetricsJob), "15m", func(ctx context.Context, _ *state.State) error {
 		return storage.WriteSMARTMetrics(ctx)
@@ -1065,7 +1073,8 @@ func setTimezone(ctx context.Context) error {
 func setupLocalStorage(ctx context.Context, s *state.State) error {
 	slog.InfoContext(ctx, "Bringing up the local storage")
 
-	err := storage.DecryptDrives(ctx)
+	// Data mounts come up before any application starts; one that fails is reported, never fatal.
+	err := storage.BringUpEncryptedStorage(ctx, s.System.Storage.Config.DataMounts)
 	if err != nil {
 		return err
 	}

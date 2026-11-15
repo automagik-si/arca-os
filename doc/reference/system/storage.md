@@ -23,6 +23,8 @@ The following system-wide configuration options can be set:
 * `pools`: An array of zero or more user-defined storage pool definitions.
 * `scrub_schedule`: A cron expression with five fields defining when to perform an automatic scrub of all the storage pools. Defaults to `0 4 * * 0`.
 * `trim_schedule`: A cron expression with five fields defining when to perform an automatic trim of all the storage pools. Defaults to `0 4 * * 6`.
+* `protected_serials`: Drives that no wipe, encrypt, import or convert may touch, see [protected drives](#protected-drives).
+* `data_mounts`: Existing file systems mounted at every boot, see [data mounts](#data-mounts).
 
 User-defined storage pools are defined in the [`SystemStoragePool` struct](https://github.com/lxc/incus-os/blob/main/incus-osd/api/system_storage.go), which has the following options:
 
@@ -273,6 +275,14 @@ Import and decrypt an existing drive by running:
 ./incus admin os system storage import-encrypted-drive -d '{"id":"/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_incus_disk", "key": "BASE64-OF-KEYFILE"}'
 ```
 
+`key` is the base64 encoded content of a 32 byte random key file that opens one of the drive's keyslots. It is the only
+form taken: a passphrase is refused. The key is stored as the drive's key file on the encrypted system drive, which the
+TPM unlocks, and the drive is unlocked with it at every boot without anyone typing anything.
+
+The key is first tested against the drive's keyslots, even when the drive is already unlocked. A key that opens none of
+them is refused, and the key file already stored for the drive stays exactly as it was. A good key replaces it only
+once it has opened the drive.
+
 Encrypted drives that are managed by IncusOS get two additional properties in `incus admin os system storage show`:
 
 * Encrypted (indicates whether the drive is encrypted)
@@ -328,6 +338,94 @@ name. The serial must be repeated in `confirm`:
 ```
 incus admin os system storage import-convert -d '{"serial":"S0EXAMPLE","pool":"data","confirm":"S0EXAMPLE"}'
 ```
+
+## Data mounts
+
+A data mount is an existing btrfs file system that IncusOS mounts at every boot, so that Incus can keep a storage pool
+on it. It is meant for a drive that already holds data and must not be wiped, for instance LUKS, then LVM, then btrfs.
+IncusOS never formats it: mounting it read-write is the only write IncusOS makes to the file system.
+
+Data mounts are defined in the [`SystemStorageDataMount` struct](https://github.com/lxc/incus-os/blob/main/incus-osd/api/system_storage.go):
+
+* `name`: The mount's name, 1 to 64 letters, digits, `-` or `_`. It is mounted at `/var/lib/arca-mounts/<name>`,
+  outside `/var/lib/incus-os`, so that an OS backup or restore never reaches the data mount.
+* `device`: The device holding the file system, as `/dev/disk/by-id/<id>`, `/dev/disk/by-uuid/<uuid>`,
+  `/dev/mapper/<name>` or `/dev/<vg>/<lv>` for an LVM logical volume. Kernel names such as `/dev/sdb` change between
+  boots and are refused.
+* `filesystem`: Only `btrfs` is supported, and is the default.
+* `options`: Mount options. Defaults to `noatime,compress=zstd:1,discard=async`: no access time writes on reads, cheap
+  compression that writes fewer bytes, and trim batched in the background. `autodefrag` is left out on purpose, as it
+  rewrites files and adds to SSD wear.
+
+At boot, IncusOS unlocks the encrypted drives it has a key for, then waits up to 30 seconds (in total, for all data
+mounts) for each device to appear, as LVM activates volume groups in the background once their encrypted drive is open.
+It then checks that the device holds btrfs and mounts it, giving the probe and the mount two minutes together (a mount
+stuck inside the kernel can't be cut short). All of this happens before Incus starts. Two data mounts whose devices
+lead to the same device node, such as `/dev/vg0/data` and `/dev/mapper/vg0-data`, are refused: only the first is
+mounted. A data mount that fails is logged and reported, but never stops the system from booting: Incus still starts,
+and only the storage pools on that data mount are unavailable.
+
+The state of each data mount is shown in `incus admin os system storage show`:
+
+```yaml
+state:
+  data_mounts:
+  - name: data
+    mount_point: /var/lib/arca-mounts/data
+    mounted: false
+    error: device /dev/vg0/data did not appear within 30s (is its encrypted drive unlocked and its volume group active?)
+```
+
+A configuration update mounts any new data mount right away. A data mount removed from the configuration stays mounted
+until the next boot. As with `protected_serials`, an update without the `data_mounts` field keeps the list and an empty
+list clears it.
+
+### Keeping instances on an existing encrypted btrfs drive
+
+This is the whole recipe for a LUKS drive holding an LVM volume group `vg0` with a btrfs logical volume `data`. Nothing
+on the drive is created, wiped or formatted by IncusOS; Incus itself creates one new, empty subvolume for its pool.
+
+1. The drive needs a keyslot opened by a 32 byte random key file. IncusOS never adds keyslots: if the drive only has a
+   passphrase, add a key file keyslot once on a system where it can be unlocked (`cryptsetup luksAddKey`).
+
+1. Have the drive unlocked at every boot with that key file, as shown in [raw drive encryption](#raw-drive-encryption):
+
+   ```
+   incus admin os system storage import-encrypted-drive -d "{\"id\":\"/dev/disk/by-id/nvme-EXAMPLE\",\"key\":\"$(base64 -w0 drive.key)\"}"
+   ```
+
+1. Add the data mount and protect the drive, keeping the rest of the storage configuration
+   (`incus admin os system storage edit`):
+
+   ```yaml
+   config:
+     protected_serials:
+     - "S0EXAMPLE"
+     data_mounts:
+     - name: "data"
+       device: "/dev/vg0/data"
+   ```
+
+1. Check that `state.data_mounts` shows it as `mounted: true`.
+
+1. Through the Incus API, create the storage pool on a subvolume path **that does not exist yet**. Incus creates the
+   new, empty subvolume itself and keeps its pool in it, beside the data already on the file system:
+
+   ```
+   incus storage create data btrfs source=/var/lib/arca-mounts/data/incus-pool btrfs.mount_options=user_subvol_rm_allowed,noatime,compress=zstd:1,discard=async
+   ```
+
+```{warning}
+Never give Incus the device itself (or `source.wipe`) as the pool source: Incus formats a device it is given. Never give
+it the top of the file system or an existing subvolume either. Only a path that does not exist yet is safe.
+```
+
+The pool and the data already on the drive share one file system on one drive, with no redundancy: a fault in either
+affects both.
+
+IncusOS scrubs every mounted data mount at 05:00 on the first day of each month (`btrfs scrub start -B`), one after
+the other. The scrub reads the whole file system and slows other I/O on the drive while it runs; a data mount that
+isn't mounted is skipped. A scrub that finds errors it can't correct is reported as a failed periodic job.
 
 ## Protected drives
 
