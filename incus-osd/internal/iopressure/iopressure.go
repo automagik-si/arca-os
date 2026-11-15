@@ -2,6 +2,10 @@ package iopressure
 
 import (
 	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -38,8 +42,74 @@ type Sample struct {
 }
 
 // Parse reads the contents of a pressure file such as /proc/pressure/io.
-func Parse(_ string) (Sample, error) {
-	return Sample{}, errors.New("not implemented")
+func Parse(data string) (Sample, error) {
+	var s Sample
+
+	hasSome := false
+
+	for line := range strings.Lines(data) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+
+		if fields[0] != "some" && fields[0] != "full" {
+			return Sample{}, fmt.Errorf("unexpected pressure line %q", strings.TrimSpace(line))
+		}
+
+		avg10, avg60, err := parseAverages(fields[1:])
+		if err != nil {
+			return Sample{}, fmt.Errorf("bad %q pressure line: %w", fields[0], err)
+		}
+
+		if fields[0] == "some" {
+			s.SomeAvg10, s.SomeAvg60, hasSome = avg10, avg60, true
+		} else {
+			s.FullAvg10, s.FullAvg60, s.HasFull = avg10, avg60, true
+		}
+	}
+
+	if !hasSome {
+		return Sample{}, errors.New(`no "some" pressure line`)
+	}
+
+	return s, nil
+}
+
+// parseAverages returns the avg10 and avg60 values of a pressure line's "key=value" fields.
+func parseAverages(fields []string) (float64, float64, error) {
+	values := map[string]float64{}
+
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return 0, 0, fmt.Errorf("field %q isn't key=value", field)
+		}
+
+		if key != "avg10" && key != "avg60" {
+			continue
+		}
+
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return 0, 0, err
+		}
+
+		if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, 0, fmt.Errorf("%s=%s is out of range", key, value)
+		}
+
+		values[key] = v
+	}
+
+	avg10, ok10 := values["avg10"]
+	avg60, ok60 := values["avg60"]
+
+	if !ok10 || !ok60 {
+		return 0, 0, errors.New("missing avg10 or avg60")
+	}
+
+	return avg10, avg60, nil
 }
 
 // Decision is what a Watcher asks of the activity it guards.
@@ -55,12 +125,73 @@ const (
 )
 
 // Watcher applies the pause and resume thresholds to a stream of samples.
-type Watcher struct{}
+type Watcher struct {
+	paused    bool
+	highSince time.Time
+	lowSince  time.Time
+}
 
 // Observe feeds one sample taken at now and returns what to do, with a reason for a pause or resume.
-func (*Watcher) Observe(_ time.Time, _ Sample) (Decision, string) {
-	return Hold, ""
+func (w *Watcher) Observe(now time.Time, s Sample) (Decision, string) {
+	if w.paused {
+		return w.observePaused(now, s)
+	}
+
+	reason := ""
+
+	if s.HasFull && s.FullAvg10 >= PauseFullAvg10 {
+		if w.highSince.IsZero() {
+			w.highSince = now
+		}
+
+		if now.Sub(w.highSince) >= PauseFullFor {
+			reason = fmt.Sprintf("io pressure: full avg10 %.1f", s.FullAvg10)
+		}
+	} else {
+		w.highSince = time.Time{}
+	}
+
+	if reason == "" && s.SomeAvg60 >= PauseSomeAvg60 {
+		reason = fmt.Sprintf("io pressure: some avg60 %.1f", s.SomeAvg60)
+	}
+
+	if reason == "" {
+		return Hold, ""
+	}
+
+	w.Set(true)
+
+	return Pause, reason
 }
 
 // Set forces the paused state, for when acting on a decision failed, and restarts both streaks.
-func (*Watcher) Set(_ bool) {}
+func (w *Watcher) Set(paused bool) {
+	w.paused = paused
+	w.highSince = time.Time{}
+	w.lowSince = time.Time{}
+}
+
+func (w *Watcher) observePaused(now time.Time, s Sample) (Decision, string) {
+	low := s.SomeAvg60 < ResumeSomeAvg60 && (!s.HasFull || s.FullAvg10 < ResumeFullAvg10)
+	if !low {
+		w.lowSince = time.Time{}
+
+		return Hold, ""
+	}
+
+	if w.lowSince.IsZero() {
+		w.lowSince = now
+	}
+
+	if now.Sub(w.lowSince) < ResumeLowFor {
+		return Hold, ""
+	}
+
+	w.Set(false)
+
+	if !s.HasFull {
+		return Resume, fmt.Sprintf("io pressure low for %s: some avg60 %.1f", ResumeLowFor, s.SomeAvg60)
+	}
+
+	return Resume, fmt.Sprintf("io pressure low for %s: full avg10 %.1f, some avg60 %.1f", ResumeLowFor, s.FullAvg10, s.SomeAvg60)
+}

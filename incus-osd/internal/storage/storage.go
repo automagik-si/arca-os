@@ -573,7 +573,7 @@ func getZpoolMembersHelper(ctx context.Context, rawJSONContent []byte, zpoolName
 		return api.SystemStoragePool{}, isManaged
 	}
 
-	return api.SystemStoragePool{
+	pool := api.SystemStoragePool{
 		Name:                      zpoolName,
 		Managed:                   isManaged == nil,
 		State:                     zpoolJSON.Pools[zpoolName].State,
@@ -594,7 +594,11 @@ func getZpoolMembersHelper(ctx context.Context, rawJSONContent []byte, zpoolName
 		UsablePoolSizeInBytes:     layout.defSpace,
 		PoolAllocatedSpaceInBytes: layout.allocSpace,
 		Volumes:                   zpoolVolumes,
-	}, nil
+	}
+
+	applyPoolActivityPauses(&pool)
+
+	return pool, nil
 }
 
 // calculateScrubProgress calculates the scrub progress for a given zpool and returns it in a formatted percentage string.
