@@ -53,8 +53,9 @@ func Parse(data string) (Sample, error) {
 			continue
 		}
 
+		// Skip lines later kernels may add.
 		if fields[0] != "some" && fields[0] != "full" {
-			return Sample{}, fmt.Errorf("unexpected pressure line %q", strings.TrimSpace(line))
+			continue
 		}
 
 		avg10, avg60, err := parseAverages(fields[1:])
