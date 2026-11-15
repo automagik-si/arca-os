@@ -23,8 +23,9 @@ func runZpool(ctx context.Context, args ...string) (string, error) {
 	return subprocess.RunCommandContext(ctx, "zpool", args...)
 }
 
-// resumeTimeout bounds the resume of a paused activity once its job has stopped.
-const resumeTimeout = 30 * time.Second
+// resumeTimeout bounds the resume of a paused activity once its job has stopped, well inside
+// the scheduler's 10s stop timeout.
+const resumeTimeout = 5 * time.Second
 
 // activityState is what became of a paused activity.
 type activityState int
@@ -234,9 +235,8 @@ func (r *activityRunner) waitWithPressure(ctx context.Context, act poolActivity,
 	for {
 		select {
 		case <-ctx.Done():
-			if pause.Paused {
-				r.resumeAfterStop(ctx, act, poolName)
-
+			// Clear the pause only once resumed, so the status doesn't hide one left on disk.
+			if pause.Paused && r.resumeAfterStop(ctx, act, poolName) {
 				pause.Paused, pause.Since, pause.Reason = false, time.Time{}, ""
 				r.record(poolName, act.name, pause)
 			}
@@ -350,7 +350,7 @@ func (r *activityRunner) resume(ctx context.Context, act poolActivity, poolName 
 }
 
 // resumeAfterStop resumes the activity once its job stops, so it isn't left paused for good.
-func (r *activityRunner) resumeAfterStop(ctx context.Context, act poolActivity, poolName string) {
+func (r *activityRunner) resumeAfterStop(ctx context.Context, act poolActivity, poolName string) bool {
 	resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resumeTimeout)
 	defer cancel()
 
@@ -358,10 +358,12 @@ func (r *activityRunner) resumeAfterStop(ctx context.Context, act poolActivity, 
 	if err != nil {
 		r.log().WarnContext(ctx, "Unable to resume pool activity after its job stopped", slog.String("activity", act.name), slog.String("pool", poolName), slog.Any("error", err))
 
-		return
+		return false
 	}
 
 	r.log().InfoContext(ctx, "Resumed pool "+act.name+" as its job stopped", slog.String("pool", poolName))
+
+	return true
 }
 
 // resumePausedScrubs resumes every scrub found paused, as nothing else would.
