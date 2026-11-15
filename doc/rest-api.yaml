@@ -1770,6 +1770,24 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: Errors
+            pause_reason:
+                description: 'PauseReason says why IncusOS paused the scrub, such as "io pressure: full avg10 23.4".'
+                type: string
+                x-go-name: PauseReason
+            paused:
+                description: Paused is set while the scrub is paused; IncusOS pauses the scrubs it runs while IO pressure is high.
+                type: boolean
+                x-go-name: Paused
+            paused_since:
+                description: PausedSince is when the scrub was paused.
+                format: date-time
+                type: string
+                x-go-name: PausedSince
+            pauses:
+                description: Pauses counts the pauses during the current or last scrub IncusOS ran.
+                format: int64
+                type: integer
+                x-go-name: Pauses
             progress:
                 type: string
                 x-go-name: Progress
@@ -1816,6 +1834,24 @@ definitions:
                 format: date-time
                 type: string
                 x-go-name: LastActionTime
+            pause_reason:
+                description: 'PauseReason says why IncusOS paused the trim, such as "io pressure: full avg10 23.4".'
+                type: string
+                x-go-name: PauseReason
+            paused:
+                description: Paused is set while the trim is paused; IncusOS pauses the trims it runs while IO pressure is high.
+                type: boolean
+                x-go-name: Paused
+            paused_since:
+                description: PausedSince is when the trim was paused.
+                format: date-time
+                type: string
+                x-go-name: PausedSince
+            pauses:
+                description: Pauses counts the pauses during the current or last trim IncusOS ran.
+                format: int64
+                type: integer
+                x-go-name: Pauses
             progress:
                 type: string
                 x-go-name: Progress

@@ -1068,12 +1068,17 @@ func ScrubZpool(ctx context.Context, poolName string) error {
 		return err
 	}
 
-	return startScrub(ctx, pool)
+	return startScrub(ctx, runZpool, pool)
 }
 
 // ScrubAllPools scrubs all pools in the system sequentially, blocking until the scrub is complete.
 func ScrubAllPools(ctx context.Context, _ *state.State) error {
-	return runOnAllPools(ctx, "scrub", startScrub)
+	return defaultActivityRunner.runOnAllPools(ctx, scrubActivity)
+}
+
+// ResumePausedScrubs resumes the scrubs left paused when incus-osd last stopped.
+func ResumePausedScrubs(ctx context.Context) error {
+	return defaultActivityRunner.resumePausedScrubs(ctx)
 }
 
 // TrimZpool trims the specified pool.
@@ -1083,21 +1088,21 @@ func TrimZpool(ctx context.Context, poolName string) error {
 		return err
 	}
 
-	return startTrim(ctx, pool)
+	return startTrim(ctx, runZpool, pool)
 }
 
 // TrimAllPools trims all pools in the system sequentially, blocking until the trim is complete.
 func TrimAllPools(ctx context.Context, _ *state.State) error {
-	return runOnAllPools(ctx, "trim", startTrim)
+	return defaultActivityRunner.runOnAllPools(ctx, trimActivity)
 }
 
-// startScrub starts a scrub of the pool unless one is already in progress.
-func startScrub(ctx context.Context, pool api.SystemStoragePool) error {
-	if pool.LastScrub != nil && pool.LastScrub.State == api.SystemStoragePoolScrubInProgress {
+// startScrub starts a scrub of the pool unless one is already running. A paused scrub is resumed.
+func startScrub(ctx context.Context, zpool zpoolFunc, pool api.SystemStoragePool) error {
+	if scrubState(pool) == activityRunning {
 		return storage.ErrScrubAlreadyInProgress
 	}
 
-	_, err := subprocess.RunCommandContext(ctx, "zpool", "scrub", pool.Name)
+	_, err := zpool(ctx, "scrub", pool.Name)
 	if err != nil {
 		return err
 	}
@@ -1106,7 +1111,7 @@ func startScrub(ctx context.Context, pool api.SystemStoragePool) error {
 }
 
 // startTrim starts a trim of the pool unless one is already in progress.
-func startTrim(ctx context.Context, pool api.SystemStoragePool) error {
+func startTrim(ctx context.Context, zpool zpoolFunc, pool api.SystemStoragePool) error {
 	if pool.LastTrim != nil && pool.LastTrim.State == api.SystemStoragePoolTrimInProgress {
 		return storage.ErrTrimAlreadyInProgress
 	}
@@ -1115,7 +1120,7 @@ func startTrim(ctx context.Context, pool api.SystemStoragePool) error {
 		return storage.ErrTrimNotSupported
 	}
 
-	_, err := subprocess.RunCommandContext(ctx, "zpool", "trim", pool.Name)
+	_, err := zpool(ctx, "trim", pool.Name)
 	if err != nil {
 		return err
 	}
@@ -1142,40 +1147,6 @@ func getPool(ctx context.Context, poolName string) (api.SystemStoragePool, error
 	}
 
 	return api.SystemStoragePool{}, errors.New("zpool '" + poolName + "' not found")
-}
-
-// runOnAllPools starts the zpool activity on every pool sequentially, waiting for each to complete.
-// Pools on which the activity can't be started (already in progress, unsupported, ...) are skipped.
-func runOnAllPools(ctx context.Context, activity string, start func(context.Context, api.SystemStoragePool) error) error {
-	_, pools, err := storage.GetStorageInfo(ctx)
-	if err != nil {
-		return err
-	}
-
-	for _, pool := range pools {
-		slog.InfoContext(ctx, "Starting pool activity", slog.String("activity", activity), slog.String("pool", pool.Name))
-
-		err = start(ctx, pool)
-		if errors.Is(err, storage.ErrTrimNotSupported) {
-			slog.InfoContext(ctx, "Skipping pool activity", slog.String("activity", activity), slog.String("pool", pool.Name), slog.Any("reason", err))
-
-			continue
-		}
-
-		if err != nil {
-			slog.WarnContext(ctx, "Unable to start pool activity", slog.String("activity", activity), slog.String("pool", pool.Name), slog.Any("error", err))
-
-			continue
-		}
-
-		// Wait for the activity to finish.
-		_, err = subprocess.RunCommandContext(ctx, "zpool", "wait", "-t", activity, pool.Name)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // CreateApplicationDataset creates an application-specific dataset in the "local" pool. The dataset is will be

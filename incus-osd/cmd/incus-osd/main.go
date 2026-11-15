@@ -1075,6 +1075,12 @@ func setupLocalStorage(ctx context.Context, s *state.State) error {
 		return err
 	}
 
+	// A scrub paused under IO pressure stays paused across restarts until resumed.
+	err = zfs.ResumePausedScrubs(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "Unable to resume paused pool scrubs", slog.Any("error", err))
+	}
+
 	// Detect if the root drive has increased in size. If so, attempt to auto-expand
 	// the zfs "local" pool to use the additional space. systemd-repart uses zero-based
 	// indices when reporting partitions.

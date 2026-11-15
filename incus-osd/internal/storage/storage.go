@@ -67,6 +67,9 @@ type zpoolTrimStats struct {
 	TrimTime   int    `json:"trim_time"`
 	TrimErrors int    `json:"trim_errors"`
 	TrimNotSup int    `json:"trim_notsup"`
+
+	// leaf is the vdev name, as zpool commands take it.
+	leaf string
 }
 
 type zpoolScanStats struct {
@@ -77,6 +80,8 @@ type zpoolScanStats struct {
 	ToExamine int    `json:"to_examine"`
 	Examined  int    `json:"examined"`
 	Errors    int    `json:"errors"`
+	// ScrubPause is when the scrub was paused, or zero; the pause survives reboots.
+	ScrubPause int `json:"scrub_pause"`
 }
 
 // zpoolVdev holds the fields of a "zpool status" vdev entry that we care about, at any nesting level.
@@ -528,25 +533,7 @@ func getZpoolMembersHelper(ctx context.Context, rawJSONContent []byte, zpoolName
 		zpoolVolumes = append(zpoolVolumes, vol)
 	}
 
-	// Get the scrub status, if it exists.
-	var scrubStatus *api.SystemStoragePoolScrubStatus
-
-	if zpoolJSON.Pools[zpoolName].ScanStats.StartTime != 0 {
-		scrubState, ok := zpoolToScrubStateMap[zpoolJSON.Pools[zpoolName].ScanStats.State]
-		if !ok {
-			scrubState = api.SystemStoragePoolScrubUnknown
-		}
-
-		scrubStatus = &api.SystemStoragePoolScrubStatus{
-			State:     scrubState,
-			StartTime: time.Unix(int64(zpoolJSON.Pools[zpoolName].ScanStats.StartTime), 0),
-			EndTime:   time.Unix(int64(zpoolJSON.Pools[zpoolName].ScanStats.EndTime), 0),
-			Progress:  calculateScrubProgress(zpoolJSON.Pools[zpoolName].ScanStats),
-			Errors:    zpoolJSON.Pools[zpoolName].ScanStats.Errors,
-		}
-	}
-
-	trimStatus := calculateTrimStatus(layout.trimStats)
+	scrubStatus, trimStatus := poolActivityStatus(zpoolName, zpoolJSON.Pools[zpoolName].ScanStats, layout.trimStats)
 
 	var specialVdevInfo *api.SystemStoragePoolSpecial
 	if len(zpoolDevices["special"]) > 0 || len(zpoolDevices["special_degraded"]) > 0 {
@@ -595,6 +582,38 @@ func getZpoolMembersHelper(ctx context.Context, rawJSONContent []byte, zpoolName
 		PoolAllocatedSpaceInBytes: layout.allocSpace,
 		Volumes:                   zpoolVolumes,
 	}, nil
+}
+
+// poolActivityStatus builds a pool's scrub and trim status from its zpool status and the recorded pauses.
+func poolActivityStatus(zpoolName string, scan zpoolScanStats, trimStats []zpoolTrimStats) (*api.SystemStoragePoolScrubStatus, *api.SystemStoragePoolTrimStatus) {
+	// Get the scrub status, if it exists.
+	var scrubStatus *api.SystemStoragePoolScrubStatus
+
+	if scan.StartTime != 0 {
+		scrubState, ok := zpoolToScrubStateMap[scan.State]
+		if !ok {
+			scrubState = api.SystemStoragePoolScrubUnknown
+		}
+
+		scrubStatus = &api.SystemStoragePoolScrubStatus{
+			State:     scrubState,
+			StartTime: time.Unix(int64(scan.StartTime), 0),
+			EndTime:   time.Unix(int64(scan.EndTime), 0),
+			Progress:  calculateScrubProgress(scan),
+			Errors:    scan.Errors,
+		}
+
+		if scan.Function == "SCRUB" && scan.State == "SCANNING" && scan.ScrubPause != 0 {
+			scrubStatus.Paused = true
+			scrubStatus.PausedSince = time.Unix(int64(scan.ScrubPause), 0)
+		}
+	}
+
+	trimStatus := calculateTrimStatus(trimStats)
+
+	applyPoolActivityPauses(zpoolName, scrubStatus, trimStatus)
+
+	return scrubStatus, trimStatus
 }
 
 // calculateScrubProgress calculates the scrub progress for a given zpool and returns it in a formatted percentage string.
@@ -1061,7 +1080,10 @@ func (v zpoolVdev) appendLeafDevices(name string, devices map[string][]string, o
 // appendLeafTrimStats collects the trim statistics of the leaf vdevs below a vdev.
 func (v zpoolVdev) appendLeafTrimStats(stats []zpoolTrimStats) []zpoolTrimStats {
 	if len(v.Vdevs) == 0 {
-		return append(stats, v.zpoolTrimStats)
+		leaf := v.zpoolTrimStats
+		leaf.leaf = v.Name
+
+		return append(stats, leaf)
 	}
 
 	for _, child := range v.Vdevs {
