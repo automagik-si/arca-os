@@ -935,7 +935,11 @@ func (s *Server) apiSystemStorageImportEncryptedDrive(w http.ResponseWriter, r *
 
 	counter := &countWrapper{ReadCloser: r.Body}
 
-	err := json.NewDecoder(counter).Decode(decryptStruct)
+	// Only a raw key is taken: a passphrase, or any other field, is refused.
+	decoder := json.NewDecoder(counter)
+	decoder.DisallowUnknownFields()
+
+	err := decoder.Decode(decryptStruct)
 	if err != nil && counter.n > 0 {
 		_ = response.BadRequest(err).Render(w)
 
