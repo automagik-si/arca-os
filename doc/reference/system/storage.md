@@ -277,6 +277,10 @@ Import and decrypt an existing drive by running:
 form taken: a passphrase is refused. The key is stored as the drive's key file on the encrypted system drive, which the
 TPM unlocks, and the drive is unlocked with it at every boot without anyone typing anything.
 
+The key is first tested against the drive's keyslots, even when the drive is already unlocked. A key that opens none of
+them is refused, and the key file already stored for the drive stays exactly as it was. A good key replaces it only
+once it has opened the drive.
+
 Encrypted drives that are managed by IncusOS get two additional properties in `incus admin os system storage show`:
 
 * Encrypted (indicates whether the drive is encrypted)
@@ -341,7 +345,8 @@ IncusOS never formats it: mounting it read-write is the only write IncusOS makes
 
 Data mounts are defined in the [`SystemStorageDataMount` struct](https://github.com/lxc/incus-os/blob/main/incus-osd/api/system_storage.go):
 
-* `name`: The mount's name, 1 to 64 letters, digits, `-` or `_`. It is mounted at `/var/lib/incus-os/mounts/<name>`.
+* `name`: The mount's name, 1 to 64 letters, digits, `-` or `_`. It is mounted at `/var/lib/arca-mounts/<name>`,
+  outside `/var/lib/incus-os`, so that an OS backup or restore never reaches the data mount.
 * `device`: The device holding the file system, as `/dev/disk/by-id/<id>`, `/dev/disk/by-uuid/<uuid>`,
   `/dev/mapper/<name>` or `/dev/<vg>/<lv>` for an LVM logical volume. Kernel names such as `/dev/sdb` change between
   boots and are refused.
@@ -352,9 +357,11 @@ Data mounts are defined in the [`SystemStorageDataMount` struct](https://github.
 
 At boot, IncusOS unlocks the encrypted drives it has a key for, then waits up to 30 seconds (in total, for all data
 mounts) for each device to appear, as LVM activates volume groups in the background once their encrypted drive is open.
-It then checks that the device holds btrfs and mounts it. All of this happens before Incus starts. A data mount that
-fails is logged and reported, but never stops the system from booting: Incus still starts, and only the storage pools
-on that data mount are unavailable.
+It then checks that the device holds btrfs and mounts it, giving the probe and the mount two minutes together (a mount
+stuck inside the kernel can't be cut short). All of this happens before Incus starts. Two data mounts whose devices
+lead to the same device node, such as `/dev/vg0/data` and `/dev/mapper/vg0-data`, are refused: only the first is
+mounted. A data mount that fails is logged and reported, but never stops the system from booting: Incus still starts,
+and only the storage pools on that data mount are unavailable.
 
 The state of each data mount is shown in `incus admin os system storage show`:
 
@@ -362,7 +369,7 @@ The state of each data mount is shown in `incus admin os system storage show`:
 state:
   data_mounts:
   - name: data
-    mount_point: /var/lib/incus-os/mounts/data
+    mount_point: /var/lib/arca-mounts/data
     mounted: false
     error: device /dev/vg0/data did not appear within 30s (is its encrypted drive unlocked and its volume group active?)
 ```
@@ -403,7 +410,7 @@ on the drive is created, wiped or formatted by IncusOS; Incus itself creates one
    new, empty subvolume itself and keeps its pool in it, beside the data already on the file system:
 
    ```
-   incus storage create data btrfs source=/var/lib/incus-os/mounts/data/incus-pool btrfs.mount_options=user_subvol_rm_allowed,noatime,compress=zstd:1,discard=async
+   incus storage create data btrfs source=/var/lib/arca-mounts/data/incus-pool btrfs.mount_options=user_subvol_rm_allowed,noatime,compress=zstd:1,discard=async
    ```
 
 ```{warning}
