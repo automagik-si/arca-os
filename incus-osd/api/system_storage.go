@@ -9,12 +9,35 @@ type SystemStorageConfig struct {
 	Pools         []SystemStoragePool `incusos:"-"           json:"pools,omitempty" yaml:"pools,omitempty"`
 	// Serials of drives that no wipe, encrypt, import or convert may touch.
 	ProtectedSerials []string `json:"protected_serials,omitempty" yaml:"protected_serials,omitempty"`
+	// Existing file systems mounted at every boot, before Incus starts.
+	DataMounts []SystemStorageDataMount `json:"data_mounts,omitempty" yaml:"data_mounts,omitempty"`
+}
+
+// SystemStorageDataMount is an existing file system that is mounted at boot, never formatted.
+type SystemStorageDataMount struct {
+	// Name of the mount; it is mounted at /var/lib/incus-os/mounts/<name>.
+	Name string `json:"name" yaml:"name"`
+	// Device holding the file system: /dev/disk/by-id/..., /dev/disk/by-uuid/..., /dev/mapper/... or /dev/<vg>/<lv>.
+	Device string `json:"device" yaml:"device"`
+	// Only "btrfs" is supported; defaults to "btrfs".
+	Filesystem string `json:"filesystem,omitempty" yaml:"filesystem,omitempty"`
+	// Mount options; defaults to "noatime,compress=zstd:1,discard=async".
+	Options string `json:"options,omitempty" yaml:"options,omitempty"`
+}
+
+// SystemStorageDataMountState reports whether a data mount is mounted, and why not.
+type SystemStorageDataMountState struct {
+	Name       string `json:"name"            yaml:"name"`
+	MountPoint string `json:"mount_point"     yaml:"mount_point"`
+	Mounted    bool   `json:"mounted"         yaml:"mounted"`
+	Error      string `json:"error,omitempty" yaml:"error,omitempty"`
 }
 
 // SystemStorageState represents additional state for the system's local storage.
 type SystemStorageState struct {
-	Drives        []SystemStorageDrive       `json:"drives"         yaml:"drives"`
-	RootPartition SystemStorageRootPartition `json:"root_partition" yaml:"root_partition"`
+	Drives        []SystemStorageDrive          `json:"drives"                yaml:"drives"`
+	RootPartition SystemStorageRootPartition    `json:"root_partition"        yaml:"root_partition"`
+	DataMounts    []SystemStorageDataMountState `json:"data_mounts,omitempty" yaml:"data_mounts,omitempty"`
 }
 
 // SystemStorageRootPartition defines a struct that holds usage information about the root ("/") partition.
