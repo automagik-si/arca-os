@@ -1270,6 +1270,12 @@ definitions:
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemStorageConfig:
         properties:
+            data_mounts:
+                description: Existing file systems mounted at every boot, before Incus starts.
+                items:
+                    $ref: '#/definitions/SystemStorageDataMount'
+                type: array
+                x-go-name: DataMounts
             pools:
                 items:
                     $ref: '#/definitions/SystemStoragePool'
@@ -1288,6 +1294,44 @@ definitions:
                 type: string
                 x-go-name: TrimSchedule
         title: SystemStorageConfig represents additional configuration for the system's local storage.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageDataMount:
+        properties:
+            device:
+                description: 'Device holding the file system: /dev/disk/by-id/..., /dev/disk/by-uuid/..., /dev/mapper/... or /dev/<vg>/<lv>.'
+                type: string
+                x-go-name: Device
+            filesystem:
+                description: Only "btrfs" is supported; defaults to "btrfs".
+                type: string
+                x-go-name: Filesystem
+            name:
+                description: Name of the mount; it is mounted at /var/lib/incus-os/mounts/<name>.
+                type: string
+                x-go-name: Name
+            options:
+                description: Mount options; defaults to "noatime,compress=zstd:1,discard=async".
+                type: string
+                x-go-name: Options
+        title: SystemStorageDataMount is an existing file system that is mounted at boot, never formatted.
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemStorageDataMountState:
+        properties:
+            error:
+                type: string
+                x-go-name: Error
+            mount_point:
+                type: string
+                x-go-name: MountPoint
+            mounted:
+                type: boolean
+                x-go-name: Mounted
+            name:
+                type: string
+                x-go-name: Name
+        title: SystemStorageDataMountState reports whether a data mount is mounted, and why not.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemStorageDrive:
@@ -1858,6 +1902,11 @@ definitions:
         x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemStorageState:
         properties:
+            data_mounts:
+                items:
+                    $ref: '#/definitions/SystemStorageDataMountState'
+                type: array
+                x-go-name: DataMounts
             drives:
                 items:
                     $ref: '#/definitions/SystemStorageDrive'
