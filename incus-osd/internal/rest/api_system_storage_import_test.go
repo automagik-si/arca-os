@@ -56,3 +56,29 @@ func TestWipeAndEncryptRefuseProtectedDrive(t *testing.T) {
 		})
 	}
 }
+
+// Only a raw key file is ever taken: a passphrase is refused before the drive is looked at.
+func TestImportEncryptedDriveRefusesPassphrase(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+
+	//nolint:gosec // A made up passphrase the handler must refuse.
+	for name, body := range map[string]string{
+		"passphrase only":    `{"id":"/dev/disk/by-id/nvme-EXAMPLE","passphrase":"correct horse"}`,
+		"key and passphrase": `{"id":"/dev/disk/by-id/nvme-EXAMPLE","key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","passphrase":"correct horse"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/1.0/system/storage/:import-encrypted-drive", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+
+			s.apiSystemStorageImportEncryptedDrive(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), `unknown field \"passphrase\"`)
+			require.NotContains(t, rec.Body.String(), "correct horse")
+		})
+	}
+}
