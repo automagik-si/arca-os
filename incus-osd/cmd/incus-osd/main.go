@@ -1065,7 +1065,8 @@ func setTimezone(ctx context.Context) error {
 func setupLocalStorage(ctx context.Context, s *state.State) error {
 	slog.InfoContext(ctx, "Bringing up the local storage")
 
-	err := storage.DecryptDrives(ctx)
+	// Data mounts come up before any application starts; one that fails is reported, never fatal.
+	err := storage.BringUpEncryptedStorage(ctx, s.System.Storage.Config.DataMounts)
 	if err != nil {
 		return err
 	}
