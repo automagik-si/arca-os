@@ -1096,9 +1096,9 @@ func TrimAllPools(ctx context.Context, _ *state.State) error {
 	return defaultActivityRunner.runOnAllPools(ctx, trimActivity)
 }
 
-// startScrub starts a scrub of the pool unless one is already in progress.
+// startScrub starts a scrub of the pool unless one is already running. A paused scrub is resumed.
 func startScrub(ctx context.Context, zpool zpoolFunc, pool api.SystemStoragePool) error {
-	if pool.LastScrub != nil && pool.LastScrub.State == api.SystemStoragePoolScrubInProgress {
+	if scrubState(pool) == activityRunning {
 		return storage.ErrScrubAlreadyInProgress
 	}
 

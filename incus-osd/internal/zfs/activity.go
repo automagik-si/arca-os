@@ -44,6 +44,19 @@ type poolActivity struct {
 	state  func(pool api.SystemStoragePool) activityState
 }
 
+// scrubState tells a paused scrub from a running one; zpool reports both as scanning.
+func scrubState(pool api.SystemStoragePool) activityState {
+	if pool.LastScrub == nil || pool.LastScrub.State != api.SystemStoragePoolScrubInProgress {
+		return activityGone
+	}
+
+	if pool.LastScrub.Paused {
+		return activityPaused
+	}
+
+	return activityRunning
+}
+
 var scrubActivity = poolActivity{
 	name:  "scrub",
 	start: startScrub,
@@ -51,14 +64,7 @@ var scrubActivity = poolActivity{
 	resume: func(_ context.Context, _ *activityRunner, pool string) []string {
 		return []string{"scrub", pool}
 	},
-	state: func(pool api.SystemStoragePool) activityState {
-		// zpool reports a paused scrub as scanning.
-		if pool.LastScrub != nil && pool.LastScrub.State == api.SystemStoragePoolScrubInProgress {
-			return activityPaused
-		}
-
-		return activityGone
-	},
+	state: scrubState,
 }
 
 var trimActivity = poolActivity{
@@ -141,7 +147,12 @@ func (r *activityRunner) runOnAllPools(ctx context.Context, act poolActivity) er
 	watch := r.pressureAvailable(ctx)
 
 	for _, pool := range pools {
-		r.log().InfoContext(ctx, "Starting pool activity", slog.String("activity", act.name), slog.String("pool", pool.Name))
+		if act.state(pool) == activityPaused {
+			// Left paused by an earlier run, so this run resumes it and watches it as its own.
+			r.log().InfoContext(ctx, "Resuming a paused pool activity", slog.String("activity", act.name), slog.String("pool", pool.Name))
+		} else {
+			r.log().InfoContext(ctx, "Starting pool activity", slog.String("activity", act.name), slog.String("pool", pool.Name))
+		}
 
 		err = act.start(ctx, r.zpool, pool)
 		if errors.Is(err, storage.ErrTrimNotSupported) {
@@ -331,6 +342,26 @@ func (r *activityRunner) resumeAfterStop(ctx context.Context, act poolActivity, 
 }
 
 // resumePausedScrubs resumes every scrub found paused, as nothing else would.
-func (*activityRunner) resumePausedScrubs(_ context.Context) error {
+func (r *activityRunner) resumePausedScrubs(ctx context.Context) error {
+	pools, err := r.pools(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, pool := range pools {
+		if scrubActivity.state(pool) != activityPaused {
+			continue
+		}
+
+		_, err = r.zpool(ctx, scrubActivity.resume(ctx, r, pool.Name)...)
+		if err != nil {
+			r.log().WarnContext(ctx, "Unable to resume a paused pool scrub", slog.String("pool", pool.Name), slog.Any("error", err))
+
+			continue
+		}
+
+		r.log().InfoContext(ctx, "Resumed a pool scrub left paused when incus-osd last stopped", slog.String("pool", pool.Name))
+	}
+
 	return nil
 }

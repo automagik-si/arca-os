@@ -42,12 +42,14 @@ func applyPoolActivityPauses(pool string, scrubStatus *api.SystemStoragePoolScru
 	poolActivityPausesMu.Lock()
 	defer poolActivityPausesMu.Unlock()
 
+	// zpool knows whether a scrub is paused; the record only adds why and how often.
 	scrub, ok := poolActivityPauses[poolActivityKey{pool, "scrub"}]
 	if ok && scrubStatus != nil {
-		scrubStatus.Paused = scrub.Paused
-		scrubStatus.PausedSince = scrub.Since
-		scrubStatus.PauseReason = scrub.Reason
 		scrubStatus.Pauses = scrub.Pauses
+
+		if scrubStatus.Paused && scrub.Paused {
+			scrubStatus.PauseReason = scrub.Reason
+		}
 	}
 
 	trim, ok := poolActivityPauses[poolActivityKey{pool, "trim"}]

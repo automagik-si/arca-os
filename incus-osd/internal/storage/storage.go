@@ -80,6 +80,8 @@ type zpoolScanStats struct {
 	ToExamine int    `json:"to_examine"`
 	Examined  int    `json:"examined"`
 	Errors    int    `json:"errors"`
+	// ScrubPause is when the scrub was paused, or zero; the pause survives reboots.
+	ScrubPause int `json:"scrub_pause"`
 }
 
 // zpoolVdev holds the fields of a "zpool status" vdev entry that we care about, at any nesting level.
@@ -599,6 +601,11 @@ func poolActivityStatus(zpoolName string, scan zpoolScanStats, trimStats []zpool
 			EndTime:   time.Unix(int64(scan.EndTime), 0),
 			Progress:  calculateScrubProgress(scan),
 			Errors:    scan.Errors,
+		}
+
+		if scan.Function == "SCRUB" && scan.State == "SCANNING" && scan.ScrubPause != 0 {
+			scrubStatus.Paused = true
+			scrubStatus.PausedSince = time.Unix(int64(scan.ScrubPause), 0)
 		}
 	}
 
