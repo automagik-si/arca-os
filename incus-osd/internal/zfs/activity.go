@@ -71,8 +71,18 @@ var trimActivity = poolActivity{
 	name:  "trim",
 	start: startTrim,
 	pause: []string{"trim", "-s"},
-	resume: func(_ context.Context, _ *activityRunner, pool string) []string {
-		return []string{"trim", pool}
+	resume: func(ctx context.Context, r *activityRunner, pool string) []string {
+		// Resuming the whole pool would trim leaves that had already finished all over again.
+		leaves, every, err := r.trimDevices(ctx, pool)
+		if err != nil {
+			r.log().WarnContext(ctx, "Unable to list suspended trim devices, resuming the whole pool", slog.String("pool", pool), slog.Any("error", err))
+		}
+
+		if err != nil || every || len(leaves) == 0 {
+			return []string{"trim", pool}
+		}
+
+		return append([]string{"trim", pool}, leaves...)
 	},
 	state: func(pool api.SystemStoragePool) activityState {
 		if pool.LastTrim == nil {
@@ -249,7 +259,7 @@ func (r *activityRunner) waitWithPressure(ctx context.Context, act poolActivity,
 			switch decision { //nolint:exhaustive // the default is Hold
 			case iopressure.Pause:
 				_, err = r.zpool(ctx, append(slices.Clone(act.pause), poolName)...)
-				if err != nil {
+				if err != nil && !r.pausedAnyway(ctx, act, poolName) {
 					r.log().WarnContext(ctx, "Unable to pause pool activity", slog.String("activity", act.name), slog.String("pool", poolName), slog.Any("error", err))
 					watcher.Set(false)
 
@@ -291,6 +301,19 @@ func (r *activityRunner) waitWithPressure(ctx context.Context, act poolActivity,
 			}
 		}
 	}
+}
+
+// pausedAnyway reports whether a pause that exited non-zero still took effect.
+// trim -s fails for leaves that had already finished, after suspending the others.
+func (r *activityRunner) pausedAnyway(ctx context.Context, act poolActivity, poolName string) bool {
+	pool, err := r.pool(ctx, poolName)
+	if err != nil || act.state(pool) != activityPaused {
+		return false
+	}
+
+	r.log().InfoContext(ctx, "Pool "+act.name+" paused, though part of it had already finished", slog.String("pool", poolName))
+
+	return true
 }
 
 // startWait runs zpool wait for the activity in the background.

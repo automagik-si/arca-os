@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"time"
 
@@ -86,6 +87,25 @@ func SuspendedTrimDevices(ctx context.Context, zpoolName string) ([]string, bool
 }
 
 // suspendedTrimLeaves returns the leaves whose trim is suspended, and whether every trimmable leaf is.
-func suspendedTrimLeaves(_ []zpoolTrimStats) ([]string, bool) {
-	return nil, true
+func suspendedTrimLeaves(stats []zpoolTrimStats) ([]string, bool) {
+	leaves := []string{}
+	every := true
+
+	for _, leaf := range stats {
+		if leaf.TrimNotSup != 0 {
+			continue
+		}
+
+		if leaf.TrimState != "SUSPENDED" {
+			every = false
+
+			continue
+		}
+
+		leaves = append(leaves, leaf.leaf)
+	}
+
+	slices.Sort(leaves)
+
+	return leaves, every
 }
