@@ -122,6 +122,8 @@ type DataMountSystem interface {
 	// UnlockDrives opens every encrypted drive that has a key file.
 	UnlockDrives(ctx context.Context) error
 	DeviceExists(device string) bool
+	// ResolveDevice returns the device node a path leads to, or the path itself.
+	ResolveDevice(device string) string
 	FilesystemType(ctx context.Context, device string) (string, error)
 	// MountedFrom reports whether mountPoint is mounted and, if so, whether device is its source.
 	MountedFrom(mountPoint string, device string) (bool, bool, error)
@@ -137,6 +139,8 @@ type DataMounter struct {
 	// Wait bounds the time spent waiting for devices to appear, shared by all mounts of one call.
 	Wait time.Duration
 	Poll time.Duration
+	// Timeout bounds the probe and the mount of each data mount.
+	Timeout time.Duration
 
 	// run keeps a boot and a configuration update from mounting at the same time.
 	run      sync.Mutex
@@ -144,7 +148,7 @@ type DataMounter struct {
 	failures map[string]string
 }
 
-var defaultDataMounter = &DataMounter{Sys: realDataMountSystem{}, Root: DataMountRoot, Wait: 30 * time.Second, Poll: 250 * time.Millisecond}
+var defaultDataMounter = &DataMounter{Sys: realDataMountSystem{}, Root: DataMountRoot, Wait: 30 * time.Second, Poll: 250 * time.Millisecond, Timeout: 2 * time.Minute}
 
 // BringUpEncryptedStorage unlocks the keyed encrypted drives, then mounts the data mounts.
 func BringUpEncryptedStorage(ctx context.Context, mounts []api.SystemStorageDataMount) error {
@@ -185,9 +189,10 @@ func (m *DataMounter) Mount(ctx context.Context, mounts []api.SystemStorageDataM
 	defer m.run.Unlock()
 
 	deadline := time.Now().Add(m.Wait)
+	devices := map[string]string{}
 
 	for _, mount := range mounts {
-		err := m.mountOne(ctx, mount, deadline)
+		err := m.mountOne(ctx, mount, deadline, devices)
 
 		m.mu.Lock()
 
@@ -272,7 +277,8 @@ func (m *DataMounter) Status(mounts []api.SystemStorageDataMount) []api.SystemSt
 	return ret
 }
 
-func (m *DataMounter) mountOne(ctx context.Context, mount api.SystemStorageDataMount, deadline time.Time) error {
+// mountOne mounts one data mount; devices maps each device node already claimed in this pass to its mount's name.
+func (m *DataMounter) mountOne(ctx context.Context, mount api.SystemStorageDataMount, deadline time.Time, devices map[string]string) error {
 	mountPoint := filepath.Join(m.Root, mount.Name)
 
 	// The encrypted drive was just opened and lvm2 activates its volumes asynchronously.
@@ -288,6 +294,16 @@ func (m *DataMounter) mountOne(ctx context.Context, mount api.SystemStorageDataM
 		}
 	}
 
+	// Different paths may lead to one device, such as /dev/vg0/data and /dev/mapper/vg0-data.
+	node := m.Sys.ResolveDevice(mount.Device)
+
+	other, ok := devices[node]
+	if ok {
+		return fmt.Errorf("device %s is the same device as data mount %q", mount.Device, other)
+	}
+
+	devices[node] = mount.Name
+
 	mounted, same, err := m.Sys.MountedFrom(mountPoint, mount.Device)
 	if err != nil {
 		return err
@@ -300,6 +316,10 @@ func (m *DataMounter) mountOne(ctx context.Context, mount api.SystemStorageDataM
 
 		return nil
 	}
+
+	// A stalled device must not hold up the boot; a mount stuck inside the kernel can't be cut short, though.
+	ctx, cancel := context.WithTimeout(ctx, m.Timeout)
+	defer cancel()
 
 	fsType, err := m.Sys.FilesystemType(ctx, mount.Device)
 	if err != nil {
@@ -322,6 +342,15 @@ type realDataMountSystem struct{}
 
 func (realDataMountSystem) UnlockDrives(ctx context.Context) error {
 	return DecryptDrives(ctx)
+}
+
+func (realDataMountSystem) ResolveDevice(device string) string {
+	resolved, err := filepath.EvalSymlinks(device)
+	if err != nil {
+		return device
+	}
+
+	return resolved
 }
 
 func (realDataMountSystem) DeviceExists(device string) bool {
