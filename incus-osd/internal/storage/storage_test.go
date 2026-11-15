@@ -248,40 +248,90 @@ func TestParseZpoolStatus(t *testing.T) {
 	}
 }
 
+// scanStats parses a zpool status scan_stats object.
+func scanStats(t *testing.T, raw string) zpoolScanStats {
+	t.Helper()
+
+	var scan zpoolScanStats
+
+	require.NoError(t, json.Unmarshal([]byte(raw), &scan))
+
+	return scan
+}
+
+func TestPoolActivityStatusReadsScrubPause(t *testing.T) {
+	t.Parallel()
+
+	paused := scanStats(t, `{"function": "SCRUB", "state": "SCANNING", "start_time": 1793280000, "end_time": 0, "to_examine": 100, "examined": 10, "errors": 0, "scrub_pause": 1793280600}`)
+	running := scanStats(t, `{"function": "SCRUB", "state": "SCANNING", "start_time": 1793280000, "end_time": 0, "to_examine": 100, "examined": 10, "errors": 0, "scrub_pause": 0}`)
+
+	// Paused on disk with no record, as after incus-osd stopped uncleanly.
+	scrub, _ := poolActivityStatus("pause-crashed", paused, nil)
+	require.True(t, scrub.Paused)
+	require.Equal(t, time.Unix(1793280600, 0), scrub.PausedSince)
+	require.Empty(t, scrub.PauseReason)
+
+	// Running on disk, whatever an old record says.
+	SetPoolActivityPause("pause-stale", "scrub", PoolActivityPause{Paused: true, Since: time.Unix(5, 0), Reason: "io pressure: some avg60 45.0", Pauses: 1})
+
+	scrub, _ = poolActivityStatus("pause-stale", running, nil)
+	require.False(t, scrub.Paused)
+	require.True(t, scrub.PausedSince.IsZero())
+	require.Empty(t, scrub.PauseReason)
+	require.Equal(t, 1, scrub.Pauses)
+}
+
 func TestPoolActivityPauseReadsBackThroughAPI(t *testing.T) {
 	t.Parallel()
 
-	since := time.Date(2026, 11, 15, 4, 0, 10, 0, time.UTC)
+	scan := scanStats(t, `{"function": "SCRUB", "state": "SCANNING", "start_time": 1793280000, "end_time": 0, "to_examine": 100, "examined": 10, "errors": 0, "scrub_pause": 1793280610}`)
+	trimStats := []zpoolTrimStats{{TrimState: "SUSPENDED", Trimmed: 10, ToTrim: 100, TrimTime: 1793280000, leaf: "d1"}}
 
-	SetPoolActivityPause("pause-api", "scrub", PoolActivityPause{Paused: true, Since: since, Reason: "io pressure: full avg10 23.4", Pauses: 2})
-	SetPoolActivityPause("pause-api", "trim", PoolActivityPause{Pauses: 1})
+	SetPoolActivityPause("pause-api", "scrub", PoolActivityPause{Paused: true, Since: time.Unix(1793280610, 0), Reason: "io pressure: full avg10 23.4", Pauses: 2})
+	SetPoolActivityPause("pause-api", "trim", PoolActivityPause{Paused: true, Since: time.Unix(1793280620, 0).UTC(), Reason: "io pressure: some avg60 45.0", Pauses: 1})
 
-	pool := api.SystemStoragePool{
-		Name:      "pause-api",
-		LastScrub: &api.SystemStoragePoolScrubStatus{State: api.SystemStoragePoolScrubInProgress},
-		LastTrim:  &api.SystemStoragePoolTrimStatus{State: api.SystemStoragePoolTrimFinished},
-	}
+	// The same path GetZpoolMembers and GetStorageInfo take.
+	scrub, trim := poolActivityStatus("pause-api", scan, trimStats)
 
-	applyPoolActivityPauses(pool.Name, pool.LastScrub, pool.LastTrim)
-
-	raw, err := json.Marshal(pool)
+	raw, err := json.Marshal(api.SystemStoragePool{Name: "pause-api", LastScrub: scrub, LastTrim: trim})
 	require.NoError(t, err)
-	require.Contains(t, string(raw), `"paused":true,"paused_since":"2026-11-15T04:00:10Z","pause_reason":"io pressure: full avg10 23.4","pauses":2`)
+	require.Contains(t, string(raw), `"pause_reason":"io pressure: full avg10 23.4","pauses":2`)
 
 	var got api.SystemStoragePool
 
 	err = json.Unmarshal(raw, &got)
 	require.NoError(t, err)
 	require.True(t, got.LastScrub.Paused)
-	require.Equal(t, since, got.LastScrub.PausedSince)
+	require.True(t, got.LastScrub.PausedSince.Equal(time.Unix(1793280610, 0)))
 	require.Equal(t, "io pressure: full avg10 23.4", got.LastScrub.PauseReason)
 	require.Equal(t, 2, got.LastScrub.Pauses)
-	require.False(t, got.LastTrim.Paused)
+	require.True(t, got.LastTrim.Paused)
+	require.True(t, got.LastTrim.PausedSince.Equal(time.Unix(1793280620, 0)))
+	require.Equal(t, "io pressure: some avg60 45.0", got.LastTrim.PauseReason)
 	require.Equal(t, 1, got.LastTrim.Pauses)
 
 	// Pools IncusOS never paused report nothing.
-	other := api.SystemStoragePool{Name: "pause-api-other", LastScrub: &api.SystemStoragePoolScrubStatus{}}
-	applyPoolActivityPauses(other.Name, other.LastScrub, other.LastTrim)
-	require.False(t, other.LastScrub.Paused)
-	require.Zero(t, other.LastScrub.Pauses)
+	idle := scanStats(t, `{"function": "SCRUB", "state": "FINISHED", "start_time": 1793280000, "end_time": 1793281000, "to_examine": 100, "examined": 100, "errors": 0, "scrub_pause": 0}`)
+	scrub, _ = poolActivityStatus("pause-api-other", idle, nil)
+	require.False(t, scrub.Paused)
+	require.Zero(t, scrub.Pauses)
+}
+
+func TestSuspendedTrimLeaves(t *testing.T) {
+	t.Parallel()
+
+	all, every := suspendedTrimLeaves([]zpoolTrimStats{
+		{TrimState: "SUSPENDED", leaf: "d1"},
+		{TrimState: "SUSPENDED", leaf: "d2"},
+		{TrimNotSup: 1, leaf: "hdd"},
+	})
+	require.Equal(t, []string{"d1", "d2"}, all)
+	require.True(t, every)
+
+	some, every := suspendedTrimLeaves([]zpoolTrimStats{
+		{TrimState: "COMPLETE", leaf: "d1"},
+		{TrimState: "SUSPENDED", leaf: "d2"},
+	})
+	require.Equal(t, []string{"d2"}, some)
+	require.False(t, every)
 }

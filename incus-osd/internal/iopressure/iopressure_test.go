@@ -27,6 +27,11 @@ func TestParse(t *testing.T) {
 			want: Sample{SomeAvg10: 1, SomeAvg60: 2},
 		},
 		{
+			name: "Unknown line is skipped",
+			data: "some avg10=1.00 avg60=2.00 avg300=3.00 total=4\nfull avg10=0.50 avg60=0.60 avg300=0.70 total=8\nother avg10=9.00 avg60=9.00 avg300=9.00 total=9\n",
+			want: Sample{SomeAvg10: 1, SomeAvg60: 2, FullAvg10: 0.5, FullAvg60: 0.6, HasFull: true},
+		},
+		{
 			name:    "Empty",
 			data:    "",
 			wantErr: true,
