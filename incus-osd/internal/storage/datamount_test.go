@@ -74,6 +74,9 @@ type fakeDataMountSystem struct {
 	mountErr    map[string]error
 	mounts      map[string]string
 	scrubErr    map[string]error
+	// Devices whose mount never returns on its own, and the paths that are links to another device.
+	hang    map[string]bool
+	aliases map[string]string
 }
 
 func (f *fakeDataMountSystem) UnlockDrives(_ context.Context) error {
@@ -110,6 +113,18 @@ func (f *fakeDataMountSystem) DeviceExists(device string) bool {
 	return true
 }
 
+func (f *fakeDataMountSystem) ResolveDevice(device string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	target, ok := f.aliases[device]
+	if ok {
+		return target
+	}
+
+	return device
+}
+
 func (f *fakeDataMountSystem) FilesystemType(_ context.Context, device string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -128,11 +143,19 @@ func (f *fakeDataMountSystem) MountedFrom(mountPoint string, device string) (boo
 	return ok, source == device, nil
 }
 
-func (f *fakeDataMountSystem) Mount(_ context.Context, device string, mountPoint string, filesystem string, options string) error {
+func (f *fakeDataMountSystem) Mount(ctx context.Context, device string, mountPoint string, filesystem string, options string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.record("mount " + device + " " + filepath.Base(mountPoint) + " " + filesystem + " " + options)
+
+	if f.hang[device] {
+		f.mu.Unlock()
+		<-ctx.Done()
+		f.mu.Lock()
+
+		return ctx.Err()
+	}
 
 	if f.mountErr[device] != nil {
 		return f.mountErr[device]
@@ -171,7 +194,7 @@ func newFakeMounter(t *testing.T, sys *fakeDataMountSystem) *DataMounter {
 		sys.mounts = map[string]string{}
 	}
 
-	return &DataMounter{Sys: sys, Root: t.TempDir(), Wait: 200 * time.Millisecond, Poll: time.Millisecond}
+	return &DataMounter{Sys: sys, Root: t.TempDir(), Wait: 200 * time.Millisecond, Poll: time.Millisecond, Timeout: 200 * time.Millisecond}
 }
 
 func TestDataMounterBootOrder(t *testing.T) {
@@ -284,4 +307,57 @@ func TestDataMounterScrub(t *testing.T) {
 	// One failing scrub doesn't stop the next; unmounted or foreign mount points are left alone.
 	require.ErrorContains(t, err, `data mount "bad": uncorrectable errors`)
 	require.Equal(t, []string{"scrub bad", "scrub good"}, sys.events)
+}
+
+func TestDataMounterMountTimeout(t *testing.T) {
+	t.Parallel()
+
+	sys := &fakeDataMountSystem{
+		fsTypes: map[string]string{"/dev/vg0/stuck": "btrfs", "/dev/vg0/good": "btrfs"},
+		hang:    map[string]bool{"/dev/vg0/stuck": true},
+	}
+
+	m := newFakeMounter(t, sys)
+	mounts, err := ValidateDataMounts([]api.SystemStorageDataMount{{Name: "stuck", Device: "/dev/vg0/stuck"}, {Name: "good", Device: "/dev/vg0/good"}})
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+
+	go func() { done <- m.BringUp(t.Context(), mounts) }()
+
+	// A mount that hangs is cut off, and the boot goes on to the next one and to Incus.
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "a hanging mount blocked the boot")
+	}
+
+	status := m.Status(mounts)
+	require.Contains(t, status[0].Error, "deadline exceeded")
+	require.True(t, status[1].Mounted)
+}
+
+func TestDataMounterSameDeviceTwice(t *testing.T) {
+	t.Parallel()
+
+	sys := &fakeDataMountSystem{
+		fsTypes: map[string]string{"/dev/vg0/data": "btrfs", "/dev/mapper/vg0-data": "btrfs"},
+		aliases: map[string]string{"/dev/vg0/data": "/dev/dm-3", "/dev/mapper/vg0-data": "/dev/dm-3"},
+	}
+
+	m := newFakeMounter(t, sys)
+
+	// Two paths to one logical volume pass validation, but only the first is mounted.
+	mounts, err := ValidateDataMounts([]api.SystemStorageDataMount{{Name: "a", Device: "/dev/vg0/data"}, {Name: "b", Device: "/dev/mapper/vg0-data"}})
+	require.NoError(t, err)
+	require.NoError(t, m.BringUp(t.Context(), mounts))
+
+	status := m.Status(mounts)
+	require.True(t, status[0].Mounted)
+	require.Contains(t, status[1].Error, `same device as data mount "a"`)
+
+	for _, event := range sys.events {
+		require.NotContains(t, event, "mount /dev/mapper/vg0-data")
+	}
 }
