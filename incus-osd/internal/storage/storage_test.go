@@ -247,3 +247,41 @@ func TestParseZpoolStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestPoolActivityPauseReadsBackThroughAPI(t *testing.T) {
+	t.Parallel()
+
+	since := time.Date(2026, 11, 15, 4, 0, 10, 0, time.UTC)
+
+	SetPoolActivityPause("pause-api", "scrub", PoolActivityPause{Paused: true, Since: since, Reason: "io pressure: full avg10 23.4", Pauses: 2})
+	SetPoolActivityPause("pause-api", "trim", PoolActivityPause{Pauses: 1})
+
+	pool := api.SystemStoragePool{
+		Name:      "pause-api",
+		LastScrub: &api.SystemStoragePoolScrubStatus{State: api.SystemStoragePoolScrubInProgress},
+		LastTrim:  &api.SystemStoragePoolTrimStatus{State: api.SystemStoragePoolTrimFinished},
+	}
+
+	applyPoolActivityPauses(&pool)
+
+	raw, err := json.Marshal(pool)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"paused":true,"paused_since":"2026-11-15T04:00:10Z","pause_reason":"io pressure: full avg10 23.4","pauses":2`)
+
+	var got api.SystemStoragePool
+
+	err = json.Unmarshal(raw, &got)
+	require.NoError(t, err)
+	require.True(t, got.LastScrub.Paused)
+	require.Equal(t, since, got.LastScrub.PausedSince)
+	require.Equal(t, "io pressure: full avg10 23.4", got.LastScrub.PauseReason)
+	require.Equal(t, 2, got.LastScrub.Pauses)
+	require.False(t, got.LastTrim.Paused)
+	require.Equal(t, 1, got.LastTrim.Pauses)
+
+	// Pools IncusOS never paused report nothing.
+	other := api.SystemStoragePool{Name: "pause-api-other", LastScrub: &api.SystemStoragePoolScrubStatus{}}
+	applyPoolActivityPauses(&other)
+	require.False(t, other.LastScrub.Paused)
+	require.Zero(t, other.LastScrub.Pauses)
+}
