@@ -1016,6 +1016,14 @@ func registerJobs(s *state.State) error {
 		return err
 	}
 
+	// Register the data mount scrub job.
+	err = jobScheduler.RegisterJob(scheduling.JobName(storage.DataMountScrubJob), storage.DataMountScrubSchedule, func(ctx context.Context, _ *state.State) error {
+		return storage.ScrubDataMounts(ctx, s.System.Storage.Config.DataMounts)
+	}, nil)
+	if err != nil {
+		return err
+	}
+
 	// Register the SMART metrics export job.
 	err = jobScheduler.RegisterJob(scheduling.JobName(storage.SMARTMetricsJob), "15m", func(ctx context.Context, _ *state.State) error {
 		return storage.WriteSMARTMetrics(ctx)

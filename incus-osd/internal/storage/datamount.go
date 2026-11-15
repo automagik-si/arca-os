@@ -25,6 +25,12 @@ const DataMountRoot = "/var/lib/incus-os/mounts"
 // DefaultDataMountOptions keeps writes down on consumer SSDs; autodefrag is left out as it rewrites files.
 const DefaultDataMountOptions = "noatime,compress=zstd:1,discard=async"
 
+// DataMountScrubJob is the job that scrubs the mounted data mounts.
+const DataMountScrubJob = "data_mount_scrub"
+
+// DataMountScrubSchedule runs the scrub at 05:00 on the first day of each month.
+const DataMountScrubSchedule = "0 5 1 * *"
+
 var (
 	dataMountName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	lvmName       = regexp.MustCompile(`^[A-Za-z0-9_.+][A-Za-z0-9_.+-]*$`)
@@ -119,6 +125,8 @@ type DataMountSystem interface {
 	// MountedFrom reports whether mountPoint is mounted and, if so, whether device is its source.
 	MountedFrom(mountPoint string, device string) (bool, bool, error)
 	Mount(ctx context.Context, device string, mountPoint string, filesystem string, options string) error
+	// Scrub verifies every block of the file system at mountPoint, returning once it is done.
+	Scrub(ctx context.Context, mountPoint string) error
 }
 
 // DataMounter mounts the configured data mounts and remembers why one failed.
@@ -145,6 +153,11 @@ func BringUpEncryptedStorage(ctx context.Context, mounts []api.SystemStorageData
 // MountDataMounts mounts any data mount that isn't mounted yet.
 func MountDataMounts(ctx context.Context, mounts []api.SystemStorageDataMount) {
 	defaultDataMounter.Mount(ctx, mounts)
+}
+
+// ScrubDataMounts scrubs each mounted data mount in turn.
+func ScrubDataMounts(ctx context.Context, mounts []api.SystemStorageDataMount) error {
+	return defaultDataMounter.Scrub(ctx, mounts)
 }
 
 // DataMountStatus returns the state of each data mount.
@@ -191,6 +204,37 @@ func (m *DataMounter) Mount(ctx context.Context, mounts []api.SystemStorageDataM
 
 		m.mu.Unlock()
 	}
+}
+
+// Scrub scrubs each data mount that is mounted from its own device, skipping the others.
+func (m *DataMounter) Scrub(ctx context.Context, mounts []api.SystemStorageDataMount) error {
+	var errs []error
+
+	for _, mount := range mounts {
+		mountPoint := filepath.Join(m.Root, mount.Name)
+
+		mounted, same, err := m.Sys.MountedFrom(mountPoint, mount.Device)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("data mount %q: %w", mount.Name, err))
+
+			continue
+		}
+
+		if !mounted || !same {
+			slog.WarnContext(ctx, "Skipping the scrub of a data mount that isn't mounted", "name", mount.Name)
+
+			continue
+		}
+
+		slog.InfoContext(ctx, "Scrubbing data mount", "name", mount.Name)
+
+		err = m.Sys.Scrub(ctx, mountPoint)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("data mount %q: %w", mount.Name, err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // Status returns the state of each data mount, with the error of its last failed attempt.
@@ -339,6 +383,13 @@ func (realDataMountSystem) MountedFrom(mountPoint string, device string) (bool, 
 
 func (realDataMountSystem) Mount(ctx context.Context, device string, mountPoint string, filesystem string, options string) error {
 	_, err := subprocess.RunCommandContext(ctx, "mount", "-t", filesystem, "-o", options, device, mountPoint)
+
+	return err
+}
+
+func (realDataMountSystem) Scrub(ctx context.Context, mountPoint string) error {
+	// -B waits for the scrub to end and fails if it found errors it couldn't correct.
+	_, err := subprocess.RunCommandContext(ctx, "btrfs", "scrub", "start", "-B", mountPoint)
 
 	return err
 }
