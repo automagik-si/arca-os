@@ -15,7 +15,7 @@ type SystemStorageConfig struct {
 
 // SystemStorageDataMount is an existing file system that is mounted at boot, never formatted.
 type SystemStorageDataMount struct {
-	// Name of the mount; it is mounted at /var/lib/incus-os/mounts/<name>.
+	// Name of the mount; it is mounted at /var/lib/arca-mounts/<name>.
 	Name string `json:"name" yaml:"name"`
 	// Device holding the file system: /dev/disk/by-id/..., /dev/disk/by-uuid/..., /dev/mapper/... or /dev/<vg>/<lv>.
 	Device string `json:"device" yaml:"device"`

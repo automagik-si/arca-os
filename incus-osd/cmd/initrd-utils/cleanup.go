@@ -27,6 +27,7 @@ var cleanupAllowList = []string{
 	"etc/shadow",
 	"etc/ssl",
 	"etc/sysctl.d",
+	"var/lib/arca-mounts",
 	"var/lib/extensions",
 	"var/lib/incus",
 	"var/lib/incus-os",

@@ -19,8 +19,9 @@ import (
 	"github.com/lxc/incus-os/incus-osd/api"
 )
 
-// DataMountRoot is where data mounts are mounted, one directory per name.
-const DataMountRoot = "/var/lib/incus-os/mounts"
+// DataMountRoot is where data mounts are mounted, one directory per name. It stays outside
+// /var/lib/incus-os, which an OS restore renames and deletes, and /var/lib/incus, which an uninstall deletes.
+const DataMountRoot = "/var/lib/arca-mounts"
 
 // DefaultDataMountOptions keeps writes down on consumer SSDs; autodefrag is left out as it rewrites files.
 const DefaultDataMountOptions = "noatime,compress=zstd:1,discard=async"

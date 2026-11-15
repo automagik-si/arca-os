@@ -1307,7 +1307,7 @@ definitions:
                 type: string
                 x-go-name: Filesystem
             name:
-                description: Name of the mount; it is mounted at /var/lib/incus-os/mounts/<name>.
+                description: Name of the mount; it is mounted at /var/lib/arca-mounts/<name>.
                 type: string
                 x-go-name: Name
             options:
