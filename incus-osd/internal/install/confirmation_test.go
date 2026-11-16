@@ -303,6 +303,7 @@ func TestTargetReinstallSafety(t *testing.T) {
 					require.Error(t, err)
 					require.Zero(t, writes, "neither GPT zap nor full discard may run")
 					require.Contains(t, err.Error(), "abcdef", "the error must identify the target's stable token")
+					require.Contains(t, err.Error(), "first six characters of the target ESP PARTUUID")
 				}
 			})
 		}

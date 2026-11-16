@@ -205,10 +205,10 @@ func withReinstallSafety(config *apiseed.Install, osName string, targetESP strin
 
 	switch config.ForceInstallConfirmation {
 	case "":
-		return fmt.Errorf("%s is already installed on this system; to confirm overwriting, add `ForceInstallConfirmation=%s` to the install seed and reboot", osName, confirmationValue)
+		return fmt.Errorf("%s is already installed on this system; to confirm overwriting, add `ForceInstallConfirmation=%s` (first six characters of the target ESP PARTUUID) to the install seed and reboot", osName, confirmationValue)
 	case confirmationValue, "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING":
 		return proceed()
 	default:
-		return fmt.Errorf("%s is already installed on this system; the value of `ForceInstallConfirmation` '%s' != '%s', refusing to continue", osName, config.ForceInstallConfirmation, confirmationValue)
+		return fmt.Errorf("%s is already installed on this system; the value of `ForceInstallConfirmation` '%s' != '%s' (first six characters of the target ESP PARTUUID), refusing to continue", osName, config.ForceInstallConfirmation, confirmationValue)
 	}
 }

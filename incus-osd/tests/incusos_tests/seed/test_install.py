@@ -122,7 +122,7 @@ def TestSeedInstallForceConfirmation(install_image):
         time.sleep(5)
         vm.WaitAgentRunning()
 
-        vm.WaitExpectedLog("incus-osd", os_name + " is already installed on this system; to confirm overwriting, add `ForceInstallConfirmation=" + confirmationValue + "` to the install seed and reboot")
+        vm.WaitExpectedLog("incus-osd", os_name + " is already installed on this system; to confirm overwriting, add `ForceInstallConfirmation=" + confirmationValue + "` (first six characters of the target ESP PARTUUID) to the install seed and reboot")
 
         vm.RunCommand("mkdir", "/tmp/seed/")
         vm.RunCommand("tar", "xf", "/dev/disk/by-id/usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0-part2", "-C", "/tmp/seed/")
