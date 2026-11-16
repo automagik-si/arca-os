@@ -1,0 +1,137 @@
+{
+   "blockdevices": [
+      {
+         "path": "/dev/sda",
+         "type": "disk",
+         "size": 53687091200,
+         "model": "QEMU HARDDISK",
+         "serial": "incus_root",
+         "pttype": "gpt",
+         "fstype": null,
+         "parttypename": null,
+         "label": null,
+         "partlabel": null
+      },{
+         "path": "/dev/sda1",
+         "type": "part",
+         "size": 2147483648,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": "vfat",
+         "parttypename": "EFI System",
+         "label": "ESP",
+         "partlabel": "esp"
+      },{
+         "path": "/dev/sda2",
+         "type": "part",
+         "size": 104857600,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": null,
+         "parttypename": "Linux filesystem",
+         "label": null,
+         "partlabel": "seed-data"
+      },{
+         "path": "/dev/sda3",
+         "type": "part",
+         "size": 16384,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": null,
+         "parttypename": "Linux /usr verity sign. (x86-64)",
+         "label": null,
+         "partlabel": "IncusOS_202611022009_verity_sig"
+      },{
+         "path": "/dev/sda4",
+         "type": "part",
+         "size": 104857600,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": "DM_verity_hash",
+         "parttypename": "Linux /usr verity (x86-64)",
+         "label": null,
+         "partlabel": "IncusOS_202611022009_verity"
+      },{
+         "path": "/dev/sda5",
+         "type": "part",
+         "size": 1073741824,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": "erofs",
+         "parttypename": "Linux /usr (x86-64)",
+         "label": null,
+         "partlabel": "IncusOS_202611022009"
+      },{
+         "path": "/dev/sda6",
+         "type": "part",
+         "size": 16384,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": null,
+         "parttypename": "Linux /usr verity sign. (x86-64)",
+         "label": null,
+         "partlabel": "_empty"
+      },{
+         "path": "/dev/sda7",
+         "type": "part",
+         "size": 104857600,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": null,
+         "parttypename": "Linux /usr verity (x86-64)",
+         "label": null,
+         "partlabel": "_empty"
+      },{
+         "path": "/dev/sda8",
+         "type": "part",
+         "size": 1073741824,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": null,
+         "parttypename": "Linux /usr (x86-64)",
+         "label": null,
+         "partlabel": "_empty"
+      },{
+         "path": "/dev/sda9",
+         "type": "part",
+         "size": 4294967296,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": "crypto_LUKS",
+         "parttypename": "Linux swap",
+         "label": "luks-swap",
+         "partlabel": "swap"
+      },{
+         "path": "/dev/sda10",
+         "type": "part",
+         "size": 26843545600,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": "crypto_LUKS",
+         "parttypename": "Linux root (x86-64)",
+         "label": "luks-root-x86-64",
+         "partlabel": "root-x86-64"
+      },{
+         "path": "/dev/sda11",
+         "type": "part",
+         "size": 17935872000,
+         "model": null,
+         "serial": null,
+         "pttype": "gpt",
+         "fstype": "zfs_member",
+         "parttypename": "Linux filesystem",
+         "label": "local",
+         "partlabel": "local-data"
+      }
+   ]
+}

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -15,6 +17,67 @@ import (
 
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
 )
+
+func TestInspectPartitionedInstallDevice(t *testing.T) { //nolint:paralleltest // Stubs lsblk through PATH.
+	flat, err := os.ReadFile("testdata/target-lsblk.json")
+	require.NoError(t, err)
+
+	var snapshot struct {
+		BlockDevices []installDevice `json:"blockdevices"`
+	}
+
+	require.NoError(t, json.Unmarshal(flat, &snapshot))
+	require.Len(t, snapshot.BlockDevices, 12)
+
+	disk := snapshot.BlockDevices[0]
+	disk.Children = snapshot.BlockDevices[1:]
+	snapshot.BlockDevices = []installDevice{disk}
+	tree, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	flatPath := filepath.Join(dir, "flat.json")
+	treePath := filepath.Join(dir, "tree.json")
+
+	require.NoError(t, os.WriteFile(flatPath, flat, 0o600))
+	require.NoError(t, os.WriteFile(treePath, tree, 0o600))
+	t.Setenv("LSBLK_FLAT", flatPath)
+	t.Setenv("LSBLK_TREE", treePath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stub := `#!/bin/sh
+case " $* " in
+	*" --tree "*) exec cat "$LSBLK_TREE" ;;
+	*) exec cat "$LSBLK_FLAT" ;;
+esac
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lsblk"), []byte(stub), 0o700)) //nolint:gosec // Executable test stub.
+
+	plan, err := inspectInstallDevice(t.Context(), "/dev/sda")
+	require.NoError(t, err)
+
+	for _, want := range []string{"Target: /dev/sda", "50.00 GiB", "/dev/sda1", "/dev/sda11", "IncusOS_202611022009", "luks-root-x86-64", "zfs_member"} {
+		require.Contains(t, plan, want)
+	}
+
+	// A tree still must identify exactly one disk with a nonzero size.
+	snapshot.BlockDevices = append(snapshot.BlockDevices, disk)
+	ambiguous, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(treePath, ambiguous, 0o600))
+	plan, err = inspectInstallDevice(t.Context(), "/dev/sda")
+	require.ErrorContains(t, err, "cannot identify target")
+	require.Empty(t, plan)
+
+	disk.Size = 0
+	snapshot.BlockDevices = []installDevice{disk}
+	zeroSize, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(treePath, zeroSize, 0o600))
+	plan, err = inspectInstallDevice(t.Context(), "/dev/sda")
+	require.ErrorContains(t, err, "cannot identify target")
+	require.Empty(t, plan)
+}
 
 func TestRenderInstallPlan(t *testing.T) {
 	t.Parallel()

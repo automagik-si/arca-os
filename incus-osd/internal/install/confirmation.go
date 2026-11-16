@@ -34,7 +34,7 @@ type installDevice struct {
 }
 
 func inspectInstallDevice(ctx context.Context, device string) (string, error) {
-	output, err := subprocess.RunCommandContext(ctx, "lsblk", "--json", "--bytes", "--paths", "--output", "PATH,TYPE,SIZE,MODEL,SERIAL,PTTYPE,FSTYPE,PARTTYPENAME,LABEL,PARTLABEL", device)
+	output, err := subprocess.RunCommandContext(ctx, "lsblk", "--json", "--tree", "--bytes", "--paths", "--output", "PATH,TYPE,SIZE,MODEL,SERIAL,PTTYPE,FSTYPE,PARTTYPENAME,LABEL,PARTLABEL", device)
 	if err != nil {
 		return "", fmt.Errorf("cannot inspect target; installation aborted without erasing any data: %w", err)
 	}
