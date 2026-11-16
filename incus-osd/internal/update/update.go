@@ -324,7 +324,15 @@ func checkOSWith(ctx context.Context, s *state.State, p providers.Provider, t *t
 }
 
 func updateCommonPrep(ctx context.Context, s *state.State, clearCache bool) (providers.Provider, *tui.TUI, error) {
-	p, err := providers.Load(ctx, s, false)
+	var p providers.Provider
+
+	err := initialProviderCheck(ctx, func() error {
+		var err error
+
+		p, err = providers.Load(ctx, s, false)
+
+		return err
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -466,17 +474,22 @@ func fetchAndApplyUpdate(ctx context.Context, s *state.State, t *tui.TUI, p prov
 		err    error
 	)
 
-	switch ut {
-	case TypeSecureBoot:
-		update, err = p.GetSecureBootCertUpdate(ctx)
-	case TypeOS:
-		update, err = p.GetOSUpdate(ctx)
-	case TypeApplication:
-		update, err = p.GetApplicationUpdate(ctx, appName)
-	default:
-		return "", errors.New("unrecognized update type '" + ut.String() + "'")
+	check := func() error {
+		switch ut {
+		case TypeSecureBoot:
+			update, err = p.GetSecureBootCertUpdate(ctx)
+		case TypeOS:
+			update, err = p.GetOSUpdate(ctx)
+		case TypeApplication:
+			update, err = p.GetApplicationUpdate(ctx, appName)
+		default:
+			return errors.New("unrecognized update type '" + ut.String() + "'")
+		}
+
+		return err
 	}
 
+	err = initialProviderCheck(ctx, check)
 	if err != nil {
 		if errors.Is(err, providers.ErrNoUpdateAvailable) {
 			slog.DebugContext(ctx, ut.String()+" update provider doesn't currently have any update", "channel", s.System.Update.Config.Channel)
