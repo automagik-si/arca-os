@@ -7,6 +7,7 @@ initrd-fsck-root.sh           usr/bin/
 initrd-multipath.sh           usr/bin/
 initrd-multipath-partition.sh usr/bin/
 initrd-recovery-key.sh        usr/bin/
+initrd-repart.sh              usr/bin/
 initrd-startup-checks.sh      usr/bin/
 initrd-tpm-diagnosis.sh       usr/bin/
 

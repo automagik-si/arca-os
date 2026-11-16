@@ -259,35 +259,7 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 					return fmt.Errorf("%s is already installed on this system, but unable to determine what device it is running from", osName)
 				}
 
-				t, err := tui.GetTUI(nil)
-				if err != nil {
-					return err
-				}
-
-				modal := t.AddModal(osName+" Reinstall", "install")
-
-				err = confirmTargetDestruction(ctx, modal, "/dev/"+deviceGroup[1], installSeed.Confirmation, func() error {
-					slog.InfoContext(ctx, "Wiping existing version of "+osName+", then rebooting in five seconds to run actual installation")
-
-					_, err := subprocess.RunCommandContext(ctx, "sgdisk", "-Z", "/dev/"+deviceGroup[1])
-
-					return err
-				})
-				if err != nil {
-					return err
-				}
-
-				time.Sleep(5 * time.Second)
-
-				err = systemd.SystemReboot(ctx)
-				if err != nil {
-					return err
-				}
-
-				// Sleep until the system reboots so we don't attempt to proceed with the install.
-				time.Sleep(10 * time.Second)
-
-				return nil
+				return zapAndReboot(ctx, installSeed, osName, "/dev/"+deviceGroup[1])
 			})
 			if err != nil {
 				return err
@@ -326,7 +298,60 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 				return errors.New("at least one application must be defined in the provided applications seed")
 			}
 		}
+		// Discarding a disk backing /usr would destroy the installer's running filesystem.
+		usrOnTarget, err := storage.DeviceBacksUsr(targetDevice)
+		if err != nil {
+			return err
+		}
+
+		if usrOnTarget {
+			osName, _, err := systemd.GetCurrentRelease(ctx)
+			if err != nil {
+				return err
+			}
+
+			machineID, err := os.ReadFile("/etc/machine-id")
+			if err != nil {
+				return err
+			}
+
+			return withReinstallSafety(installSeed, osName, machineID, func() error {
+				return zapAndReboot(ctx, installSeed, osName, targetDevice)
+			})
+		}
 	}
+
+	return nil
+}
+
+func zapAndReboot(ctx context.Context, config *apiseed.Install, osName string, device string) error {
+	t, err := tui.GetTUI(nil)
+	if err != nil {
+		return err
+	}
+
+	modal := t.AddModal(osName+" Reinstall", "install")
+
+	err = confirmTargetDestruction(ctx, modal, device, config.Confirmation, func() error {
+		slog.InfoContext(ctx, "Wiping existing version of "+osName+", then rebooting in five seconds to run actual installation")
+
+		_, err := subprocess.RunCommandContext(ctx, "sgdisk", "-Z", device)
+
+		return err
+	})
+	if err != nil {
+		return err
+	}
+
+	time.Sleep(5 * time.Second)
+
+	err = systemd.SystemReboot(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Wait for the reboot before allowing any installation to continue.
+	time.Sleep(10 * time.Second)
 
 	return nil
 }
@@ -423,7 +448,7 @@ func (i *Install) DoInstall(ctx context.Context, osName string) error {
 
 // runningFromCDROM returns true we're running from a CDROM, which should only happen during an install.
 func runningFromCDROM() bool {
-	underlyingDevice, err := storage.GetUnderlyingDevice()
+	underlyingDevice, err := storage.GetBootDevice()
 	if err != nil {
 		return false
 	}
@@ -457,7 +482,7 @@ func getSourceDevice(ctx context.Context) (string, bool, int, error) {
 
 	isReadonlyInstallFS := strings.Contains(output, ": Read-only file system")
 
-	underlyingDevice, err := storage.GetUnderlyingDevice()
+	underlyingDevice, err := storage.GetBootDevice()
 	if err != nil {
 		return "", isReadonlyInstallFS, -1, err
 	}
