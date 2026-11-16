@@ -170,7 +170,7 @@ func (p *images) Register(ctx context.Context) error {
 		// Send the request.
 		resp, err := p.client.Do(r)
 		if err != nil {
-			return errors.New("unable to get http register response: " + err.Error())
+			return fmt.Errorf("unable to get http register response: %w", err)
 		}
 
 		defer resp.Body.Close()

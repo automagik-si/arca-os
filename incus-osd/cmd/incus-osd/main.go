@@ -846,6 +846,8 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	skipInitialUpdateCheck := s.System.Update.Config.CheckFrequency == "never" || s.System.Update.Config.AutoUpdatesOff
 
 	_, err = applications.GetPrimary(ctx, s, false)
+
+	noPrimary := errors.Is(err, applications.ErrNoPrimary)
 	if err != nil {
 		if !errors.Is(err, applications.ErrNoPrimary) {
 			return err
@@ -865,7 +867,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 
 	if !delayInitialUpdateCheck && !skipInitialUpdateCheck {
 		// Perform an initial blocking check for updates before proceeding.
-		err := update.Check(ctx, s)
+		err := update.CheckInitial(ctx, s, noPrimary)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to perform startup update check: "+err.Error())
 		}
