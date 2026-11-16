@@ -42,6 +42,7 @@ initrd-utils:
 .PHONY: initrd-deb-package
 initrd-deb-package: initrd-utils
 	cp incus-osd/initrd-utils mkosi.packages/initrd-utils/
+	cp mkosi.images/base/mkosi.extra/usr/lib/systemd/system-generators/arca-boot-esp-generator mkosi.packages/initrd-utils/
 	rm -rf mkosi.packages/initrd-utils/repart.d/ && cp -r mkosi.images/base/mkosi.extra/usr/lib/repart.d/ mkosi.packages/initrd-utils/
 	(cd mkosi.packages/initrd-utils && cp os-release.in os-release && sed -i -e "s/@IMAGE_ID@/${OSNAME}/" os-release)
 	(cd mkosi.packages/initrd-utils && debuild)
