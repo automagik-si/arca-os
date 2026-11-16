@@ -208,6 +208,13 @@ func TestLoadInitialProviderWait(t *testing.T) {
 	t.Parallel()
 
 	s := &state.State{}
+	st := &s.System.Update.State
+	st.TrustFailures = 3
+	st.TrustEscalated = true
+	st.EmbeddedCAFingerprint = "embedded CA"
+	st.PresentedCAFingerprint = "presented CA"
+	st.Status = TrustStatus
+
 	ctx := initialCheckContext(t.Context(), s, true)
 	wait, ok := ctx.Value(initialNetworkWaitKey{}).(*initialNetworkWait)
 	require.True(t, ok)
@@ -240,7 +247,35 @@ func TestLoadInitialProviderWait(t *testing.T) {
 	require.Same(t, want, p)
 	require.Equal(t, 3, calls)
 	require.Equal(t, 1, shows)
-	require.Empty(t, s.System.Update.State.LastError)
+	require.Empty(t, st.LastError)
+	require.Empty(t, st.LastErrorKind)
+	require.Equal(t, TrustStatus, st.Status)
+	require.Equal(t, 3, st.TrustFailures)
+	require.True(t, st.TrustEscalated)
+	require.Equal(t, "embedded CA", st.EmbeddedCAFingerprint)
+	require.Equal(t, "presented CA", st.PresentedCAFingerprint)
+}
+
+func TestInitialVerifiedFetchClearsTrust(t *testing.T) {
+	t.Parallel()
+
+	f := newTrustFixture(t)
+	f.server.serve(f.trusted)
+
+	s := &state.State{}
+	st := &s.System.Update.State
+	st.TrustFailures = 3
+	st.TrustEscalated = true
+	st.EmbeddedCAFingerprint = f.updateCA
+	st.PresentedCAFingerprint = f.newCA
+
+	ctx := initialCheckContext(t.Context(), s, true)
+	_, err := checkAndDownloadUpdate(ctx, s, nil, f.provider, TypeSecureBoot, "", false)
+	require.NoError(t, err)
+	require.Zero(t, st.TrustFailures)
+	require.False(t, st.TrustEscalated)
+	require.Empty(t, st.EmbeddedCAFingerprint)
+	require.Empty(t, st.PresentedCAFingerprint)
 }
 
 func TestInitialNetworkMessage(t *testing.T) {

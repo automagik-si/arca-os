@@ -83,6 +83,8 @@ func initialProviderCheck(ctx context.Context, check func() error) error {
 func loadInitialProvider(ctx context.Context, s *state.State, load func(context.Context, *state.State, bool) (providers.Provider, error)) (providers.Provider, error) {
 	var p providers.Provider
 
+	priorState := s.System.Update.State
+
 	err := initialProviderCheck(ctx, func() error {
 		var err error
 
@@ -90,6 +92,14 @@ func loadInitialProvider(ctx context.Context, s *state.State, load func(context.
 
 		return err
 	})
+
+	// Loading a provider doesn't verify the update index, even after network recovery.
+	if err == nil {
+		s.System.Update.State.TrustFailures = priorState.TrustFailures
+		s.System.Update.State.TrustEscalated = priorState.TrustEscalated
+		s.System.Update.State.EmbeddedCAFingerprint = priorState.EmbeddedCAFingerprint
+		s.System.Update.State.PresentedCAFingerprint = priorState.PresentedCAFingerprint
+	}
 
 	return p, err
 }
