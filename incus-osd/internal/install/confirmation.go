@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lxc/incus/v7/shared/subprocess"
 	"github.com/rivo/tview"
 
@@ -30,13 +32,48 @@ type installDevice struct {
 	PartTypeName string          `json:"parttypename"`
 	Label        string          `json:"label"`
 	PartLabel    string          `json:"partlabel"`
+	PartUUID     string          `json:"partuuid"`
 	Children     []installDevice `json:"children"`
 }
 
-func inspectInstallDevice(ctx context.Context, device string) (string, error) {
-	output, err := subprocess.RunCommandContext(ctx, "lsblk", "--json", "--tree", "--bytes", "--paths", "--output", "PATH,TYPE,SIZE,MODEL,SERIAL,PTTYPE,FSTYPE,PARTTYPENAME,LABEL,PARTLABEL", device)
+func withTargetReinstallSafety(config *apiseed.Install, osName string, target installDevice, usrOnTarget bool, proceed func() error) error {
+	installed := usrOnTarget
+	esps := []string{}
+	label := regexp.MustCompile("^" + regexp.QuoteMeta(osName) + `_[0-9]{12}(_verity(_sig)?)?$`)
+
+	var inspect func(installDevice)
+
+	inspect = func(device installDevice) {
+		if label.MatchString(device.PartLabel) {
+			installed = true
+		}
+
+		if device.PartLabel == "esp" {
+			esps = append(esps, device.PartUUID)
+		}
+
+		for _, child := range device.Children {
+			inspect(child)
+		}
+	}
+
+	inspect(target)
+
+	if !installed {
+		return proceed()
+	}
+
+	if len(esps) != 1 {
+		return errors.New("cannot identify existing installation ESP; refusing to overwrite")
+	}
+
+	return withReinstallSafety(config, osName, esps[0], proceed)
+}
+
+func readInstallDevice(ctx context.Context, device string) (installDevice, error) {
+	output, err := subprocess.RunCommandContext(ctx, "lsblk", "--json", "--tree", "--bytes", "--paths", "--output", "PATH,TYPE,SIZE,MODEL,SERIAL,PTTYPE,FSTYPE,PARTTYPENAME,LABEL,PARTLABEL,PARTUUID", device)
 	if err != nil {
-		return "", fmt.Errorf("cannot inspect target; installation aborted without erasing any data: %w", err)
+		return installDevice{}, fmt.Errorf("cannot inspect target; installation aborted without erasing any data: %w", err)
 	}
 
 	var devices struct {
@@ -45,14 +82,23 @@ func inspectInstallDevice(ctx context.Context, device string) (string, error) {
 
 	err = json.Unmarshal([]byte(output), &devices)
 	if err != nil {
-		return "", err
+		return installDevice{}, err
 	}
 
 	if len(devices.BlockDevices) != 1 || devices.BlockDevices[0].Size == 0 {
-		return "", errors.New("cannot identify target; installation aborted without erasing any data")
+		return installDevice{}, errors.New("cannot identify target; installation aborted without erasing any data")
 	}
 
-	return renderInstallPlan(devices.BlockDevices[0]), nil
+	return devices.BlockDevices[0], nil
+}
+
+func inspectInstallDevice(ctx context.Context, device string) (string, error) {
+	target, err := readInstallDevice(ctx, device)
+	if err != nil {
+		return "", err
+	}
+
+	return renderInstallPlan(target), nil
 }
 
 func renderInstallPlan(device installDevice) string {
@@ -146,16 +192,17 @@ func confirmTargetDestruction(ctx context.Context, modal *tui.Modal, device stri
 	return confirmation.run(ctx, device, seedAnswer, destroy)
 }
 
-func withReinstallSafety(config *apiseed.Install, osName string, machineID []byte, proceed func() error) error {
+func withReinstallSafety(config *apiseed.Install, osName string, targetESP string, proceed func() error) error {
 	if !config.ForceInstall {
 		return fmt.Errorf("%s is already installed on this system, and `ForceInstall` from install configuration isn't true", osName)
 	}
 
-	if len(machineID) < 6 {
-		return errors.New("cannot read existing installation machine ID; refusing to overwrite")
+	partUUID, err := uuid.Parse(targetESP)
+	if err != nil || partUUID == uuid.Nil {
+		return errors.New("cannot read existing installation ESP PARTUUID; refusing to overwrite")
 	}
 
-	confirmationValue := string(machineID[:6])
+	confirmationValue := partUUID.String()[:6]
 
 	switch config.ForceInstallConfirmation {
 	case "":

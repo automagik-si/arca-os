@@ -28,6 +28,7 @@ type BlockDevices struct {
 	Size       int    `json:"size"`
 	Subsystems string `json:"subsystems"`
 	RM         bool   `json:"rm"`
+	ReadOnly   bool   `json:"ro"`
 	WWN        string `json:"wwn"`
 }
 
@@ -185,7 +186,7 @@ type smartOutput struct {
 func GetBootDevice() (string, error) {
 	bootStat := unix.Stat_t{}
 
-	err := unix.Stat("/boot", &bootStat)
+	err := unix.Stat("/boot/", &bootStat)
 	if err == nil {
 		disk, err := partitionDisk("/sys/dev/block", unix.Major(bootStat.Dev), unix.Minor(bootStat.Dev))
 		if err != nil {
@@ -309,9 +310,10 @@ func partitionDisk(sysfsRoot string, major uint32, minor uint32) (string, error)
 func DeviceBacksUsr(device string) (bool, error) {
 	usrStat := unix.Stat_t{}
 
+	// Signed /usr must have a verity mapper before we can safely erase any target.
 	err := unix.Stat("/dev/mapper/usr", &usrStat)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("cannot inspect /usr mapper; refusing to erase target %q: %w", device, err)
 	}
 
 	deviceStat := unix.Stat_t{}

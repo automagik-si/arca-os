@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// checkPartitionUUIDs warns about ambiguous PARTUUIDs without waiting for devices or changing them.
+// checkPartitionUUIDs warns about ambiguous ESP PARTUUIDs without waiting for devices or changing them.
 func checkPartitionUUIDs(w io.Writer, scanRoot string) {
 	partitions, err := filepath.Glob(filepath.Join(scanRoot, "*", "uevent"))
 	if err != nil {
@@ -24,16 +24,22 @@ func checkPartitionUUIDs(w io.Writer, scanRoot string) {
 			continue
 		}
 
+		var uuid, name string
+
 		for line := range strings.SplitSeq(string(uevent), "\n") {
-			uuid, found := strings.CutPrefix(line, "PARTUUID=")
-			if !found || uuid == "" {
-				continue
+			value, found := strings.CutPrefix(line, "PARTUUID=")
+			if found {
+				uuid = strings.ToLower(value)
 			}
 
-			uuid = strings.ToLower(uuid)
-			devices[uuid] = append(devices[uuid], "/dev/"+filepath.Base(filepath.Dir(partition)))
+			value, found = strings.CutPrefix(line, "PARTNAME=")
+			if found {
+				name = value
+			}
+		}
 
-			break
+		if name == "esp" && uuid != "" {
+			devices[uuid] = append(devices[uuid], "/dev/"+filepath.Base(filepath.Dir(partition)))
 		}
 	}
 

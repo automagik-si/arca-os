@@ -101,9 +101,9 @@ def TestSeedInstallForceConfirmation(install_image):
         # Wait for a normal install to complete
         vm.WaitSystemReady(os_version)
 
-        # Get the machine ID
-        output = vm.RunCommand("cat", "/etc/machine-id")
-        confirmationValue = output.stdout.decode("utf-8")[:6]
+        # Read the installed target's ESP before reattaching media with the same label.
+        output = vm.RunCommand("blkid", "-s", "PARTUUID", "-o", "value", "/dev/disk/by-partlabel/esp")
+        confirmationValue = output.stdout.decode("utf-8").strip().lower()[:6]
 
         # Re-attach the install media and update the install seed
         vm.AddDevice("boot-media", "disk", "source="+test_image, "io.bus=usb", "boot.priority=10", "readonly=false")
@@ -135,13 +135,9 @@ def TestSeedInstallForceConfirmation(install_image):
         time.sleep(5)
         vm.WaitAgentRunning()
 
-        vm.WaitExpectedLog("incus-osd", "Wiping existing version of " + os_name + ", then rebooting in five seconds to run actual installation")
-
-        # Wait for the VM to auto-reboot and begin the installation once again
-        time.sleep(10)
-        vm.WaitAgentRunning()
-
+        # If usr binds to the target, the installer first zaps its GPT and reboots.
         vm.WaitExpectedLog("incus-osd", "Installing " + os_name + " source=")
+        vm.WaitExpectedLog("incus-osd", os_name + " was successfully installed")
 
 def TestSeedInstallEmpty(install_image):
     test_name = "seed-install-empty"

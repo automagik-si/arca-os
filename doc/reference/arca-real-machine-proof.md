@@ -625,10 +625,14 @@ applications onto their newer databases. The old disk is the final escape.
    release **on the new SSD only**, with its retained published installer.
    The first seed cannot do it: the installer refuses a target that has a
    partition table unless `force_install: true` is set, and when it
-   recognises an existing installation of its own version it also demands
-   `force_install_confirmation` with the value it prints. This needs a second
-   seed, approved by the owner for this fallback only: the same full by-id
-   `target`, `force_install: true`, still no `confirmation`. With
+   recognises an existing IncusOS installation of any version it also demands
+   `force_install_confirmation`: the first six lowercase characters of the
+   target ESP's PARTUUID, printed by the installer without unlocking the disk.
+   This value survives boots and updates and changes after a reinstall; the
+   running system's machine ID is not used. This needs a second seed, approved
+   by the owner for this fallback only: the same full by-id `target`,
+   `force_install: true`, the printed `force_install_confirmation`, still no
+   `confirmation`. With
    `force_install` the partition-table refusal protects no disk any more;
    the selector and the serial on the erase screen are the only guards, and
    the screen may be shown twice with a restart in between. Repeat steps 2
