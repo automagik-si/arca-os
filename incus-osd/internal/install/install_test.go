@@ -9,6 +9,29 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/storage"
 )
 
+func TestTargetPartitionGUID(t *testing.T) {
+	t.Parallel()
+
+	const sourceGUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+	for _, partitionType := range []string{
+		"EFI system partition", "Linux filesystem",
+		"Linux x86-64 /usr", "Linux x86-64 /usr verity", "Linux x86-64 /usr verity signature",
+		"Linux ARM64 /usr", "Linux ARM64 /usr verity", "Linux ARM64 /usr verity signature",
+	} {
+		t.Run(partitionType, func(t *testing.T) {
+			t.Parallel()
+
+			want := sourceGUID
+			if partitionType == "EFI system partition" {
+				want = "R"
+			}
+
+			require.Equal(t, want, targetPartitionGUID(partitionType, sourceGUID))
+		})
+	}
+}
+
 func TestGetTargetDeviceNoSeed(t *testing.T) {
 	t.Parallel()
 

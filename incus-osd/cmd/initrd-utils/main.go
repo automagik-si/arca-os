@@ -32,6 +32,8 @@ func main() {
 			err = cleanupRoot("/sysroot")
 		case "diagnose-tpm":
 			diagnoseTPM(os.Stdout, os.Args[2:])
+		case "check-partition-uuids":
+			checkPartitionUUIDs(os.Stdout, "/sys/class/block")
 		case "measure-pcrs":
 			err = measurePCRs()
 		case "seal-pcr15":

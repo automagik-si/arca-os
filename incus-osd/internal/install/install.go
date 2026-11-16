@@ -1066,9 +1066,17 @@ func copyPartitionDefinition(ctx context.Context, src string, tgt string, partit
 	}
 
 	// Create the partition on the target device.
-	_, err = subprocess.RunCommandContext(ctx, "sgdisk", "-n", strconv.Itoa(partitionIndex)+"::+"+partitionSize, "-u", strconv.Itoa(partitionIndex)+":"+partitionGUID, "-t", strconv.Itoa(partitionIndex)+":"+partitionHexCode, "-c", strconv.Itoa(partitionIndex)+":"+partitionName, tgt)
+	_, err = subprocess.RunCommandContext(ctx, "sgdisk", "-n", strconv.Itoa(partitionIndex)+"::+"+partitionSize, "-u", strconv.Itoa(partitionIndex)+":"+targetPartitionGUID(partitionType, partitionGUID), "-t", strconv.Itoa(partitionIndex)+":"+partitionHexCode, "-c", strconv.Itoa(partitionIndex)+":"+partitionName, tgt)
 
 	return err
+}
+
+func targetPartitionGUID(partitionType string, sourceGUID string) string {
+	if partitionType == "EFI system partition" {
+		return "R"
+	}
+
+	return sourceGUID
 }
 
 func doCopy(ctx context.Context, modal *tui.Modal, sourceDevice string, sourcePartitionPrefix string, targetDevice string, targetPartitionPrefix string, partitionIndex int, numPartitionsToCopy int) error {
