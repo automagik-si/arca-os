@@ -310,6 +310,31 @@ func TestTargetReinstallSafety(t *testing.T) {
 	}
 }
 
+func TestTargetReinstallMissingVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, usrOnTarget := range []bool{false, true} {
+		t.Run(fmt.Sprintf("usr-on-target=%t", usrOnTarget), func(t *testing.T) {
+			t.Parallel()
+
+			config := &apiseed.Install{ForceInstall: true, ForceInstallConfirmation: "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING", Confirmation: "ERASE"}
+			target := installDevice{Children: []installDevice{
+				{PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"},
+				{PartLabel: "IncusOS_202001010000"},
+			}}
+			writes := 0
+
+			err := withTargetReinstallSafety(config, "IncusOS", "", target, usrOnTarget, func() error {
+				writes++
+
+				return nil
+			})
+			require.ErrorContains(t, err, "cannot determine install media IMAGE_VERSION")
+			require.Zero(t, writes)
+		})
+	}
+}
+
 func TestTargetReinstallDetection(t *testing.T) {
 	t.Parallel()
 

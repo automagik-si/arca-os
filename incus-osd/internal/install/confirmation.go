@@ -36,6 +36,10 @@ type installDevice struct {
 }
 
 func withTargetReinstallSafety(config *apiseed.Install, osName string, osVersion string, target installDevice, usrOnTarget bool, proceed func() error) error {
+	if osVersion == "" {
+		return errors.New("cannot determine install media IMAGE_VERSION; refusing to overwrite")
+	}
+
 	installed := usrOnTarget
 	esps := []string{}
 	release := osName + "_" + osVersion
