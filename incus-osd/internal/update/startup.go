@@ -7,49 +7,66 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"syscall"
 	"time"
 
+	"github.com/lxc/incus-os/incus-osd/internal/providers"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/tui"
 )
 
-const initialNetworkMessage = "No network: plug in an Ethernet cable or a USB Ethernet adapter. This screen continues by itself when the network is up."
+const initialNetworkMessage = "No network: connect Wi-Fi or plug in an Ethernet cable or USB Ethernet adapter. This screen continues by itself when the network is up."
 
 type initialNetworkWaitKey struct{}
 
 type initialNetworkWait struct {
-	noPrimary bool
-	interval  time.Duration
-	notify    func() func()
+	state    *state.State
+	interval time.Duration
+	notify   func(string) func()
 }
 
 // CheckInitial retries unreachable providers only during startup without a primary application.
 func CheckInitial(ctx context.Context, s *state.State, noPrimary bool) error {
+	return Check(initialCheckContext(ctx, s, noPrimary), s)
+}
+
+func initialCheckContext(ctx context.Context, s *state.State, noPrimary bool) context.Context {
 	if !noPrimary {
-		return Check(ctx, s)
+		return ctx
 	}
 
 	wait := &initialNetworkWait{
-		noPrimary: noPrimary,
-		interval:  5 * time.Second,
-		notify: func() func() {
-			slog.InfoContext(ctx, initialNetworkMessage)
-
+		state:    s,
+		interval: 5 * time.Second,
+		notify: func(message string) func() {
 			t, err := tui.GetTUI(nil)
 			if err != nil {
 				return func() {}
 			}
 
-			return showInitialNetworkWait(t, s.OS.Name)
+			return showInitialNetworkWait(t, s.OS.Name, message)
 		},
 	}
 
-	return Check(context.WithValue(ctx, initialNetworkWaitKey{}, wait), s)
+	return context.WithValue(ctx, initialNetworkWaitKey{}, wait)
 }
 
-func showInitialNetworkWait(t *tui.TUI, title string) func() {
+func initialNetworkNotice(err error) string {
+	dnsErr, isDNS := errors.AsType[*net.DNSError](err)
+	if isDNS && dnsErr.IsNotFound {
+		return "Update server host not found: check the server address and DNS settings. This screen retries automatically."
+	}
+
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return "Update server refused the connection: check the server address and service availability. This screen retries automatically."
+	}
+
+	return initialNetworkMessage
+}
+
+func showInitialNetworkWait(t *tui.TUI, title string, message string) func() {
 	modal := t.AddModal(title, "initial-network")
-	modal.Update(initialNetworkMessage)
+	modal.Update(message)
 
 	return modal.Done
 }
@@ -63,23 +80,64 @@ func initialProviderCheck(ctx context.Context, check func() error) error {
 	return wait.check(ctx, check)
 }
 
-func (w *initialNetworkWait) check(ctx context.Context, check func() error) error {
+func loadInitialProvider(ctx context.Context, s *state.State, load func(context.Context, *state.State, bool) (providers.Provider, error)) (providers.Provider, error) {
+	var p providers.Provider
+
+	err := initialProviderCheck(ctx, func() error {
+		var err error
+
+		p, err = load(ctx, s, false)
+
+		return err
+	})
+
+	return p, err
+}
+
+func (w *initialNetworkWait) check(ctx context.Context, check func() error) (err error) {
 	var dismiss func()
+
+	priorStatus := w.state.System.Update.State.Status
+	lastError := ""
 
 	defer func() {
 		if dismiss != nil {
 			dismiss()
+
+			result := err
+			if errors.Is(result, providers.ErrNoUpdateAvailable) {
+				result = nil
+			}
+
+			recordCheck(ctx, w.state, result)
+
+			w.state.System.Update.State.Status = priorStatus
+			if result != nil {
+				w.state.System.Update.State.Status = failedStatus(result, "Failed to contact update server")
+			}
 		}
 	}()
 
 	for {
-		err := check()
-		if !w.noPrimary || !isUnreachableNetwork(err) || ctx.Err() != nil {
+		err = check()
+		if !isUnreachableNetwork(err) || ctx.Err() != nil {
 			return err
 		}
 
-		if dismiss == nil {
-			dismiss = w.notify()
+		cause := shortError(err)
+		if dismiss == nil || cause != lastError {
+			recordCheck(ctx, w.state, err)
+			w.state.System.Update.State.LastCheck = time.Now()
+			w.state.System.Update.State.Status = "Waiting for update server: " + cause
+			message := initialNetworkNotice(err)
+			slog.WarnContext(ctx, message, "error", cause)
+
+			if dismiss != nil {
+				dismiss()
+			}
+
+			dismiss = w.notify(message)
+			lastError = cause
 		}
 
 		timer := time.NewTimer(w.interval)

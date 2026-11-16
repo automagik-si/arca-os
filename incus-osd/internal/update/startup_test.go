@@ -1,11 +1,13 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -96,26 +98,30 @@ func TestInitialProviderWait(t *testing.T) {
 			t.Parallel()
 
 			shows, dismisses := 0, 0
-			wait := &initialNetworkWait{
-				noPrimary: tt.noPrimary,
-				interval:  time.Millisecond,
-				notify: func() func() {
+			s := &state.State{}
+			ctx := initialCheckContext(t.Context(), s, tt.noPrimary)
+			wait, hasWait := ctx.Value(initialNetworkWaitKey{}).(*initialNetworkWait)
+			require.Equal(t, tt.noPrimary, hasWait)
+
+			if hasWait {
+				wait.interval = time.Millisecond
+				wait.notify = func(string) func() {
 					shows++
 
 					return func() { dismisses++ }
-				},
+				}
 			}
-			ctx := context.WithValue(t.Context(), initialNetworkWaitKey{}, wait)
+
 			p := &startupProvider{errs: tt.errs}
 			start := time.Now()
 
-			_, err := checkAndDownloadUpdate(ctx, &state.State{}, nil, p, TypeSecureBoot, "", false)
+			_, err := checkAndDownloadUpdate(ctx, s, nil, p, TypeSecureBoot, "", false)
 
 			require.ErrorIs(t, err, tt.wantErr)
 			require.Equal(t, tt.wantCalls, p.calls)
 			require.Equal(t, tt.wantShows, shows)
 			require.Equal(t, shows, dismisses)
-			require.GreaterOrEqual(t, time.Since(start), time.Duration(p.calls-1)*wait.interval)
+			require.GreaterOrEqual(t, time.Since(start), time.Duration(p.calls-1)*time.Millisecond)
 		})
 	}
 }
@@ -128,9 +134,9 @@ func TestInitialProviderWaitCanceled(t *testing.T) {
 
 	dismissed := false
 	wait := &initialNetworkWait{
-		noPrimary: true,
-		interval:  time.Hour,
-		notify: func() func() {
+		state:    &state.State{},
+		interval: time.Hour,
+		notify: func(string) func() {
 			cancel()
 
 			return func() { dismissed = true }
@@ -142,18 +148,113 @@ func TestInitialProviderWaitCanceled(t *testing.T) {
 	require.True(t, dismissed)
 }
 
+func TestInitialNetworkDiagnostics(t *testing.T) { //nolint:paralleltest // Captures the process-wide logger.
+	var logs bytes.Buffer
+
+	previousLogger := slog.Default()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	networkErr := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ENETUNREACH}
+	dnsErr := &net.DNSError{Err: "no such host", Name: "updates.example", IsNotFound: true}
+	refusedErr := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	errs := []error{networkErr, networkErr, dnsErr, refusedErr, nil}
+	s := &state.State{}
+	s.System.Update.State.Status = "Checking for updates"
+	calls, dismisses := 0, 0
+	messages := []string{}
+
+	wait := &initialNetworkWait{
+		state:    s,
+		interval: time.Millisecond,
+		notify: func(message string) func() {
+			cause := shortError(errs[calls-1])
+			require.Equal(t, cause, s.System.Update.State.LastError)
+			require.Equal(t, ErrorKindNetwork, s.System.Update.State.LastErrorKind)
+			require.Contains(t, s.System.Update.State.Status, cause)
+			require.False(t, s.System.Update.State.LastCheck.IsZero())
+
+			messages = append(messages, message)
+
+			return func() { dismisses++ }
+		},
+	}
+
+	err := wait.check(t.Context(), func() error {
+		err := errs[calls]
+		calls++
+
+		return err
+	})
+
+	require.NoError(t, err)
+	require.Len(t, messages, 3)
+	require.Equal(t, initialNetworkMessage, messages[0])
+	require.Contains(t, messages[1], "host not found")
+	require.Contains(t, messages[2], "refused the connection")
+	require.Equal(t, len(messages), dismisses)
+	require.Equal(t, "Checking for updates", s.System.Update.State.Status)
+	require.Empty(t, s.System.Update.State.LastError)
+	require.Empty(t, s.System.Update.State.LastErrorKind)
+	require.Equal(t, 3, strings.Count(logs.String(), "level=WARN"))
+
+	for _, cause := range []error{networkErr, dnsErr, refusedErr} {
+		require.Contains(t, logs.String(), shortError(cause))
+	}
+}
+
+func TestLoadInitialProviderWait(t *testing.T) {
+	t.Parallel()
+
+	s := &state.State{}
+	ctx := initialCheckContext(t.Context(), s, true)
+	wait, ok := ctx.Value(initialNetworkWaitKey{}).(*initialNetworkWait)
+	require.True(t, ok)
+
+	wait.interval = time.Millisecond
+	shows := 0
+	wait.notify = func(string) func() {
+		shows++
+
+		require.Equal(t, ErrorKindNetwork, s.System.Update.State.LastErrorKind)
+
+		return func() {}
+	}
+
+	want := &startupProvider{}
+	calls := 0
+	p, err := loadInitialProvider(ctx, s, func(_ context.Context, gotState *state.State, ignoreSignedJSON bool) (providers.Provider, error) {
+		require.Same(t, s, gotState)
+		require.False(t, ignoreSignedJSON)
+
+		calls++
+		if calls < 3 {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ENETUNREACH}
+		}
+
+		return want, nil
+	})
+
+	require.NoError(t, err)
+	require.Same(t, want, p)
+	require.Equal(t, 3, calls)
+	require.Equal(t, 1, shows)
+	require.Empty(t, s.System.Update.State.LastError)
+}
+
 func TestInitialNetworkMessage(t *testing.T) {
 	t.Parallel()
 
 	screen := tcell.NewSimulationScreen("UTF-8")
 	s := &state.State{}
 	s.OS.Name = "Example OS"
-	tt, redraw, stop := tui.NewArcaTestTUI(s, screen)
+	tt, _, stop := tui.NewArcaTestTUI(s, screen)
 	t.Cleanup(stop)
 	screen.SetSize(80, 25)
-	redraw()
+	tt.QueueArcaUpdate(func() {})
 
-	dismiss := showInitialNetworkWait(tt, s.OS.Name)
+	dismiss := showInitialNetworkWait(tt, s.OS.Name, initialNetworkMessage)
 
 	var rendered strings.Builder
 
@@ -166,8 +267,7 @@ func TestInitialNetworkMessage(t *testing.T) {
 		}
 	})
 
-	text := strings.Join(strings.Fields(rendered.String()), " ")
-	text = strings.ReplaceAll(text, "│", " ")
+	text := strings.NewReplacer("│", " ", "║", " ").Replace(rendered.String())
 	text = strings.Join(strings.Fields(text), " ")
 	require.Contains(t, text, initialNetworkMessage)
 	require.NotContains(t, text, "Error")

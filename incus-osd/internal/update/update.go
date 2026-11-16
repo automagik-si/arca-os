@@ -324,15 +324,7 @@ func checkOSWith(ctx context.Context, s *state.State, p providers.Provider, t *t
 }
 
 func updateCommonPrep(ctx context.Context, s *state.State, clearCache bool) (providers.Provider, *tui.TUI, error) {
-	var p providers.Provider
-
-	err := initialProviderCheck(ctx, func() error {
-		var err error
-
-		p, err = providers.Load(ctx, s, false)
-
-		return err
-	})
+	p, err := loadInitialProvider(ctx, s, providers.Load)
 	if err != nil {
 		return nil, nil, err
 	}
