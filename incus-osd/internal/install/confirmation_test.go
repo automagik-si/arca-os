@@ -291,7 +291,7 @@ func TestTargetReinstallSafety(t *testing.T) {
 				config := &apiseed.Install{ForceInstall: true, ForceInstallConfirmation: tt.confirmation, Confirmation: "ERASE"}
 				writes := 0
 
-				err := withTargetReinstallSafety(config, "IncusOS", target, usrOnTarget, func() error {
+				err := withTargetReinstallSafety(config, "IncusOS", "202001010000", target, usrOnTarget, func() error {
 					writes++
 
 					return nil
@@ -321,7 +321,11 @@ func TestTargetReinstallDetection(t *testing.T) {
 		{name: "empty disk", allowed: true},
 		{name: "foreign disk", children: []installDevice{{PartLabel: "Windows"}}, allowed: true},
 		{name: "ESP alone", children: []installDevice{{PartLabel: "esp"}}, allowed: true},
-		{name: "old release", children: []installDevice{{PartLabel: "IncusOS_202001010000"}}},
+		{name: "same release", children: []installDevice{{PartLabel: "IncusOS_202001010000"}}},
+		{name: "different release without confirmation", children: []installDevice{{PartLabel: "IncusOS_201901010000"}, {PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"}}, allowed: true},
+		{name: "different verity without confirmation", children: []installDevice{{PartLabel: "IncusOS_201901010000_verity"}, {PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"}}, allowed: true},
+		{name: "different signature without confirmation", children: []installDevice{{PartLabel: "IncusOS_201901010000_verity_sig"}, {PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"}}, allowed: true},
+		{name: "matching A/B slot", children: []installDevice{{PartLabel: "IncusOS_201901010000"}, {PartLabel: "IncusOS_202001010000"}}},
 		{name: "verity only", children: []installDevice{{PartLabel: "IncusOS_202001010000_verity"}}},
 		{name: "signature only", children: []installDevice{{PartLabel: "IncusOS_202001010000_verity_sig"}}},
 		{name: "invalid target UUID", children: []installDevice{{PartLabel: "IncusOS_202001010000"}, {PartLabel: "esp", PartUUID: "invalid"}}},
@@ -332,13 +336,19 @@ func TestTargetReinstallDetection(t *testing.T) {
 			t.Parallel()
 
 			writes := 0
-			config := &apiseed.Install{ForceInstall: true, ForceInstallConfirmation: "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING", Confirmation: "ERASE"}
-			err := withTargetReinstallSafety(config, "IncusOS", installDevice{Children: tt.children}, tt.usrOnTarget, func() error {
+			config := &apiseed.Install{ForceInstall: true, Confirmation: "ERASE"}
+
+			err := withTargetReinstallSafety(config, "IncusOS", "202001010000", installDevice{Children: tt.children}, tt.usrOnTarget, func() error {
 				writes++
 
 				return nil
 			})
-			require.Equal(t, tt.allowed, err == nil)
+			if tt.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+
 			require.Equal(t, tt.allowed, writes == 1)
 		})
 	}

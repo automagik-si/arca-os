@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
 
@@ -36,15 +35,15 @@ type installDevice struct {
 	Children     []installDevice `json:"children"`
 }
 
-func withTargetReinstallSafety(config *apiseed.Install, osName string, target installDevice, usrOnTarget bool, proceed func() error) error {
+func withTargetReinstallSafety(config *apiseed.Install, osName string, osVersion string, target installDevice, usrOnTarget bool, proceed func() error) error {
 	installed := usrOnTarget
 	esps := []string{}
-	label := regexp.MustCompile("^" + regexp.QuoteMeta(osName) + `_[0-9]{12}(_verity(_sig)?)?$`)
+	release := osName + "_" + osVersion
 
 	var inspect func(installDevice)
 
 	inspect = func(device installDevice) {
-		if label.MatchString(device.PartLabel) {
+		if device.PartLabel == release || device.PartLabel == release+"_verity" || device.PartLabel == release+"_verity_sig" {
 			installed = true
 		}
 

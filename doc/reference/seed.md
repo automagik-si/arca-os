@@ -58,8 +58,12 @@ Both the disk erasure and TPM reset are disclosed before the confirmation prompt
   already exist. WARNING: THIS CAN CAUSE DATA LOSS!
 
 - `force_install_confirmation`: Required when `force_install` is true and an
-  IncusOS installation of any version is detected on the target device. Use the
-  first six lowercase characters of the **target ESP partition's PARTUUID**.
+  IncusOS installation matching the install media's version is detected on the
+  target device. The version is read from its GPT partition labels without
+  unlocking it. A different version does not require this extra confirmation.
+  A disk backing the installer's running `/usr` always requires the check before
+  its partition table can be erased and the installer rebooted. Use the first six
+  lowercase characters of the **target ESP partition's PARTUUID**.
   The installer reads this without unlocking the installed system and prints the
   value in its error message when this field is unset. It stays the same across
   boots and updates, but changes after a reinstall. The running system's

@@ -249,12 +249,12 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 			return err
 		}
 
-		osName, _, err := systemd.GetCurrentRelease(ctx)
+		osName, osVersion, err := systemd.GetCurrentRelease(ctx)
 		if err != nil {
 			return err
 		}
 
-		return withTargetReinstallSafety(installSeed, osName, target, usrOnTarget, func() error {
+		return withTargetReinstallSafety(installSeed, osName, osVersion, target, usrOnTarget, func() error {
 			if usrOnTarget {
 				return zapAndReboot(ctx, installSeed, osName, targetDevice)
 			}
