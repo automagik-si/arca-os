@@ -40,6 +40,8 @@ ddpid=""
 keepalive=""
 tmpf=""
 errf=""
+vdir=""
+shapid=""
 cleanup() {
 	if [ -n "$keepalive" ]; then
 		kill "$keepalive" 2>/dev/null || true
@@ -50,8 +52,13 @@ cleanup() {
 		sudo -n kill "$ddpid" 2>/dev/null || true
 		ddpid=""
 	fi
+	if [ -n "$shapid" ]; then
+		kill "$shapid" 2>/dev/null || true
+		shapid=""
+	fi
 	if [ -n "$tmpf" ]; then rm -f "$tmpf"; fi
 	if [ -n "$errf" ]; then rm -f "$errf"; fi
+	if [ -n "$vdir" ]; then rm -rf "$vdir"; fi
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
@@ -416,13 +423,68 @@ if [ "$verify" = 1 ]; then
 	[ -n "$img_sha" ] || img_sha=$(sha256_of <"$image")
 	# Whole 4 MiB blocks, since a raw macOS device refuses unaligned reads; head trims the read to the image's length.
 	blocks=$(((img_size + 4194303) / 4194304))
-	# On Linux iflag=direct reads the stick itself, not the page cache the write just filled.
-	iflag=""
-	[ "$os" = Darwin ] || iflag="iflag=direct"
-	# shellcheck disable=SC2086 # $iflag is one word or nothing
-	got=$({ sudo dd if="$target" bs=4194304 count="$blocks" $iflag 2>/dev/null || true; } | head -c "$img_size" | sha256_of)
-	[ "$got" = "$img_sha" ] || die "the stick does not read back as the image; try another stick"
-	ok "the stick matches the image"
+	vdir=$(mktemp -d "${TMPDIR:-/tmp}/make-usb.verify.XXXXXX") || die "could not make a temporary directory"
+
+	# Read the stick once, hashing and counting the bytes that reach the hash.
+	# The group after the pipe drains a tail past img_size, so dd is not killed
+	# by SIGPIPE when the image is not a whole number of 4 MiB blocks.
+	read_back() { # <label> [dd flags...]
+		local label=$1 rc bytes
+		shift
+		: >"$vdir/dd.err"
+		: >"$vdir/dd.rc"
+		: >"$vdir/read.bytes"
+		: >"$vdir/read.sha"
+		rm -f "$vdir/read.fifo"
+		mkfifo "$vdir/read.fifo" || die "could not make a fifo in $vdir"
+		sha256_of <"$vdir/read.fifo" >"$vdir/read.sha" &
+		shapid=$!
+		{ rc=0; sudo dd if="$target" bs=4194304 count="$blocks" "$@" 2>"$vdir/dd.err" || rc=$?; printf '%s\n' "$rc" >"$vdir/dd.rc"; } |
+			{ head -c "$img_size" | tee "$vdir/read.fifo" | wc -c >"$vdir/read.bytes"; cat >/dev/null; }
+		wait "$shapid" || true
+		shapid=""
+		rm -f "$vdir/read.fifo"
+		rc=$(cat "$vdir/dd.rc" 2>/dev/null || true)
+		bytes=$(tr -d '[:space:]' <"$vdir/read.bytes" 2>/dev/null || true)
+		read_rc=${rc:-?}
+		read_bytes=${bytes:-0}
+		read_sha=$(cat "$vdir/read.sha" 2>/dev/null || true)
+		read_label=$label
+	}
+	read_ok() {
+		[ "$read_rc" = 0 ] && [ "$read_bytes" = "$img_size" ] && [ -n "$read_sha" ]
+	}
+	read_reason() {
+		if [ "$read_rc" != 0 ]; then
+			printf 'dd exited %s after %s of %s bytes' "$read_rc" "$read_bytes" "$img_size"
+		else
+			printf 'the read stopped after %s of %s bytes' "$read_bytes" "$img_size"
+		fi
+	}
+	read_error() {
+		local err
+		err=$(tr '\n' ' ' <"$vdir/dd.err" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')
+		die "the device could not be read back ($read_label: $(read_reason))${err:+: $err}"
+	}
+
+	if [ "$os" = Darwin ]; then
+		read_back "buffered read"
+	else
+		read_back "direct read" iflag=direct
+		if ! read_ok; then
+			warn "the direct read failed ($(read_reason)); syncing and retrying buffered"
+			sync
+			if [ "$(id -u)" -eq 0 ]; then
+				printf '3\n' >/proc/sys/vm/drop_caches 2>/dev/null || true
+			elif command -v sudo >/dev/null 2>&1; then
+				sudo -n sh -c 'printf 3 >/proc/sys/vm/drop_caches' 2>/dev/null || true
+			fi
+			read_back "buffered read after sync"
+		fi
+	fi
+	if ! read_ok; then read_error; fi
+	[ "$read_sha" = "$img_sha" ] || die "the stick does not read back as the image ($read_label); try another stick"
+	ok "the stick matches the image ($read_label)"
 fi
 
 if [ "$os" = Darwin ]; then
