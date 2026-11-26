@@ -92,6 +92,8 @@ func watchReady(ctx context.Context, a *auto, wait time.Duration) {
 func Run(ctx context.Context, s *state.State) {
 	started.Do(func() {
 		go loop(ctx, &auto{s: s, m: &liveMachine{s: s}})
+		// An installed system that should get the NVIDIA driver gets it here, not in the start-up check.
+		go installNVIDIAAfterReady(ctx, s, nvidiaAfterReadyWait, applications.MissingNVIDIA, installNamedApplications)
 	})
 }
 
