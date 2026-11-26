@@ -169,8 +169,8 @@ func installApplications(ctx context.Context, s *state.State, hasNVIDIACard func
 		toInstall = append(toInstall, "incus")
 	}
 
-	// The NVIDIA driver comes with a new install, and on an installed system only once it is ready.
-	if (len(apps) == 0 || s.OS.SystemIsReady) && !s.Applications.NVIDIA.State.Removed && !slices.Contains(toInstall, nvidiaStable) && !slices.Contains(toInstall, nvidiaLTS) && hasNVIDIACard() {
+	// The NVIDIA driver comes with a new install, and on an installed system once it is ready, never during an update's check.
+	if (len(apps) == 0 || s.OS.SystemIsReady) && updateIsSettled(s) && !s.Applications.NVIDIA.State.Removed && !slices.Contains(toInstall, nvidiaStable) && !slices.Contains(toInstall, nvidiaLTS) && hasNVIDIACard() {
 		toInstall = append(toInstall, nvidiaStable)
 	}
 

@@ -23,3 +23,11 @@ func markOwnerRemoval(s *state.State, name string) bool {
 
 	return true
 }
+
+// updateIsSettled reports whether no OS update is being checked and the updater is not waiting for the owner.
+func updateIsSettled(s *state.State) bool {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	return s.UpdateHealth.Bake == nil && s.UpdateHealth.NeedsOwner == ""
+}

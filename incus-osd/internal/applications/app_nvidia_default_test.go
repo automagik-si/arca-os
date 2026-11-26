@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
@@ -176,4 +177,81 @@ func TestNVIDIAWaitsForReadyOnAnInstalledSystem(t *testing.T) {
 	names, err = installApplications(t.Context(), upgraded, card)
 	require.NoError(t, err)
 	require.Contains(t, names, nvidiaStable)
+}
+
+// The automatic add waits while an OS update is checked or the updater waits for the owner, even when nothing counts as installed.
+//
+//nolint:paralleltest // Points the package's extension paths at fixtures.
+func TestNVIDIAWaitsForTheUpdater(t *testing.T) {
+	oldLinks, oldImages := systemd.SystemExtensionsPath, systemd.LocalExtensionsPath
+
+	t.Cleanup(func() { systemd.SystemExtensionsPath, systemd.LocalExtensionsPath = oldLinks, oldImages })
+
+	card := func() bool { return true }
+
+	// An upgraded machine whose primary is recorded but has no extension link.
+	noLink := func() *state.State {
+		s := &state.State{}
+		s.Applications.Incus.State.Version = "202611010000"
+		s.Applications.Incus.State.Initialized = true
+
+		return s
+	}
+
+	// An interrupted Incus replacement: the state is cleared, but it was initialised.
+	cleared := func() *state.State {
+		s := &state.State{}
+		s.Applications.Incus.State.Initialized = true
+
+		return s
+	}
+
+	// The link is there but its versioned image is gone.
+	noImage := func() *state.State {
+		s := &state.State{}
+		s.Applications.Incus.State.Version = "202611010000"
+
+		return s
+	}
+
+	for _, tc := range []struct {
+		broken func() *state.State
+		link   bool
+	}{{noLink, false}, {cleared, false}, {noImage, true}} {
+		broken := tc.broken
+
+		systemd.SystemExtensionsPath = t.TempDir()
+		systemd.LocalExtensionsPath = t.TempDir()
+
+		if tc.link {
+			require.NoError(t, os.Symlink(filepath.Join(systemd.LocalExtensionsPath, "202611010000", "incus.raw"), filepath.Join(systemd.SystemExtensionsPath, "incus.raw")))
+		}
+
+		// Without a bake these look like a new install.
+		names, err := installApplications(t.Context(), broken(), card)
+		require.NoError(t, err)
+		require.Contains(t, names, nvidiaStable)
+
+		baking := broken()
+		baking.UpdateHealth.Bake = &api.SystemUpdateBake{Version: "202611260000"}
+
+		names, err = installApplications(t.Context(), baking, card)
+		require.NoError(t, err)
+		require.NotContains(t, names, nvidiaStable)
+	}
+
+	// A ready system waits too, while a bake is armed or the updater waits for the owner.
+	baking := readyState()
+	baking.UpdateHealth.Bake = &api.SystemUpdateBake{Version: "202611260000"}
+
+	names, err := installApplications(t.Context(), baking, card)
+	require.NoError(t, err)
+	require.NotContains(t, names, nvidiaStable)
+
+	paused := readyState()
+	paused.UpdateHealth.NeedsOwner = "the rollback did not start"
+
+	names, err = installApplications(t.Context(), paused, card)
+	require.NoError(t, err)
+	require.NotContains(t, names, nvidiaStable)
 }
