@@ -104,7 +104,7 @@ func GetInstalled(ctx context.Context, s *state.State) ([]Application, error) {
 // GetInstallApplications returns a list of applications that should be installed on the system.
 // If no applications are currently installed, attempt to get an application list from the seed.
 // If no primary application is defined, the "incus" application will be automatically selected.
-// A machine with an NVIDIA graphics card also gets the curated NVIDIA driver, unless its owner removed it.
+// A machine with an NVIDIA graphics card also gets the curated NVIDIA driver once the system is ready, unless its owner removed it.
 func GetInstallApplications(ctx context.Context, s *state.State) ([]string, error) {
 	return installApplications(ctx, s, func() bool { return nvidiaCardPresent(nvidiaCardSysroot) })
 }
@@ -169,8 +169,8 @@ func installApplications(ctx context.Context, s *state.State, hasNVIDIACard func
 		toInstall = append(toInstall, "incus")
 	}
 
-	// The NVIDIA driver comes with the system; the owner's removal and the chosen branch are kept.
-	if !s.Applications.NVIDIA.State.Removed && !slices.Contains(toInstall, nvidiaStable) && !slices.Contains(toInstall, nvidiaLTS) && hasNVIDIACard() {
+	// The NVIDIA driver comes with the system, after it is ready so the download never delays start-up.
+	if s.OS.SystemIsReady && !s.Applications.NVIDIA.State.Removed && !slices.Contains(toInstall, nvidiaStable) && !slices.Contains(toInstall, nvidiaLTS) && hasNVIDIACard() {
 		toInstall = append(toInstall, nvidiaStable)
 	}
 

@@ -43,19 +43,24 @@ func TestNVIDIAComesWithTheSystem(t *testing.T) {
 	noCard := func() bool { return false }
 
 	// A machine with an NVIDIA card installs the curated driver without being asked.
-	names, err := installApplications(t.Context(), &state.State{}, card)
+	names, err := installApplications(t.Context(), readyState(), card)
 	require.NoError(t, err)
 	require.Contains(t, names, nvidiaStable)
 	require.NotContains(t, names, nvidiaLTS)
 
+	// The check that runs before the system is ready leaves the download to a later check.
+	names, err = installApplications(t.Context(), &state.State{}, card)
+	require.NoError(t, err)
+	require.NotContains(t, names, nvidiaStable)
+
 	// A machine without one does not.
-	names, err = installApplications(t.Context(), &state.State{}, noCard)
+	names, err = installApplications(t.Context(), readyState(), noCard)
 	require.NoError(t, err)
 	require.NotContains(t, names, nvidiaStable)
 	require.NotContains(t, names, nvidiaLTS)
 
 	// The owner's removal is kept: the driver is not installed again by itself.
-	removed := &state.State{}
+	removed := readyState()
 	removed.Applications.NVIDIA.State.Removed = true
 
 	names, err = installApplications(t.Context(), removed, card)
@@ -70,7 +75,7 @@ func TestNVIDIAComesWithTheSystem(t *testing.T) {
 	require.False(t, removed.Applications.NVIDIA.State.Removed)
 
 	// A machine already on the other branch stays on it.
-	lts := &state.State{}
+	lts := readyState()
 	lts.Applications.NVIDIA.State.Initialized = true
 	lts.Applications.NVIDIA.State.Version = "202611010000"
 	lts.Applications.NVIDIA.State.RequestedBranch = nvidiaLTS
@@ -110,13 +115,20 @@ func TestNVIDIACardDecidesTheInstall(t *testing.T) {
 
 	nvidiaCardSysroot = card
 
-	names, err := GetInstallApplications(t.Context(), &state.State{})
+	names, err := GetInstallApplications(t.Context(), readyState())
 	require.NoError(t, err)
 	require.Contains(t, names, nvidiaStable)
 
 	nvidiaCardSysroot = t.TempDir()
 
-	names, err = GetInstallApplications(t.Context(), &state.State{})
+	names, err = GetInstallApplications(t.Context(), readyState())
 	require.NoError(t, err)
 	require.NotContains(t, names, nvidiaStable)
+}
+
+func readyState() *state.State {
+	s := &state.State{}
+	s.OS.SystemIsReady = true
+
+	return s
 }
