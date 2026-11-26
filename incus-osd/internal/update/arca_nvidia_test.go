@@ -18,18 +18,22 @@ func TestNVIDIAInstalledOnceAfterReady(t *testing.T) {
 		missing []string
 		err     error
 		want    []string
+		calls   int
 	}{
-		{"the driver is missing", []string{"gpu-support", "nvidia"}, nil, []string{"gpu-support", "nvidia"}},
-		{"nothing is missing", nil, nil, nil},
-		{"the check fails", nil, errors.New("no state"), nil},
+		{"the driver is missing", []string{"gpu-support", "nvidia"}, nil, []string{"gpu-support", "nvidia"}, 1},
+		{"nothing is missing", nil, nil, nil, 0},
+		{"the check fails", []string{"nvidia"}, errors.New("no state"), nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			var installed []string
 
+			calls := 0
+
 			missing := func(context.Context, *state.State) ([]string, error) { return tc.missing, tc.err }
 			install := func(_ context.Context, _ *state.State, names []string) error {
+				calls++
 				installed = append(installed, names...)
 
 				return nil
@@ -37,6 +41,7 @@ func TestNVIDIAInstalledOnceAfterReady(t *testing.T) {
 
 			installNVIDIAAfterReady(t.Context(), &state.State{}, 0, missing, install)
 			require.Equal(t, tc.want, installed)
+			require.Equal(t, tc.calls, calls)
 		})
 	}
 
