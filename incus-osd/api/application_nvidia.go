@@ -36,6 +36,9 @@ type ApplicationNVIDIAState struct {
 	AttemptBuild *ApplicationNVIDIABuild    `json:"attempt_build,omitempty" yaml:"attempt_build,omitempty"`
 	Recovery     *ApplicationNVIDIARecovery `json:"recovery,omitempty"      yaml:"recovery,omitempty"`
 
+	// Removed is set when the owner removes the application, so a machine with an NVIDIA card does not install it again by itself.
+	Removed bool `json:"removed,omitempty" yaml:"removed,omitempty"`
+
 	RequestedBranch string                  `json:"requested_branch,omitempty" yaml:"requested_branch,omitempty"`
 	ActiveBranch    string                  `json:"active_branch,omitempty"    yaml:"active_branch,omitempty"`
 	Previous        *ApplicationNVIDIABuild `json:"previous,omitempty"         yaml:"previous,omitempty"`

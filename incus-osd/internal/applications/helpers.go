@@ -72,6 +72,8 @@ func UninstallApplication(ctx context.Context, s *state.State, name string) erro
 		s.Applications.GPUSupport = api.Application{}
 	case nvidiaStable, nvidiaLTS:
 		s.Applications.NVIDIA = api.ApplicationNVIDIA{}
+		// The owner removed the driver: it is not installed again by itself.
+		s.Applications.NVIDIA.State.Removed = true
 	case incusVersionStable, incusVersionLTS70:
 		s.Applications.Incus = api.ApplicationIncus{}
 	case "incus-ceph":
