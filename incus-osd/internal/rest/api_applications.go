@@ -916,7 +916,9 @@ func (s *Server) apiApplicationsRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove the application.
+	// Remove the application; the owner's removal is saved in the same write.
+	applications.MarkOwnerRemoval(s.state, name)
+
 	err = applications.UninstallApplication(r.Context(), s.state, name)
 	if err != nil {
 		_ = response.InternalError(err).Render(w)

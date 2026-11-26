@@ -55,3 +55,22 @@ func TestBackupAndRestoreLeaveDataMountsAlone(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "key", string(content))
 }
+
+// A restore's uninstall of the NVIDIA driver is not the owner's removal; the backup's own choice is kept.
+func TestRestoreKeepsTheBackupsNVIDIARemoval(t *testing.T) {
+	t.Parallel()
+
+	for _, backupRemoved := range []bool{false, true} {
+		machine := &state.State{}
+		machine.Applications.NVIDIA.State.Removed = !backupRemoved
+
+		backup := &state.State{}
+		backup.Applications.NVIDIA.State.Removed = backupRemoved
+		backup.System.Update.Config.CheckFrequency = "12h"
+
+		copyRestoredState(machine, backup)
+
+		require.Equal(t, backupRemoved, machine.Applications.NVIDIA.State.Removed)
+		require.Equal(t, "12h", machine.System.Update.Config.CheckFrequency)
+	}
+}

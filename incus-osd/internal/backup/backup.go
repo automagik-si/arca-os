@@ -329,6 +329,14 @@ func ApplyOSBackup(ctx context.Context, s *state.State, buf io.Reader, skipOptio
 	return reboot(ctx)
 }
 
+// copyRestoredState copies the parts of the backup state that a restore takes as they are.
+func copyRestoredState(s *state.State, newState *state.State) {
+	s.Services = newState.Services
+	s.System = newState.System
+	// Whether the owner removed the NVIDIA driver comes from the backup, not from the restore's own uninstall.
+	s.Applications.NVIDIA.State.Removed = newState.Applications.NVIDIA.State.Removed
+}
+
 func processNewState(ctx context.Context, s *state.State, skipOptions []string) error {
 	newState, err := state.LoadOrCreate(osDir + "/state.txt")
 	if err != nil {
@@ -410,8 +418,7 @@ func processNewState(ctx context.Context, s *state.State, skipOptions []string) 
 	oldKeys := slices.Clone(s.System.Security.Config.EncryptionRecoveryKeys)
 
 	// Copy over relevant state updates.
-	s.Services = newState.Services
-	s.System = newState.System
+	copyRestoredState(s, newState)
 
 	// If instructed to skip restoring network MACs, replace any value with the Interface
 	// or Bond name, which will be dynamically resolved to the actual device's MAC when
