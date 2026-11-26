@@ -28,6 +28,8 @@ doc/reference/applications/gpu-support.md
 doc/reference/applications/non-primary.md
 doc/reference/system/kernel.md
 incus-osd/internal/applications/app_gpu_support.go
+incus-osd/internal/backup/backup.go
+incus-osd/internal/backup/backup_test.go
 incus-osd/internal/applications/sysext.go
 incus-osd/internal/kernel/kernel.go
 incus-osd/internal/rest/api_applications.go
