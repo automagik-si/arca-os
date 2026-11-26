@@ -103,13 +103,19 @@ func TestNVIDIARemovalIsRemembered(t *testing.T) {
 		require.Empty(t, s.Applications.NVIDIA.State.Version)
 		require.False(t, s.Applications.NVIDIA.State.Removed)
 
-		require.True(t, markOwnerRemoval(s, name))
-		require.True(t, s.Applications.NVIDIA.State.Removed)
+		// The owner's remove marks first, and the uninstall keeps the mark for its single save.
+		owner := &state.State{}
+		owner.Applications.NVIDIA.State.Version = "202611010000"
+
+		require.True(t, MarkOwnerRemoval(owner, name))
+		require.NoError(t, removeFromState(owner, name))
+		require.Empty(t, owner.Applications.NVIDIA.State.Version)
+		require.True(t, owner.Applications.NVIDIA.State.Removed)
 	}
 
 	// Removing another application leaves the driver's choice alone.
 	s := &state.State{}
-	require.False(t, markOwnerRemoval(s, "debug"))
+	require.False(t, MarkOwnerRemoval(s, "debug"))
 	require.False(t, s.Applications.NVIDIA.State.Removed)
 }
 

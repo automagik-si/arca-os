@@ -88,7 +88,10 @@ func removeFromState(s *state.State, name string) error {
 	case "gpu-support":
 		s.Applications.GPUSupport = api.Application{}
 	case nvidiaStable, nvidiaLTS:
+		removed := s.Applications.NVIDIA.State.Removed
 		s.Applications.NVIDIA = api.ApplicationNVIDIA{}
+		// An owner's removal marked before the uninstall is saved with it.
+		s.Applications.NVIDIA.State.Removed = removed
 	case incusVersionStable, incusVersionLTS70:
 		s.Applications.Incus = api.ApplicationIncus{}
 	case "incus-ceph":
