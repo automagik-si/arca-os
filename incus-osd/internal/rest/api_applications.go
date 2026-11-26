@@ -924,6 +924,13 @@ func (s *Server) apiApplicationsRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	err = applications.RememberOwnerRemoval(s.state, name)
+	if err != nil {
+		_ = response.InternalError(err).Render(w)
+
+		return
+	}
+
 	_ = response.EmptySyncResponse.Render(w)
 }
 

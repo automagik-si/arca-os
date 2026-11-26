@@ -97,10 +97,19 @@ func TestNVIDIARemovalIsRemembered(t *testing.T) {
 		s.Applications.NVIDIA.State.Initialized = true
 		s.Applications.NVIDIA.State.Version = "202611010000"
 
+		// Uninstalling, as a restore does, is not the owner's removal.
 		require.NoError(t, removeFromState(s, name))
 		require.Empty(t, s.Applications.NVIDIA.State.Version)
+		require.False(t, s.Applications.NVIDIA.State.Removed)
+
+		require.True(t, markOwnerRemoval(s, name))
 		require.True(t, s.Applications.NVIDIA.State.Removed)
 	}
+
+	// Removing another application leaves the driver's choice alone.
+	s := &state.State{}
+	require.False(t, markOwnerRemoval(s, "debug"))
+	require.False(t, s.Applications.NVIDIA.State.Removed)
 }
 
 // The full application check asks the machine's real PCI devices whether it has an NVIDIA card.
