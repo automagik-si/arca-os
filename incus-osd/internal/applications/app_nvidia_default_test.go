@@ -1,11 +1,14 @@
 package applications
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
 
 func TestNVIDIACardPresent(t *testing.T) {
@@ -48,10 +51,10 @@ func TestNVIDIAComesWithTheSystem(t *testing.T) {
 	require.Contains(t, names, nvidiaStable)
 	require.NotContains(t, names, nvidiaLTS)
 
-	// The check that runs before the system is ready leaves the download to a later check.
+	// A new install gets it at first start, before the system is ready.
 	names, err = installApplications(t.Context(), &state.State{}, card)
 	require.NoError(t, err)
-	require.NotContains(t, names, nvidiaStable)
+	require.Contains(t, names, nvidiaStable)
 
 	// A machine without one does not.
 	names, err = installApplications(t.Context(), readyState(), noCard)
@@ -131,4 +134,37 @@ func readyState() *state.State {
 	s.OS.SystemIsReady = true
 
 	return s
+}
+
+// An installed system gets the driver only once it is ready, so the start-up check never downloads it.
+//
+//nolint:paralleltest // Points the package's extension paths at fixtures.
+func TestNVIDIAWaitsForReadyOnAnInstalledSystem(t *testing.T) {
+	oldLinks, oldImages := systemd.SystemExtensionsPath, systemd.LocalExtensionsPath
+
+	t.Cleanup(func() { systemd.SystemExtensionsPath, systemd.LocalExtensionsPath = oldLinks, oldImages })
+
+	systemd.SystemExtensionsPath = t.TempDir()
+	systemd.LocalExtensionsPath = t.TempDir()
+
+	image := filepath.Join(systemd.LocalExtensionsPath, "202611010000", "incus.raw")
+	require.NoError(t, os.MkdirAll(filepath.Dir(image), 0o700))
+	require.NoError(t, os.WriteFile(image, nil, 0o600))
+	require.NoError(t, os.Symlink(image, filepath.Join(systemd.SystemExtensionsPath, "incus.raw")))
+
+	card := func() bool { return true }
+
+	upgraded := &state.State{}
+	upgraded.Applications.Incus.State.Version = "202611010000"
+
+	names, err := installApplications(t.Context(), upgraded, card)
+	require.NoError(t, err)
+	require.Contains(t, names, "incus")
+	require.NotContains(t, names, nvidiaStable)
+
+	upgraded.OS.SystemIsReady = true
+
+	names, err = installApplications(t.Context(), upgraded, card)
+	require.NoError(t, err)
+	require.Contains(t, names, nvidiaStable)
 }
