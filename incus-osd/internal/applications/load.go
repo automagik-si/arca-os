@@ -106,8 +106,11 @@ func GetInstalled(ctx context.Context, s *state.State) ([]Application, error) {
 // If no primary application is defined, the "incus" application will be automatically selected.
 // A machine with an NVIDIA graphics card also gets the curated NVIDIA driver, unless its owner removed it.
 func GetInstallApplications(ctx context.Context, s *state.State) ([]string, error) {
-	return installApplications(ctx, s, func() bool { return nvidiaCardPresent("") })
+	return installApplications(ctx, s, func() bool { return nvidiaCardPresent(nvidiaCardSysroot) })
 }
+
+// nvidiaCardSysroot lets tests point the card detection at a fixture directory.
+var nvidiaCardSysroot = ""
 
 // nvidiaCardPresent reports whether the machine below sysroot has an NVIDIA graphics card.
 func nvidiaCardPresent(sysroot string) bool {

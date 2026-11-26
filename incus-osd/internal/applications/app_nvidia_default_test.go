@@ -80,3 +80,43 @@ func TestNVIDIAComesWithTheSystem(t *testing.T) {
 	require.Contains(t, names, nvidiaLTS)
 	require.NotContains(t, names, nvidiaStable)
 }
+
+func TestNVIDIARemovalIsRemembered(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{nvidiaStable, nvidiaLTS} {
+		s := &state.State{}
+		s.Applications.NVIDIA.State.Initialized = true
+		s.Applications.NVIDIA.State.Version = "202611010000"
+
+		require.NoError(t, removeFromState(s, name))
+		require.Empty(t, s.Applications.NVIDIA.State.Version)
+		require.True(t, s.Applications.NVIDIA.State.Removed)
+	}
+}
+
+// The full application check asks the machine's real PCI devices whether it has an NVIDIA card.
+//
+//nolint:paralleltest // Points the package's card detection at fixtures.
+func TestNVIDIACardDecidesTheInstall(t *testing.T) {
+	oldSysroot := nvidiaCardSysroot
+
+	t.Cleanup(func() { nvidiaCardSysroot = oldSysroot })
+
+	card := t.TempDir()
+	writeGPUFixtureFile(t, card, "sys/bus/pci/devices/0000:2b:00.0/vendor", "0x10de")
+	writeGPUFixtureFile(t, card, "sys/bus/pci/devices/0000:2b:00.0/class", "0x030000")
+	writeGPUFixtureFile(t, card, "sys/bus/pci/devices/0000:2b:00.0/device", "0x2805")
+
+	nvidiaCardSysroot = card
+
+	names, err := GetInstallApplications(t.Context(), &state.State{})
+	require.NoError(t, err)
+	require.Contains(t, names, nvidiaStable)
+
+	nvidiaCardSysroot = t.TempDir()
+
+	names, err = GetInstallApplications(t.Context(), &state.State{})
+	require.NoError(t, err)
+	require.NotContains(t, names, nvidiaStable)
+}

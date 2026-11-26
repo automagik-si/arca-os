@@ -63,6 +63,23 @@ func UninstallApplication(ctx context.Context, s *state.State, name string) erro
 	}
 
 	// Remove application from the state.
+	err = removeFromState(s, name)
+	if err != nil {
+		return err
+	}
+
+	// Remove the sysext image.
+	err = RemoveExtension(ctx, app)
+	if err != nil {
+		return err
+	}
+
+	// Save the state to disk.
+	return s.Save()
+}
+
+// removeFromState forgets the given application in the state.
+func removeFromState(s *state.State, name string) error {
 	switch name {
 	case "arca":
 		s.Applications.Arca = api.Application{}
@@ -90,14 +107,7 @@ func UninstallApplication(ctx context.Context, s *state.State, name string) erro
 		return errors.New("unknown application '" + name + "'")
 	}
 
-	// Remove the sysext image.
-	err = RemoveExtension(ctx, app)
-	if err != nil {
-		return err
-	}
-
-	// Save the state to disk.
-	return s.Save()
+	return nil
 }
 
 // StartInitialize starts the specified application, and if needed performs initialization actions.
