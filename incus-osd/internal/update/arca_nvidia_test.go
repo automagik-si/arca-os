@@ -34,6 +34,7 @@ func TestNVIDIAInstalledOnceAfterReady(t *testing.T) {
 			missing := func(context.Context, *state.State) ([]string, error) { return tc.missing, tc.err }
 			install := func(_ context.Context, _ *state.State, names []string) error {
 				calls++
+
 				installed = append(installed, names...)
 
 				return nil
