@@ -41,6 +41,7 @@ func draw(t *testing.T, snap Snapshot, w, h int) tcell.SimulationScreen {
 
 	v := newView()
 	v.update(snap)
+	v.refreshHardware()
 	v.SetRect(0, 0, w, h)
 	v.Draw(screen)
 
@@ -184,6 +185,9 @@ func tracerSnapshot() Snapshot {
 func TestMain(m *testing.M) {
 	hostThreads = func() int { return 8 }
 	hostMemoryBytes = func() int64 { return 8 << 30 }
+	hostHardwareReader = func(hostCPUSample, bool) (hostHardware, hostCPUSample, bool) {
+		return testHardware, hostCPUSample{}, true
+	}
 
 	m.Run()
 }
