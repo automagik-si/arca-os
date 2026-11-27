@@ -62,6 +62,8 @@ func (n *nvidia) IsInitialized() bool {
 
 func (n *nvidia) SetVersions(version string, versions []string) {
 	n.state.Applications.NVIDIA.State.RequestedBranch = n.variant
+	n.state.Applications.NVIDIA.State.Removed = false
+
 	if n.state.Applications.NVIDIA.Config.Driver == "" {
 		n.state.Applications.NVIDIA.Config.Driver = "nvidia"
 	}
