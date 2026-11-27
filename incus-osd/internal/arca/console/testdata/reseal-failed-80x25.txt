@@ -1,6 +1,6 @@
  ARCA  node-1  Arca OS 202611030000  arca 0.1.0  incus 6.0.0    ● online  14:22
  192.0.2.10  2001:db8::10
- Hardware 12% of 8 threads · 3G / 8G · 20G / 100G · 45°C
+ Hardware 12% of 8 threads · Mem 3G / 8G · Disk 20G / 100G · 45°C
 
 ─ Instances 4 · 3 running ──────────────────────────────────────────────────────
   NAME            TYPE   STATE     CPU     RAM          IP

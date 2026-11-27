@@ -41,8 +41,6 @@ type view struct {
 
 	snap        Snapshot
 	hw          hostHardware
-	cpu         hostCPUSample
-	haveCPU     bool
 	kind        layoutKind
 	log         *tview.TextView
 	logRow      int
@@ -204,7 +202,7 @@ func drawHardwareStrip(screen tcell.Screen, r rect, hw hostHardware) {
 		return
 	}
 
-	line := " " + tagDim + "Hardware" + tagReset + " " + hostCPUText(hw) + " · " + hostMemText(hw) + " · " + hostDiskText(hw) + " · " + hostTempText(hw)
+	line := " " + tagDim + "Hardware" + tagReset + " " + hostCPUText(hw) + " · " + tagDim + "Mem" + tagReset + " " + hostMemText(hw) + " · " + tagDim + "Disk" + tagReset + " " + hostDiskText(hw) + " · " + hostTempText(hw)
 	tview.Print(screen, line, r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
 }
 
@@ -218,7 +216,7 @@ func drawRightColumn(screen tcell.Screen, r rect, hw hostHardware) {
 	box(screen, r, "Resources")
 
 	lines := []string{
-		" " + tagDim + "CPU" + tagReset + " " + hostCPUText(hw),
+		" " + tagDim + "CPU" + tagReset + " " + hostCPUPercentText(hw),
 		" " + tagDim + "Mem" + tagReset + " " + hostMemText(hw),
 		" " + tagDim + "Disk" + tagReset + " " + hostDiskText(hw),
 		" " + tagDim + "Temp" + tagReset + " " + hostTempText(hw),

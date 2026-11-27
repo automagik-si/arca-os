@@ -7,27 +7,37 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// hostHardware is the host's resource use, read once per snapshot and drawn by
-// the hardware box, the compact strip and the resources column. The zero value
-// means "not read yet": the pane shows a dash, never a made-up number.
+// hostHardware is the host's resource use, read off the screen's event loop and
+// drawn from the last sample. Every figure is known or unknown on its own: a
+// failed read shows a dash for that figure and never a made-up zero.
 type hostHardware struct {
 	HasCPU     bool
 	CPUPercent int
 	Threads    int
 
+	HasMem   bool
 	MemUsed  int64
 	MemTotal int64
 
+	HasDisk   bool
 	DiskUsed  int64
 	DiskTotal int64
 
 	HasTemp bool
 	TempC   float64
 }
+
+// Hardware sampling: the pane reads on its own timer, and a CPU percentage is
+// only meaningful across two samples at least hardwareWindow apart.
+const (
+	hardwareEvery  = 2 * time.Second
+	hardwareWindow = time.Second
+)
 
 // hostCPUSample is the host's cumulative CPU jiffies at one read.
 type hostCPUSample struct {
@@ -92,7 +102,8 @@ func readHostCPUSample(procRoot string) (hostCPUSample, error) {
 }
 
 // readMemInfo reads the host's total and available memory in bytes. A kernel
-// without MemAvailable falls back to MemFree, and a missing value reads as 0.
+// without MemAvailable falls back to MemFree; a missing or malformed MemTotal,
+// or no available figure at all, is an error so the pane shows a dash.
 func readMemInfo(procRoot string) (int64, int64, error) {
 	body, err := os.ReadFile(filepath.Join(procRoot, "meminfo"))
 	if err != nil {
@@ -101,43 +112,66 @@ func readMemInfo(procRoot string) (int64, int64, error) {
 
 	var totalKB, availableKB, freeKB int64
 
+	var haveTotal, haveAvailable, haveFree bool
+
 	for line := range strings.SplitSeq(string(body), "\n") {
 		switch {
 		case strings.HasPrefix(line, "MemTotal:"):
-			totalKB = meminfoKB(line)
+			totalKB, haveTotal = meminfoKB(line)
 		case strings.HasPrefix(line, "MemAvailable:"):
-			availableKB = meminfoKB(line)
+			availableKB, haveAvailable = meminfoKB(line)
 		case strings.HasPrefix(line, "MemFree:"):
-			freeKB = meminfoKB(line)
+			freeKB, haveFree = meminfoKB(line)
 		default:
 			// Other meminfo lines are not part of the hardware pane.
 		}
 	}
 
-	if availableKB == 0 {
+	if !haveTotal || totalKB <= 0 {
+		return 0, 0, errors.New("no usable MemTotal")
+	}
+
+	if !haveAvailable || availableKB <= 0 {
+		if !haveFree {
+			return 0, 0, errors.New("no usable MemAvailable or MemFree")
+		}
+
 		availableKB = freeKB
 	}
+
+	availableKB = min(availableKB, totalKB)
 
 	return totalKB * 1024, availableKB * 1024, nil
 }
 
-// meminfoKB returns the kB value of one /proc/meminfo line, or 0.
-func meminfoKB(line string) int64 {
+// meminfoKB returns the kB value of one /proc/meminfo line.
+func meminfoKB(line string) (int64, bool) {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
-		return 0
+		return 0, false
 	}
 
-	value, _ := strconv.ParseInt(fields[1], 10, 64)
+	value, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
 
-	return value
+	return value, true
 }
+
+// diskRoot is the filesystem the disk figure describes, and statfs is
+// unix.Statfs; both are injected by the tests so the disk maths is checked on
+// fixed block counts rather than the machine running the tests.
+var (
+	diskRoot = "/"
+	statfs   = unix.Statfs
+)
 
 // diskUsage returns the used and total bytes of the filesystem holding path.
 func diskUsage(path string) (int64, int64, error) {
 	var stat unix.Statfs_t
 
-	err := unix.Statfs(path, &stat)
+	err := statfs(path, &stat)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -146,39 +180,59 @@ func diskUsage(path string) (int64, int64, error) {
 	total := int64(stat.Blocks) * stat.Bsize //nolint:gosec
 	free := int64(stat.Bfree) * stat.Bsize   //nolint:gosec
 
+	if total <= 0 || free < 0 || free > total {
+		return 0, 0, errors.New("implausible statfs figures")
+	}
+
 	return total - free, total, nil
 }
 
-// readTemperature reads the CPU temperature in degrees Celsius: the k10temp
-// hwmon sensor first (the AMD boards), then the first thermal zone. A host
-// without either reads as no temperature and the pane shows a dash.
+// cpuHwmonNames are the CPU temperature sensors, in preference order: the AMD
+// k10temp and zenpower, then the Intel coretemp.
+var cpuHwmonNames = []string{"k10temp", "zenpower", "coretemp"}
+
+// readTemperature reads the CPU temperature in degrees Celsius from the CPU
+// hwmon sensor, then from an x86_pkg_temp thermal zone. A value outside 0..150
+// is not a CPU temperature and reads as no temperature at all.
 func readTemperature(sysRoot string) (float64, bool) {
 	hwmonRoot := filepath.Join(sysRoot, "class", "hwmon")
 
 	entries, err := os.ReadDir(hwmonRoot)
 	if err == nil {
-		for _, entry := range entries {
-			name, err := os.ReadFile(filepath.Join(hwmonRoot, entry.Name(), "name"))
-			if err != nil || strings.TrimSpace(string(name)) != "k10temp" {
-				continue
-			}
+		for _, wanted := range cpuHwmonNames {
+			for _, entry := range entries {
+				name, err := os.ReadFile(filepath.Join(hwmonRoot, entry.Name(), "name"))
+				if err != nil || strings.TrimSpace(string(name)) != wanted {
+					continue
+				}
 
-			if temp, ok := readMillidegrees(filepath.Join(hwmonRoot, entry.Name(), "temp1_input")); ok {
-				return temp, true
+				if temp, ok := readMillidegrees(filepath.Join(hwmonRoot, entry.Name(), "temp1_input")); ok && plausibleTemp(temp) {
+					return temp, true
+				}
 			}
 		}
 	}
 
-	zones, err := filepath.Glob(filepath.Join(sysRoot, "class", "thermal", "thermal_zone*", "temp"))
+	zones, err := filepath.Glob(filepath.Join(sysRoot, "class", "thermal", "thermal_zone*"))
 	if err == nil {
 		for _, zone := range zones {
-			if temp, ok := readMillidegrees(zone); ok {
+			kind, err := os.ReadFile(filepath.Join(zone, "type"))
+			if err != nil || strings.TrimSpace(string(kind)) != "x86_pkg_temp" {
+				continue
+			}
+
+			if temp, ok := readMillidegrees(filepath.Join(zone, "temp")); ok && plausibleTemp(temp) {
 				return temp, true
 			}
 		}
 	}
 
 	return 0, false
+}
+
+// plausibleTemp reports whether a Celsius reading can be a CPU temperature.
+func plausibleTemp(temp float64) bool {
+	return temp >= 0 && temp <= 150
 }
 
 // readMillidegrees reads one millidegree Celsius sensor file.
@@ -196,63 +250,60 @@ func readMillidegrees(path string) (float64, bool) {
 	return value / 1000, true
 }
 
-// The roots and the reader are package variables so the tests can point them at
-// fixture trees and the golden screens at a fixed host, never a live machine.
-var (
-	diskRoot           = "/"
-	hostHardwareReader = realReadHostHardware
-)
+// hostHardwareRead is one sampling result, with the CPU sample and time the next
+// tick needs to compute a percentage across a window of at least hardwareWindow.
+type hostHardwareRead struct {
+	hardware hostHardware
+	cpu      hostCPUSample
+	at       time.Time
+	have     bool
+}
 
-// realReadHostHardware reads the host's hardware use. The previous sample is
-// needed to turn the CPU's cumulative jiffies into a percentage; without it the
-// first read reports no CPU figure yet.
-func realReadHostHardware(prev hostCPUSample, havePrev bool) (hostHardware, hostCPUSample, bool) {
+// readHostHardware reads every figure independently: a failed /proc/stat leaves
+// the CPU unknown but still reads memory, disk and temperature.
+func readHostHardware(prev hostCPUSample, havePrev bool, prevAt time.Time, now time.Time) hostHardwareRead {
 	hw := hostHardware{Threads: hostThreads()}
 
 	sample, err := readHostCPUSample(procRoot)
-	if err != nil {
-		return hw, prev, false
-	}
+	if err == nil {
+		if havePrev && now.Sub(prevAt) >= hardwareWindow {
+			hw.HasCPU = true
+			hw.CPUPercent = prev.percent(sample)
+		}
 
-	if havePrev {
-		hw.HasCPU = true
-		hw.CPUPercent = prev.percent(sample)
+		prev, havePrev, prevAt = sample, true, now
 	}
 
 	total, available, err := readMemInfo(procRoot)
-	if err == nil && total > 0 {
+	if err == nil {
+		hw.HasMem = true
 		hw.MemTotal = total
 		hw.MemUsed = total - available
 	}
 
 	used, size, err := diskUsage(diskRoot)
-	if err == nil && size > 0 {
-		hw.DiskTotal = size
+	if err == nil {
+		hw.HasDisk = true
 		hw.DiskUsed = used
+		hw.DiskTotal = size
 	}
 
-	if temp, ok := readTemperature(sysRoot); ok {
+	temp, ok := readTemperature(sysRoot)
+	if ok {
 		hw.HasTemp = true
 		hw.TempC = temp
 	}
 
-	return hw, sample, true
+	return hostHardwareRead{hardware: hw, cpu: prev, at: prevAt, have: havePrev}
 }
 
-// refreshHardware reads the host's hardware use for the next draw. It runs on
-// the event loop, like update.
-func (v *view) refreshHardware() {
-	hw, sample, ok := hostHardwareReader(v.cpu, v.haveCPU)
-
+// setHardware replaces the sample the view draws. It runs on the event loop.
+func (v *view) setHardware(hw hostHardware) {
 	v.hw = hw
-	if ok {
-		v.cpu = sample
-		v.haveCPU = true
-	}
 }
 
-// hostCPUText is the CPU figure: the use of the host's threads, or a dash until the
-// second sample makes a percentage possible.
+// hostCPUText is the CPU use over the host's threads, or a dash until two
+// samples a window apart make a percentage possible.
 func hostCPUText(hw hostHardware) string {
 	percent := "—"
 	if hw.HasCPU {
@@ -262,17 +313,35 @@ func hostCPUText(hw hostHardware) string {
 	return fmt.Sprintf("%s of %d threads", percent, hw.Threads)
 }
 
-// hostMemText is the host memory used over total.
+// hostCPUPercentText is the percentage alone, for the narrow resources column.
+func hostCPUPercentText(hw hostHardware) string {
+	if !hw.HasCPU {
+		return "—"
+	}
+
+	return fmt.Sprintf("%d%%", hw.CPUPercent)
+}
+
+// hostMemText is the host memory used over total, or a dash.
 func hostMemText(hw hostHardware) string {
+	if !hw.HasMem {
+		return "—"
+	}
+
 	return shortBytes(hw.MemUsed) + " / " + shortBytes(hw.MemTotal)
 }
 
-// hostDiskText is the root filesystem used over total.
+// hostDiskText is the root filesystem used over total, or a dash.
 func hostDiskText(hw hostHardware) string {
+	if !hw.HasDisk {
+		return "—"
+	}
+
 	return shortBytes(hw.DiskUsed) + " / " + shortBytes(hw.DiskTotal)
 }
 
-// hostTempText is the CPU temperature, or a dash when the host has no sensor.
+// hostTempText is the CPU temperature, or a dash when the host has no usable
+// sensor.
 func hostTempText(hw hostHardware) string {
 	if !hw.HasTemp {
 		return "—"
