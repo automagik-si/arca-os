@@ -34,10 +34,11 @@ type hostHardware struct {
 
 // Hardware sampling: the pane reads on its own timer, and a CPU percentage is
 // only meaningful across two samples at least hardwareWindow apart.
-const (
-	hardwareEvery  = 2 * time.Second
-	hardwareWindow = time.Second
-)
+const hardwareWindow = time.Second
+
+// hardwareEvery is the hardware sampling period. It is a variable so a test can
+// shorten it; the console samples the host every two seconds.
+var hardwareEvery = 2 * time.Second
 
 // hostCPUSample is the host's cumulative CPU jiffies at one read.
 type hostCPUSample struct {
@@ -232,7 +233,7 @@ func readTemperature(sysRoot string) (float64, bool) {
 
 // plausibleTemp reports whether a Celsius reading can be a CPU temperature.
 func plausibleTemp(temp float64) bool {
-	return temp >= 0 && temp <= 150
+	return temp > 0 && temp <= 150
 }
 
 // readMillidegrees reads one millidegree Celsius sensor file.
@@ -259,9 +260,9 @@ type hostHardwareRead struct {
 	have     bool
 }
 
-// readHostHardware reads every figure independently: a failed /proc/stat leaves
-// the CPU unknown but still reads memory, disk and temperature.
-func readHostHardware(prev hostCPUSample, havePrev bool, prevAt time.Time, now time.Time) hostHardwareRead {
+// realReadHostHardware reads every figure independently: a failed /proc/stat
+// leaves the CPU unknown but still reads memory, disk and temperature.
+func realReadHostHardware(prev hostCPUSample, havePrev bool, prevAt time.Time, now time.Time) hostHardwareRead {
 	hw := hostHardware{Threads: hostThreads()}
 
 	sample, err := readHostCPUSample(procRoot)
@@ -297,6 +298,10 @@ func readHostHardware(prev hostCPUSample, havePrev bool, prevAt time.Time, now t
 	return hostHardwareRead{hardware: hw, cpu: prev, at: prevAt, have: havePrev}
 }
 
+// readHostHardware is the reader collect runs. A test replaces it to count the
+// timer's ticks, so removing the timer from collect fails a test.
+var readHostHardware = realReadHostHardware
+
 // setHardware replaces the sample the view draws. It runs on the event loop.
 func (v *view) setHardware(hw hostHardware) {
 	v.hw = hw
@@ -305,6 +310,10 @@ func (v *view) setHardware(hw hostHardware) {
 // hostCPUText is the CPU use over the host's threads, or a dash until two
 // samples a window apart make a percentage possible.
 func hostCPUText(hw hostHardware) string {
+	if hw.Threads <= 0 {
+		return "—"
+	}
+
 	percent := "—"
 	if hw.HasCPU {
 		percent = fmt.Sprintf("%d%%", hw.CPUPercent)
@@ -343,7 +352,7 @@ func hostDiskText(hw hostHardware) string {
 // hostTempText is the CPU temperature, or a dash when the host has no usable
 // sensor.
 func hostTempText(hw hostHardware) string {
-	if !hw.HasTemp {
+	if !hw.HasTemp || !plausibleTemp(hw.TempC) {
 		return "—"
 	}
 
