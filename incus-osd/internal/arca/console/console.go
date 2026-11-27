@@ -122,6 +122,7 @@ func newConsole(h host, src sources) *console {
 	c.view.lastLog = h.ArcaLastLog
 	c.view.followLog()
 	c.view.update(c.snap.clone())
+	c.view.refreshHardware()
 
 	return c
 }
@@ -227,6 +228,7 @@ func (c *console) publish() {
 		}()
 
 		c.view.update(s)
+		c.view.refreshHardware()
 	})
 }
 
