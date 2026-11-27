@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,75 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/api"
 )
+
+func TestPartitionDisk(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		major     uint32
+		minor     uint32
+		path      string
+		partition bool
+		want      string
+	}{
+		{"USB ESP", 8, 17, "devices/block/sdb/sdb1", true, "/dev/sdb"},
+		{"NVMe ESP", 259, 1, "devices/block/nvme0n1/nvme0n1p1", true, "/dev/nvme0n1"},
+		{"mapped ESP keeps existing lookup", 252, 1, "devices/virtual/block/dm-1", false, ""},
+		{"non-block filesystem keeps existing lookup", 0, 42, "", false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			if tt.path != "" {
+				device := filepath.Join(root, tt.path)
+				require.NoError(t, os.MkdirAll(device, 0o700))
+
+				if tt.partition {
+					require.NoError(t, os.WriteFile(filepath.Join(device, "partition"), []byte("1\n"), 0o600))
+				}
+
+				require.NoError(t, os.Symlink(device, filepath.Join(root, fmt.Sprintf("%d:%d", tt.major, tt.minor))))
+			}
+
+			disk, err := partitionDisk(root, tt.major, tt.minor)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, disk)
+		})
+	}
+}
+
+func TestDeviceUsesDisk(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	disk := filepath.Join(root, "block", "sda")
+	data := filepath.Join(disk, "sda5")
+	hash := filepath.Join(root, "block", "sdb", "sdb4")
+	mapper := filepath.Join(root, "virtual", "dm-0")
+	nested := filepath.Join(root, "virtual", "dm-1")
+
+	for _, path := range []string{data, hash, filepath.Join(mapper, "slaves"), filepath.Join(nested, "slaves")} {
+		require.NoError(t, os.MkdirAll(path, 0o700))
+	}
+
+	require.NoError(t, os.Symlink(data, filepath.Join(mapper, "slaves", "sda5")))
+	require.NoError(t, os.Symlink(hash, filepath.Join(mapper, "slaves", "sdb4")))
+	require.NoError(t, os.Symlink(mapper, filepath.Join(nested, "slaves", "dm-0")))
+
+	for _, target := range []string{disk, filepath.Dir(hash)} {
+		used, err := deviceUsesDisk(nested, target)
+		require.NoError(t, err)
+		require.True(t, used, "both data and verity hash disks must be protected")
+	}
+
+	used, err := deviceUsesDisk(nested, filepath.Join(root, "block", "sdc"))
+	require.NoError(t, err)
+	require.False(t, used)
+}
 
 func TestCalculateScrubProgress(t *testing.T) {
 	t.Parallel()

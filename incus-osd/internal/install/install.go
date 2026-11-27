@@ -205,95 +205,6 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 			return errors.New("install media detected, but the system is already installed; please remove USB/CDROM and reboot the system")
 		}
 
-		// Sanity check: If /var/lib/incus-os/keys/recovery.root.key exists, that means we've booted with an install
-		// seed, but there's already an install of IncusOS present (of the exact same version). Check if the user
-		// provided a specific seed value for this system that will cause us to zap the current install, then reboot
-		// and actually perform the install.
-		//
-		// We can only (easily) detect an existing IncusOS install if its version exactly matches that of the install
-		// media. When this is true, there are two side-effects: First, two identical /usr-verity partitions exist with
-		// the same hash as specified on the kernel command line. It's a coin toss which one will be mounted, but doesn't
-		// really matter unless we try to wipe and then copy the one we're running from. Second, because the Secure Boot
-		// state and UKI are the same, the encrypted LUKS root volume will automatically unlock. We utilize this to
-		// detect the presence of IncusOS and trigger the additional checks before wiping the existing install.
-		//
-		// If the version of IncusOS that's installed is different from the install media, there will be two distinct
-		// /usr-verity hashes and we won't be able to automatically unlock the root LUKS volume. In these cases ForceInstall
-		// must still be set to true to overwrite the existing install, but we don't have the following extra safety net.
-		_, err = os.Stat("/var/lib/incus-os/keys/recovery.root.key")
-		if err == nil {
-			osName, _, err := systemd.GetCurrentRelease(ctx)
-			if err != nil {
-				return err
-			}
-
-			// Refuse to do anything if ForceInstall isn't true.
-			if !installSeed.ForceInstall {
-				return fmt.Errorf("%s is already installed on this system, and `ForceInstall` from install configuration isn't true", osName)
-			}
-
-			// Get the install confirmation string that is unique to the existing install. We derive
-			// this from the first six characters of the machine's ID.
-			f, err := os.Open("/etc/machine-id")
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-
-			machineID, err := io.ReadAll(f)
-			if err != nil {
-				return err
-			}
-
-			err = withReinstallSafety(installSeed, osName, machineID, func() error {
-				// Get the device that IncusOS is currently installed on.
-				output, err := subprocess.RunCommandContext(ctx, "dmsetup", "deps", "-o", "blkdevname", "/dev/mapper/root")
-				if err != nil {
-					return err
-				}
-
-				deviceRegex := regexp.MustCompile(`^1 dependencies\t: \((.+?)(p|-part)?10\)\n$`)
-				deviceGroup := deviceRegex.FindStringSubmatch(output)
-
-				if len(deviceGroup) != 3 {
-					return fmt.Errorf("%s is already installed on this system, but unable to determine what device it is running from", osName)
-				}
-
-				t, err := tui.GetTUI(nil)
-				if err != nil {
-					return err
-				}
-
-				modal := t.AddModal(osName+" Reinstall", "install")
-
-				err = confirmTargetDestruction(ctx, modal, "/dev/"+deviceGroup[1], installSeed.Confirmation, func() error {
-					slog.InfoContext(ctx, "Wiping existing version of "+osName+", then rebooting in five seconds to run actual installation")
-
-					_, err := subprocess.RunCommandContext(ctx, "sgdisk", "-Z", "/dev/"+deviceGroup[1])
-
-					return err
-				})
-				if err != nil {
-					return err
-				}
-
-				time.Sleep(5 * time.Second)
-
-				err = systemd.SystemReboot(ctx)
-				if err != nil {
-					return err
-				}
-
-				// Sleep until the system reboots so we don't attempt to proceed with the install.
-				time.Sleep(10 * time.Second)
-
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		}
-
 		targets, err := getAllTargets(ctx, sourceDevice)
 		if err != nil {
 			return errors.New("unable to get list of potential target devices: " + err.Error())
@@ -326,9 +237,68 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 				return errors.New("at least one application must be defined in the provided applications seed")
 			}
 		}
+
+		target, err := readInstallDevice(ctx, targetDevice)
+		if err != nil {
+			return err
+		}
+
+		// Discarding a disk backing /usr would destroy the installer's running filesystem.
+		usrOnTarget, err := storage.DeviceBacksUsr(targetDevice)
+		if err != nil {
+			return err
+		}
+
+		osName, osVersion, err := systemd.GetCurrentRelease(ctx)
+		if err != nil {
+			return err
+		}
+
+		return withTargetReinstallSafety(installSeed, osName, osVersion, target, usrOnTarget, func() error {
+			if usrOnTarget {
+				return zapAndReboot(ctx, installSeed, osName, targetDevice)
+			}
+
+			return nil
+		})
 	}
 
 	return nil
+}
+
+func zapAndReboot(ctx context.Context, config *apiseed.Install, osName string, device string) error {
+	t, err := tui.GetTUI(nil)
+	if err != nil {
+		return err
+	}
+
+	modal := t.AddModal(osName+" Reinstall", "install")
+
+	err = confirmTargetDestruction(ctx, modal, device, config.Confirmation, func() error {
+		slog.InfoContext(ctx, "Wiping existing version of "+osName+", then rebooting in five seconds to run actual installation")
+
+		_, err := subprocess.RunCommandContext(ctx, "sgdisk", "-Z", device)
+
+		return err
+	})
+	if err != nil {
+		return err
+	}
+
+	time.Sleep(5 * time.Second)
+
+	return rebootAndWait(ctx, systemd.SystemReboot)
+}
+
+func rebootAndWait(ctx context.Context, reboot func(context.Context) error) error {
+	err := reboot(ctx)
+	if err != nil {
+		return err
+	}
+
+	<-ctx.Done()
+
+	return ctx.Err()
 }
 
 // ShouldPerformInstall checks for the presence of an install.{json,yaml} file in the
@@ -423,6 +393,7 @@ func (i *Install) DoInstall(ctx context.Context, osName string) error {
 
 // runningFromCDROM returns true we're running from a CDROM, which should only happen during an install.
 func runningFromCDROM() bool {
+	// CDROM media may have no mounted ESP, or the label fallback may identify another disk.
 	underlyingDevice, err := storage.GetUnderlyingDevice()
 	if err != nil {
 		return false
@@ -457,7 +428,7 @@ func getSourceDevice(ctx context.Context) (string, bool, int, error) {
 
 	isReadonlyInstallFS := strings.Contains(output, ": Read-only file system")
 
-	underlyingDevice, err := storage.GetUnderlyingDevice()
+	underlyingDevice, err := storage.GetBootDevice()
 	if err != nil {
 		return "", isReadonlyInstallFS, -1, err
 	}
@@ -465,7 +436,7 @@ func getSourceDevice(ctx context.Context) (string, bool, int, error) {
 	// Get the device's size.
 	lsblkOutput := storage.LsblkOutput{}
 
-	output, err = subprocess.RunCommandContext(ctx, "lsblk", "-iJnpbs", "-o", "KNAME,ID_LINK,SIZE", underlyingDevice)
+	output, err = subprocess.RunCommandContext(ctx, "lsblk", "-iJnpbs", "-o", "KNAME,ID_LINK,SIZE,RO", underlyingDevice)
 	if err != nil {
 		return "", isReadonlyInstallFS, -1, err
 	}
@@ -474,6 +445,13 @@ func getSourceDevice(ctx context.Context) (string, bool, int, error) {
 	if err != nil {
 		return "", isReadonlyInstallFS, -1, err
 	}
+
+	if len(lsblkOutput.BlockDevices) != 1 {
+		return "", isReadonlyInstallFS, -1, errors.New("cannot identify source block device")
+	}
+
+	// A failed ESP mount can prevent repart from logging the read-only device error.
+	isReadonlyInstallFS = isReadonlyInstallFS || lsblkOutput.BlockDevices[0].ReadOnly
 
 	return underlyingDevice, isReadonlyInstallFS, lsblkOutput.BlockDevices[0].Size, nil
 }
@@ -1066,9 +1044,17 @@ func copyPartitionDefinition(ctx context.Context, src string, tgt string, partit
 	}
 
 	// Create the partition on the target device.
-	_, err = subprocess.RunCommandContext(ctx, "sgdisk", "-n", strconv.Itoa(partitionIndex)+"::+"+partitionSize, "-u", strconv.Itoa(partitionIndex)+":"+partitionGUID, "-t", strconv.Itoa(partitionIndex)+":"+partitionHexCode, "-c", strconv.Itoa(partitionIndex)+":"+partitionName, tgt)
+	_, err = subprocess.RunCommandContext(ctx, "sgdisk", "-n", strconv.Itoa(partitionIndex)+"::+"+partitionSize, "-u", strconv.Itoa(partitionIndex)+":"+targetPartitionGUID(partitionType, partitionGUID), "-t", strconv.Itoa(partitionIndex)+":"+partitionHexCode, "-c", strconv.Itoa(partitionIndex)+":"+partitionName, tgt)
 
 	return err
+}
+
+func targetPartitionGUID(partitionType string, sourceGUID string) string {
+	if partitionType == "EFI system partition" {
+		return "R"
+	}
+
+	return sourceGUID
 }
 
 func doCopy(ctx context.Context, modal *tui.Modal, sourceDevice string, sourcePartitionPrefix string, targetDevice string, targetPartitionPrefix string, partitionIndex int, numPartitionsToCopy int) error {

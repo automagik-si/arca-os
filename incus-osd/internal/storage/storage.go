@@ -28,6 +28,7 @@ type BlockDevices struct {
 	Size       int    `json:"size"`
 	Subsystems string `json:"subsystems"`
 	RM         bool   `json:"rm"`
+	ReadOnly   bool   `json:"ro"`
 	WWN        string `json:"wwn"`
 }
 
@@ -181,6 +182,25 @@ type smartOutput struct {
 	} `json:"ata_smart_attributes"`
 }
 
+// GetBootDevice prefers the mounted ESP's disk, retaining the existing lookup for mapped media.
+func GetBootDevice() (string, error) {
+	bootStat := unix.Stat_t{}
+
+	err := unix.Stat("/boot/", &bootStat)
+	if err == nil {
+		disk, err := partitionDisk("/sys/dev/block", unix.Major(bootStat.Dev), unix.Minor(bootStat.Dev))
+		if err != nil {
+			return "", err
+		}
+
+		if disk != "" {
+			return disk, nil
+		}
+	}
+
+	return GetUnderlyingDevice()
+}
+
 // GetUnderlyingDevice figures out and returns the underlying device that IncusOS is running from.
 func GetUnderlyingDevice() (string, error) {
 	// We need to find a file that's on a device mapper device and not on overlayfs.
@@ -263,6 +283,86 @@ func GetUnderlyingDevice() (string, error) {
 	}
 
 	return "", errors.New("unable to determine underlying device")
+}
+
+// partitionDisk returns a physical partition's disk, leaving mapped devices to their existing lookup.
+func partitionDisk(sysfsRoot string, major uint32, minor uint32) (string, error) {
+	device := filepath.Join(sysfsRoot, fmt.Sprintf("%d:%d", major, minor))
+
+	_, err := os.Stat(filepath.Join(device, "partition"))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	device, err = filepath.EvalSymlinks(device)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join("/dev", filepath.Base(filepath.Dir(device))), nil
+}
+
+// DeviceBacksUsr checks all dependencies, including a hash partition on a different disk.
+func DeviceBacksUsr(device string) (bool, error) {
+	usrStat := unix.Stat_t{}
+
+	// Signed /usr must have a verity mapper before we can safely erase any target.
+	err := unix.Stat("/dev/mapper/usr", &usrStat)
+	if err != nil {
+		return false, fmt.Errorf("cannot inspect /usr mapper; refusing to erase target %q: %w", device, err)
+	}
+
+	deviceStat := unix.Stat_t{}
+
+	err = unix.Stat(device, &deviceStat)
+	if err != nil {
+		return false, err
+	}
+
+	usrPath, err := filepath.EvalSymlinks(fmt.Sprintf("/sys/dev/block/%d:%d", unix.Major(usrStat.Rdev), unix.Minor(usrStat.Rdev)))
+	if err != nil {
+		return false, err
+	}
+
+	devicePath, err := filepath.EvalSymlinks(fmt.Sprintf("/sys/dev/block/%d:%d", unix.Major(deviceStat.Rdev), unix.Minor(deviceStat.Rdev)))
+	if err != nil {
+		return false, err
+	}
+
+	return deviceUsesDisk(usrPath, devicePath)
+}
+
+func deviceUsesDisk(devicePath string, diskPath string) (bool, error) {
+	if devicePath == diskPath || filepath.Dir(devicePath) == diskPath {
+		return true, nil
+	}
+
+	members, err := os.ReadDir(filepath.Join(devicePath, "slaves"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, err
+	}
+
+	for _, member := range members {
+		path, err := filepath.EvalSymlinks(filepath.Join(devicePath, "slaves", member.Name()))
+		if err != nil {
+			return false, err
+		}
+
+		usesDisk, err := deviceUsesDisk(path, diskPath)
+		if err != nil || usesDisk {
+			return usesDisk, err
+		}
+	}
+
+	return false, nil
 }
 
 // getFreeSpaceInGiB returns the amount of free space in GiB for the underlying filesystem of the given path.

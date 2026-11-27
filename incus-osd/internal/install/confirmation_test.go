@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -238,28 +239,143 @@ func TestReinstallSafetyBeforePrompt(t *testing.T) {
 		name         string
 		force        bool
 		confirmation string
-		machineID    string
+		targetESP    string
 		allowed      bool
 	}{
-		{name: "installed OS refusal", confirmation: "abcdef", machineID: "abcdef012345"},
-		{name: "missing machine confirmation", force: true, machineID: "abcdef012345"},
-		{name: "wrong machine confirmation", force: true, confirmation: "wrong", machineID: "abcdef012345"},
-		{name: "short machine ID", force: true, confirmation: "abcdef", machineID: "abc"},
-		{name: "matching machine ID", force: true, confirmation: "abcdef", machineID: "abcdef012345", allowed: true},
-		{name: "existing force override", force: true, confirmation: "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING", machineID: "abcdef012345", allowed: true},
+		{name: "installed OS refusal", confirmation: "abcdef", targetESP: "abcdef00-1111-2222-3333-444444444444"},
+		{name: "missing target confirmation", force: true, targetESP: "abcdef00-1111-2222-3333-444444444444"},
+		{name: "wrong target confirmation", force: true, confirmation: "wrong", targetESP: "abcdef00-1111-2222-3333-444444444444"},
+		{name: "invalid ESP UUID", force: true, confirmation: "abcdef", targetESP: "abc"},
+		{name: "matching target ESP", force: true, confirmation: "abcdef", targetESP: "abcdef00-1111-2222-3333-444444444444", allowed: true},
+		{name: "existing force override", force: true, confirmation: "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING", targetESP: "abcdef00-1111-2222-3333-444444444444", allowed: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			config := &apiseed.Install{ForceInstall: tt.force, ForceInstallConfirmation: tt.confirmation, Confirmation: "ERASE"}
 			prompted := false
-			err := withReinstallSafety(config, "Example OS", []byte(tt.machineID), func() error {
+			err := withReinstallSafety(config, "Example OS", tt.targetESP, func() error {
 				prompted = true
 
 				return nil
 			})
 			require.Equal(t, tt.allowed, prompted, "existing safety checks must run before the new prompt, even with a seed pre-answer")
 			require.Equal(t, !tt.allowed, err != nil)
+		})
+	}
+}
+
+func TestTargetReinstallSafety(t *testing.T) {
+	t.Parallel()
+
+	target := installDevice{Path: "/dev/target", Children: []installDevice{
+		{PartLabel: "esp", PartUUID: "ABCDEF00-1111-2222-3333-444444444444"},
+		{PartLabel: "seed-data"},
+		{PartLabel: "IncusOS_202001010000"},
+	}}
+
+	for _, usrOnTarget := range []bool{false, true} {
+		for _, tt := range []struct {
+			name         string
+			confirmation string
+			allowed      bool
+		}{
+			{name: "missing confirmation"},
+			{name: "old running machine ID", confirmation: "fedcba"},
+			{name: "target ESP confirmation", confirmation: "abcdef", allowed: true},
+			{name: "explicit force override", confirmation: "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING", allowed: true},
+		} {
+			t.Run(fmt.Sprintf("%s/usr-on-target=%t", tt.name, usrOnTarget), func(t *testing.T) {
+				t.Parallel()
+
+				config := &apiseed.Install{ForceInstall: true, ForceInstallConfirmation: tt.confirmation, Confirmation: "ERASE"}
+				writes := 0
+
+				err := withTargetReinstallSafety(config, "IncusOS", "202001010000", target, usrOnTarget, func() error {
+					writes++
+
+					return nil
+				})
+				if tt.allowed {
+					require.NoError(t, err)
+					require.Equal(t, 1, writes)
+				} else {
+					require.Error(t, err)
+					require.Zero(t, writes, "neither GPT zap nor full discard may run")
+					require.Contains(t, err.Error(), "abcdef", "the error must identify the target's stable token")
+					require.Contains(t, err.Error(), "first six characters of the target ESP PARTUUID")
+				}
+			})
+		}
+	}
+}
+
+func TestTargetReinstallMissingVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, usrOnTarget := range []bool{false, true} {
+		t.Run(fmt.Sprintf("usr-on-target=%t", usrOnTarget), func(t *testing.T) {
+			t.Parallel()
+
+			config := &apiseed.Install{ForceInstall: true, ForceInstallConfirmation: "FORCE-WIPE-I-KNOW-WHAT-IAM-DOING", Confirmation: "ERASE"}
+			target := installDevice{Children: []installDevice{
+				{PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"},
+				{PartLabel: "IncusOS_202001010000"},
+			}}
+			writes := 0
+
+			err := withTargetReinstallSafety(config, "IncusOS", "", target, usrOnTarget, func() error {
+				writes++
+
+				return nil
+			})
+			require.ErrorContains(t, err, "cannot determine install media IMAGE_VERSION")
+			require.Zero(t, writes)
+		})
+	}
+}
+
+func TestTargetReinstallDetection(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		children    []installDevice
+		usrOnTarget bool
+		allowed     bool
+	}{
+		{name: "empty disk", allowed: true},
+		{name: "foreign disk", children: []installDevice{{PartLabel: "Windows"}}, allowed: true},
+		{name: "ESP alone", children: []installDevice{{PartLabel: "esp"}}, allowed: true},
+		{name: "same release", children: []installDevice{{PartLabel: "IncusOS_202001010000"}}},
+		{name: "different release without confirmation", children: []installDevice{{PartLabel: "IncusOS_201901010000"}, {PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"}}, allowed: true},
+		{name: "different verity without confirmation", children: []installDevice{{PartLabel: "IncusOS_201901010000_verity"}, {PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"}}, allowed: true},
+		{name: "different signature without confirmation", children: []installDevice{{PartLabel: "IncusOS_201901010000_verity_sig"}, {PartLabel: "esp", PartUUID: "abcdef00-1111-2222-3333-444444444444"}}, allowed: true},
+		{name: "matching A/B slot", children: []installDevice{{PartLabel: "IncusOS_201901010000"}, {PartLabel: "IncusOS_202001010000"}}},
+		{name: "verity only", children: []installDevice{{PartLabel: "IncusOS_202001010000_verity"}}},
+		{name: "signature only", children: []installDevice{{PartLabel: "IncusOS_202001010000_verity_sig"}}},
+		{name: "invalid target UUID", children: []installDevice{{PartLabel: "IncusOS_202001010000"}, {PartLabel: "esp", PartUUID: "invalid"}}},
+		{name: "ambiguous ESP", children: []installDevice{{PartLabel: "IncusOS_202001010000"}, {PartLabel: "esp"}, {PartLabel: "esp"}}},
+		{name: "active usr without labels", usrOnTarget: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			writes := 0
+			config := &apiseed.Install{ForceInstall: true, Confirmation: "ERASE"}
+
+			err := withTargetReinstallSafety(config, "IncusOS", "202001010000", installDevice{Children: tt.children}, tt.usrOnTarget, func() error {
+				writes++
+
+				return nil
+			})
+			if tt.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+
+			require.Equal(t, tt.allowed, writes == 1)
 		})
 	}
 }

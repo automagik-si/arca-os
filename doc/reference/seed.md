@@ -57,11 +57,19 @@ Both the disk erasure and TPM reset are disclosed before the confirmation prompt
 - `force_install`: If true, will install to target device even if partitions
   already exist. WARNING: THIS CAN CAUSE DATA LOSS!
 
-- `force_install_confirmation`: An optional value used when `force_install` is true
-  and IncusOS is already installed on the target device. To guard against accidental
-  data loss, the first six characters of the currently installed IncusOS system must
-  be provided. (The installer will provide this as part of its error message if this
-  field is unset in the install seed.)
+- `force_install_confirmation`: Required when `force_install` is true and an
+  IncusOS installation matching the install media's version is detected on the
+  target device. The version is read from its GPT partition labels without
+  unlocking it. A different version does not require this extra confirmation.
+  A disk backing the installer's running `/usr` always requires the check before
+  its partition table can be erased and the installer rebooted. Use the first six
+  lowercase characters of the **target ESP partition's PARTUUID**.
+  The installer reads this without unlocking the installed system and prints the
+  value in its error message when this field is unset. It stays the same across
+  boots and updates, but changes after a reinstall. The running system's
+  machine ID is not the confirmation value. The explicit automation override
+  `FORCE-WIPE-I-KNOW-WHAT-IAM-DOING` remains accepted; it is never supplied by default.
+  Neither value bypasses the separate `confirmation` prompt.
 
 - `force_reboot`: If true, reboot after install without waiting for removal of
   install media.
