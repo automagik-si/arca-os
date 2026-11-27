@@ -179,6 +179,31 @@ func (c *console) collect(ctx context.Context) {
 	go c.every(ctx, updatesEvery, c.readUpdates)
 	go c.every(ctx, updatesEvery, c.readSeal)
 
+	// The hardware figures have their own slow timer: they are read here, off
+	// the event loop, and the view only draws the last sample. The CPU
+	// percentage needs two samples at least hardwareWindow apart, so the pane
+	// shows a dash until the second one.
+	var (
+		prevCPU   hostCPUSample
+		haveCPU   bool
+		prevCPUAt time.Time
+	)
+
+	go c.every(ctx, hardwareEvery, func() {
+		sampled := readHostHardware(prevCPU, haveCPU, prevCPUAt, c.src.now())
+		prevCPU, haveCPU, prevCPUAt = sampled.cpu, sampled.have, sampled.at
+
+		c.h.QueueArcaUpdate(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.fail(fmt.Errorf("hardware: %v", r))
+				}
+			}()
+
+			c.view.setHardware(sampled.hardware)
+		})
+	})
+
 	c.every(ctx, clockEvery, func() {})
 }
 

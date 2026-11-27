@@ -1,36 +1,36 @@
  ARCA  node-1  Arca OS 202611030000  arca 0.1.0  incus 6.0.0                                            ● online  14:22
  192.0.2.10  2001:db8::10
 ┌─ Hardware ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                                                      │
-│                                                                                                                      │
+│ CPU 12% of 8 threads · 45°C                                                                                          │
+│ Mem 3G / 8G · Disk 20G / 100G                                                                                        │
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-─ Instances 4 · 3 running ──────────────────────────────────────────────────────────────────────
-  NAME       TYPE   STATE     CPU           RAM                DISK      IP             UP
-▶ phone-1    PHONE  RUNNING   █░░░░ 3.9%    ███░░ 2G / 4G      9.6G      192.0.2.3      19h 12m
-  probe-1    CT     STOPPED   —             —                  —         —              —
-  vm-1       VM     RUNNING   █░░░░ 12.1%   █████ 3.8G / 4G    18.4G     —              3d 4h
-  web        CT     RUNNING   ░░░░░ 1.1%    █░░░░ 480M / 2G    6.3G      192.0.2.2      3d 4h
-
-
-
-
-
-
-
-
-
-
-
-
-┌─ Events (system log) ────────────────────────────────────────────────────────────────────────┐
-│ The system log shows here.                                                                   │
-│                                                                                              │
-│                                                                                              │
-│                                                                                              │
-│                                                                                              │
-│                                                                                              │
-│                                                                                              │
-└──────────────────────────────────────────────────────────────────────────────────────────────┘
+─ Instances 4 · 3 running ──────────────────────────────────────────────────────────────────────┌─ Resources ──────────┐
+  NAME       TYPE   STATE     CPU           RAM                DISK      IP             UP      │ CPU 12%              │
+▶ phone-1    PHONE  RUNNING   █░░░░ 3.9%    ███░░ 2G / 4G      9.6G      192.0.2.3      19h 12m │ Mem 3G / 8G          │
+  probe-1    CT     STOPPED   —             —                  —         —              —       │ Disk 20G / 100G      │
+  vm-1       VM     RUNNING   █░░░░ 12.1%   █████ 3.8G / 4G    18.4G     —              3d 4h   │ Temp 45°C            │
+  web        CT     RUNNING   ░░░░░ 1.1%    █░░░░ 480M / 2G    6.3G      192.0.2.2      3d 4h   │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+                                                                                                │                      │
+┌─ Events (system log) ────────────────────────────────────────────────────────────────────────┐│                      │
+│ The system log shows here.                                                                   ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+│                                                                                              ││                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────┘
  ✓ The disk was unlocked with the recovery passphrase; the TPM has been re-sealed to this system's current state
  ↑↓ select  Tab next panel  Enter details  U updates  ? help  L upstream

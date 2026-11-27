@@ -30,6 +30,14 @@ var testNow = time.Date(2026, 11, 3, 14, 22, 0, 0, time.UTC)
 func draw(t *testing.T, snap Snapshot, w, h int) tcell.SimulationScreen {
 	t.Helper()
 
+	return drawWithHardware(t, snap, testHardware, w, h)
+}
+
+// drawWithHardware draws snap with a fixed hardware reading on a simulated
+// screen, so a failed or empty reading can be drawn without a live host.
+func drawWithHardware(t *testing.T, snap Snapshot, hw hostHardware, w, h int) tcell.SimulationScreen {
+	t.Helper()
+
 	screen := tcell.NewSimulationScreen("UTF-8")
 
 	err := screen.Init()
@@ -41,6 +49,7 @@ func draw(t *testing.T, snap Snapshot, w, h int) tcell.SimulationScreen {
 
 	v := newView()
 	v.update(snap)
+	v.setHardware(hw)
 	v.SetRect(0, 0, w, h)
 	v.Draw(screen)
 
