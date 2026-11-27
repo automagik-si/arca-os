@@ -1,10 +1,12 @@
 package console
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,6 +223,16 @@ func TestTemperature(t *testing.T) {
 		}
 	}
 
+	// Exactly zero is not a plausible CPU temperature either.
+	root = t.TempDir()
+	writeFixture(t, root, "class/hwmon/hwmon0/name", "k10temp\n")
+	writeFixture(t, root, "class/hwmon/hwmon0/temp1_input", "0\n")
+
+	_, ok = readTemperature(root)
+	if ok {
+		t.Error("a zero temperature was read as a valid CPU temperature")
+	}
+
 	_, ok = readTemperature(t.TempDir())
 	if ok {
 		t.Error("a host without a sensor reported a temperature")
@@ -247,7 +259,7 @@ func TestReadHostHardware(t *testing.T) { //nolint:paralleltest // points the pa
 
 	base := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 
-	first := readHostHardware(hostCPUSample{}, false, time.Time{}, base)
+	first := realReadHostHardware(hostCPUSample{}, false, time.Time{}, base)
 	if !first.have {
 		t.Fatal("the first read did not keep a CPU sample")
 	}
@@ -269,7 +281,7 @@ func TestReadHostHardware(t *testing.T) { //nolint:paralleltest // points the pa
 	}
 
 	// A window shorter than hardwareWindow keeps the dash.
-	short := readHostHardware(first.cpu, first.have, first.at, base.Add(500*time.Millisecond))
+	short := realReadHostHardware(first.cpu, first.have, first.at, base.Add(500*time.Millisecond))
 	if short.hardware.HasCPU {
 		t.Error("a 500 ms window produced a CPU percentage")
 	}
@@ -277,7 +289,7 @@ func TestReadHostHardware(t *testing.T) { //nolint:paralleltest // points the pa
 	// Two seconds later the same fixture gives the 12% figure.
 	writeFixture(t, root, "proc/stat", cpuFixture("200", "0", "100", "1400", "100"))
 
-	second := readHostHardware(first.cpu, first.have, first.at, base.Add(2*time.Second))
+	second := realReadHostHardware(first.cpu, first.have, first.at, base.Add(2*time.Second))
 	if !second.hardware.HasCPU || second.hardware.CPUPercent != 12 {
 		t.Errorf("second read = %+v, want 12%% CPU", second.hardware)
 	}
@@ -288,7 +300,7 @@ func TestReadHostHardware(t *testing.T) { //nolint:paralleltest // points the pa
 		t.Fatal(err)
 	}
 
-	partial := readHostHardware(hostCPUSample{}, false, time.Time{}, base)
+	partial := realReadHostHardware(hostCPUSample{}, false, time.Time{}, base)
 	if partial.hardware.HasCPU {
 		t.Error("a failed /proc/stat reported a CPU percentage")
 	}
@@ -300,7 +312,7 @@ func TestReadHostHardware(t *testing.T) { //nolint:paralleltest // points the pa
 	// A malformed meminfo fails only the memory figure.
 	writeFixture(t, root, "proc/meminfo", "MemTotal:        lots kB\n")
 
-	partial = readHostHardware(hostCPUSample{}, false, time.Time{}, base)
+	partial = realReadHostHardware(hostCPUSample{}, false, time.Time{}, base)
 	if partial.hardware.HasMem {
 		t.Error("a malformed meminfo reported memory")
 	}
@@ -314,7 +326,7 @@ func TestReadHostHardware(t *testing.T) { //nolint:paralleltest // points the pa
 
 	statfs = func(_ string, _ *unix.Statfs_t) error { return errors.New("no statfs") }
 
-	partial = readHostHardware(hostCPUSample{}, false, time.Time{}, base)
+	partial = realReadHostHardware(hostCPUSample{}, false, time.Time{}, base)
 	if partial.hardware.HasDisk {
 		t.Error("a failed statfs reported a disk figure")
 	}
@@ -331,6 +343,10 @@ func TestHardwareText(t *testing.T) {
 		t.Errorf("empty CPU text = %q, want the dash", got)
 	}
 
+	if got := hostCPUText(hostHardware{}); got != "—" {
+		t.Errorf("CPU text with no thread count = %q, want the dash alone", got)
+	}
+
 	if got := hostCPUPercentText(hostHardware{}); got != "—" {
 		t.Errorf("empty CPU percent = %q, want the dash", got)
 	}
@@ -345,6 +361,10 @@ func TestHardwareText(t *testing.T) {
 
 	if got := hostTempText(hostHardware{}); got != "—" {
 		t.Errorf("empty temperature text = %q, want the dash", got)
+	}
+
+	if got := hostTempText(hostHardware{HasTemp: true, TempC: 0}); got != "—" {
+		t.Errorf("zero temperature text = %q, want the dash", got)
 	}
 
 	if got := hostCPUText(testHardware); got != "12% of 8 threads" {
@@ -428,4 +448,90 @@ func TestHardwareFailedReading(t *testing.T) {
 	if strings.Contains(compact, "0 / 0") {
 		t.Error("a failed read was drawn as 0 / 0 in the compact strip")
 	}
+
+	// Before the first reading the thread count is unknown; no "of 0 threads".
+	first := screenText(drawWithHardware(t, tracerSnapshot(), hostHardware{}, 120, 36))
+	if strings.Contains(first, "of 0 threads") {
+		t.Error("the screen showed 0 threads before the first reading")
+	}
+
+	if !strings.Contains(first, "CPU —") {
+		t.Error("the screen has no CPU dash before the first reading")
+	}
+}
+
+// serialHost is a console host whose queued updates run one at a time, like the
+// event loop they stand in for.
+type serialHost struct {
+	fakeHost
+
+	mu sync.Mutex
+}
+
+func (h *serialHost) QueueArcaUpdate(fn func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	fn()
+}
+
+// TestHardwareTimer fails when the hardware timer is removed from collect: the
+// reader here only runs from the timer's goroutine.
+func TestHardwareTimer(t *testing.T) { //nolint:paralleltest // shortens the package timer and counts its reads
+	oldEvery, oldRead := hardwareEvery, readHostHardware
+
+	t.Cleanup(func() { hardwareEvery, readHostHardware = oldEvery, oldRead })
+
+	hardwareEvery = 10 * time.Millisecond
+
+	called := make(chan struct{}, 8)
+	readHostHardware = func(prev hostCPUSample, have bool, at, now time.Time) hostHardwareRead {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+
+		return hostHardwareRead{hardware: testHardware, cpu: prev, at: now, have: have}
+	}
+
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	src := sources{
+		now:       func() time.Time { return now },
+		node:      func() string { return "node" },
+		release:   func() string { return "release" },
+		apps:      func(context.Context) ([]App, error) { return nil, nil },
+		ips:       func(context.Context) []string { return nil },
+		online:    func() Online { return Online{} },
+		instances: func() (instancesResult, error) { return instancesResult{}, nil },
+		updates:   func() Updates { return Updates{} },
+		seal:      func() Seal { return Seal{} },
+	}
+
+	c := newConsole(&serialHost{}, src)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		c.collect(ctx)
+	}()
+
+	for i := 1; i <= 2; i++ {
+		select {
+		case <-called:
+		case <-time.After(2 * time.Second):
+			cancel()
+			<-done
+			t.Fatalf("the hardware timer did not tick %d times; it must stay in collect", i)
+		}
+	}
+
+	cancel()
+	<-done
+
+	// Let the other collectors see the cancel before the cleanup restores the
+	// package variables they read.
+	time.Sleep(50 * time.Millisecond)
 }
