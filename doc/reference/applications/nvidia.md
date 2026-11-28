@@ -41,7 +41,16 @@ Modules are loaded by full path in dependency order, with base-kernel dependenci
 
 ## Readings on the console
 
-The console's hardware pane lists each graphics card with its use, memory and temperature. For a card on the NVIDIA driver it asks the application's own `nvidia-smi`, through the application, which refuses the query unless the driver passed its health check in this boot (`/run/incus-os/nvidia-checked`, written when the check passes) and is the active driver. One query runs at a time. A driver switch waits up to ten seconds for a running query to end, keeps new ones out until the switch has finished, and waits for the next boot when the query does not end. So the console never loads, probes or holds a driver that has not been checked, and a refused or failed query shows dashes. An NVIDIA card that is not on the NVIDIA driver is listed by name with `driver not active`, and a card bound to `vfio-pci` with `reserved for a VM`.
+The console's hardware pane lists each graphics card with its use, memory and temperature. For a card on the NVIDIA driver it asks the application's own `nvidia-smi`, through the application. The application and its readers share one gate with one holder at a time: a reader's query, the startup that decides the active driver, or a driver switch. Every write of the active driver, and a reader's read of it, happen while holding that gate. A query is refused, and the card's row then shows dashes and the reason:
+
+| Row says | When |
+|---|---|
+| `driver not checked` | The driver has not passed its health check in this boot. The check writes `/run/incus-os/nvidia-checked` when it passes. |
+| `driver starting` | Startup is deciding the active driver, which includes its health check. |
+| `driver switching` | A driver switch is running. The switch waits up to ten seconds for a running query to end, keeps new ones out until it has finished, and waits for the next boot when the query does not end. |
+| `driver not active` | The NVIDIA driver is not the active one: disabled by configuration, a failed switch, a fallback, or a card that is not on the NVIDIA driver at all. |
+
+So the console never loads, probes or holds a driver that has not been checked. A query that merely fails, or takes longer than its bound, shows dashes with no reason. A card bound to `vfio-pci` says `reserved for a VM`.
 
 ## Sources and licences
 

@@ -3,12 +3,15 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lxc/incus-os/incus-osd/internal/applications"
 )
 
 // testGPUs are two cards as the golden screens draw them.
@@ -421,6 +424,68 @@ func TestGPUReaderDriverNotActive(t *testing.T) {
 	// A host without a card reads as no card at all.
 	if gpus := tools.reader(t.TempDir()).read(context.Background()); len(gpus) != 0 {
 		t.Errorf("a host without a card read %+v", gpus)
+	}
+}
+
+// TestGPUReaderRefusedQuery checks that a card on the NVIDIA driver whose query
+// the application refuses says why, and that a query that merely failed does not.
+func TestGPUReaderRefusedQuery(t *testing.T) {
+	t.Parallel()
+
+	sys := t.TempDir()
+	gpuFixture(t, sys, "0000:04:00.0", "0x030000", "0x10de", "0x2805", "nvidia")
+	gpuFixture(t, sys, "0000:2b:00.0", "0x030000", "0x10de", "0x2805", "")
+
+	amd := gpuFixture(t, sys, "0000:c6:00.0", "0x038000", "0x1002", "0x150e", "amdgpu")
+	writeFixture(t, amd, "gpu_busy_percent", "9\n")
+
+	for _, row := range []struct {
+		err  error
+		note string
+	}{
+		{applications.ErrNVIDIAUnchecked, "driver not checked"},
+		{applications.ErrNVIDIAStarting, "driver starting"},
+		{applications.ErrNVIDIASwitching, "driver switching"},
+		{applications.ErrNVIDIAInactive, "driver not active"},
+		{fmt.Errorf("query: %w", applications.ErrNVIDIASwitching), "driver switching"},
+		{applications.ErrNVIDIANotReady, ""},
+		{errors.New("nvidia-smi failed"), ""},
+		{context.DeadlineExceeded, ""},
+	} {
+		tools := &fakeTools{smiErr: row.err, udevErr: errors.New("no udevadm")}
+
+		gpus := tools.reader(sys).read(context.Background())
+		if len(gpus) != 3 {
+			t.Fatalf("%v: read %d cards, want 3", row.err, len(gpus))
+		}
+
+		if gpus[0].Note != row.note || gpus[0].HasUse || gpus[0].HasMem || gpus[0].HasTemp {
+			t.Errorf("%v: the card on the NVIDIA driver read as %+v, want the note %q", row.err, gpus[0], row.note)
+		}
+
+		// The other cards keep their own reason and their own figures.
+		if gpus[1].Note != "driver not active" || gpus[2].Note != "" || !gpus[2].HasUse {
+			t.Errorf("%v: the other cards read as %+v and %+v", row.err, gpus[1], gpus[2])
+		}
+	}
+
+	// An answer that leaves one card out gives that card dashes and no reason.
+	gpuFixture(t, sys, "0000:41:00.0", "0x030000", "0x10de", "0x2805", "nvidia")
+
+	tools := &fakeTools{smi: "0, 00000000:04:00.0, NVIDIA GeForce RTX 4060 Ti, 5, 100, 16380, 40\n", udevErr: errors.New("no udevadm")}
+
+	gpus := tools.reader(sys).read(context.Background())
+	if !gpus[0].HasUse || gpus[2].HasUse || gpus[2].Note != "" {
+		t.Errorf("a card missing from the answer read as %+v", gpus[2])
+	}
+
+	// The reason is drawn after the dashes at both sizes.
+	refused := []hostGPU{{Name: "RTX 4060 Ti", Note: "driver switching"}}
+
+	for _, size := range [][2]int{{80, 25}, {120, 36}} {
+		if text := drawWithGPUs(t, refused, size[0], size[1]); !strings.Contains(text, "GPU0 RTX 4060 Ti · — · — · — · driver switching") {
+			t.Errorf("the %dx%d screen does not say why the card has no figures", size[0], size[1])
+		}
 	}
 }
 

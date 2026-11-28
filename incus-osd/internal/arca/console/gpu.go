@@ -15,6 +15,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/lxc/incus/v7/shared/subprocess"
 	"github.com/rivo/tview"
+
+	"github.com/lxc/incus-os/incus-osd/internal/applications"
 )
 
 // hostGPU is one graphics card of the host. Like the other hardware figures,
@@ -57,9 +59,29 @@ var gpuVendors = map[string]string{vendorNVIDIA: "NVIDIA", vendorAMD: "AMD", ven
 
 // The reasons a card's figures cannot be read.
 const (
-	noteDriverInactive = "driver not active"
-	notePassedThrough  = "reserved for a VM"
+	noteDriverInactive  = "driver not active"
+	noteDriverUnchecked = "driver not checked"
+	noteDriverStarting  = "driver starting"
+	noteDriverSwitching = "driver switching"
+	notePassedThrough   = "reserved for a VM"
 )
+
+// nvidiaRefusalNote is the reason the NVIDIA application gave for refusing the
+// query, or empty for a query that merely failed: that one shows dashes alone.
+func nvidiaRefusalNote(err error) string {
+	switch {
+	case errors.Is(err, applications.ErrNVIDIAUnchecked):
+		return noteDriverUnchecked
+	case errors.Is(err, applications.ErrNVIDIAStarting):
+		return noteDriverStarting
+	case errors.Is(err, applications.ErrNVIDIASwitching):
+		return noteDriverSwitching
+	case errors.Is(err, applications.ErrNVIDIAInactive):
+		return noteDriverInactive
+	default:
+		return ""
+	}
+}
 
 // gpuCard is one display-class PCI device of a listed vendor.
 type gpuCard struct {
@@ -364,7 +386,10 @@ func (r *gpuReader) read(ctx context.Context) []hostGPU {
 		return nil
 	}
 
-	var driven map[string]hostGPU
+	var (
+		driven  map[string]hostGPU
+		refused string
+	)
 
 	// One call answers for every card on the NVIDIA driver; without such a card the tool never runs.
 	if r.nvidia != nil && slices.ContainsFunc(cards, gpuCard.onNVIDIADriver) {
@@ -373,6 +398,8 @@ func (r *gpuReader) read(ctx context.Context) []hostGPU {
 		})
 		if err == nil {
 			driven = parseNvidiaSMI(out)
+		} else {
+			refused = nvidiaRefusalNote(err)
 		}
 	}
 
@@ -392,6 +419,8 @@ func (r *gpuReader) read(ctx context.Context) []hostGPU {
 				}
 
 				g = answer
+			} else {
+				g.Note = refused
 			}
 		default:
 			if card.vendor == vendorNVIDIA {
