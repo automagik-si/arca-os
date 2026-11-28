@@ -73,6 +73,11 @@ func failedStatus(err error, fallback string) string {
 		return TrustStatus
 	}
 
+	uki, ok := errors.AsType[*util.UKIError](err)
+	if ok {
+		return uki.Error()
+	}
+
 	return fallback
 }
 
@@ -99,8 +104,14 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 	st := &s.System.Update.State
 
 	if err == nil {
-		st.LastErrorKind = ""
-		st.LastError = ""
+		st.LastErrorKind, st.LastError, st.LastErrorDetail = "", "", ""
+
+		// A refused version the check skipped is still the reason nothing was installed.
+		r := heldRefusal(s)
+		if r != nil {
+			st.LastErrorKind, st.LastError, st.LastErrorDetail = r.Kind, r.Message, r.Detail
+		}
+
 		st.EmbeddedCAFingerprint = ""
 		st.PresentedCAFingerprint = ""
 		st.TrustFailures = 0
@@ -111,6 +122,13 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 
 	st.LastErrorKind = errorKind(err)
 	st.LastError = shortError(err)
+	st.LastErrorDetail = ""
+
+	uki, ok := errors.AsType[*util.UKIError](err)
+	if ok {
+		st.LastError = uki.Error()
+		st.LastErrorDetail = shortError(errors.New(uki.Detail()))
+	}
 
 	trustErr, ok := errors.AsType[*util.TrustError](err)
 	if !ok {

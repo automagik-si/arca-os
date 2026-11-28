@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
@@ -112,6 +113,11 @@ func restartAfterApply(ctx context.Context, s *state.State) bool {
 // failed its health check is never applied again automatically; a newer one is. While the running
 // version is being checked, the other slot keeps the version to go back to.
 func osUpdateHold(s *state.State, version string) string {
+	r := s.UpdateHealth.Refused
+	if r != nil && r.Version == version && IsFailedVersion(s, version) {
+		return r.Message
+	}
+
 	if IsFailedVersion(s, version) {
 		return "Version " + version + " failed before (" + s.UpdateHealth.FailedVersions[version] + "); waiting for a newer version"
 	}
@@ -133,19 +139,20 @@ func rejectOSUpdate(ctx context.Context, s *state.State, version string, err err
 		return false
 	}
 
-	reason := shortError(uki)
+	detail := shortError(errors.New(uki.Detail()))
 
 	s.LockUpdateHealth()
 	defer s.UnlockUpdateHealth()
 
 	h := &s.UpdateHealth
-	h.FailedVersions = addFailed(h.FailedVersions, version, reason)
+	h.FailedVersions = addFailed(h.FailedVersions, version, detail)
 	util.SetFailedBootVersions(FailedVersions(s))
 
 	h.LastResult = "Version " + version + " was not installed"
-	h.LastReason = reason
+	h.LastReason = uki.Error()
+	h.Refused = &api.SystemUpdateRefusal{Version: version, Kind: errorKind(uki), Message: uki.Error(), Detail: detail}
 
-	slog.ErrorContext(ctx, "OS update rejected, nothing was installed", "version", version, "reason", reason)
+	slog.ErrorContext(ctx, "OS update rejected, nothing was installed", "version", version, "reason", detail)
 
 	saveErr := s.SaveDurable()
 	if saveErr != nil {
@@ -153,6 +160,30 @@ func rejectOSUpdate(ctx context.Context, s *state.State, version string, err err
 	}
 
 	return true
+}
+
+// heldRefusal is the refused OS version to keep showing as the last error: the owner has not asked to
+// try it again, and no version as new as it is installed. Versions are timestamps of one length.
+func heldRefusal(s *state.State) *api.SystemUpdateRefusal {
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	r := s.UpdateHealth.Refused
+	if r == nil || !IsFailedVersion(s, r.Version) || s.OS.RunningRelease >= r.Version || s.OS.NextRelease >= r.Version {
+		return nil
+	}
+
+	return r
+}
+
+// checkedStatus is the status after an OS check that installed nothing.
+func checkedStatus(s *state.State) string {
+	r := heldRefusal(s)
+	if r != nil {
+		return r.Message
+	}
+
+	return "OS update check completed"
 }
 
 // dropRejectedDownload removes the files of an OS update that was rejected; a retry downloads them again.
