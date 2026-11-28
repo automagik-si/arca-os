@@ -266,6 +266,9 @@ func (c *cmdSync) importRelease(ctx context.Context, targetPath string, rel rele
 
 	err = g.Wait()
 	if err != nil {
+		// Leave no partial release behind, so a later sync imports it again.
+		_ = os.RemoveAll(filepath.Join(targetPath, rel.name))
+
 		return false, err
 	}
 
@@ -530,6 +533,11 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 			Size:         assetSize,
 			Type:         assetType,
 		})
+	}
+
+	err = checkReleaseUKI(targetPath, files)
+	if err != nil {
+		return nil, err
 	}
 
 	return files, nil
