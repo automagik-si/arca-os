@@ -41,7 +41,7 @@ Modules are loaded by full path in dependency order, with base-kernel dependenci
 
 ## Readings on the console
 
-The console's hardware pane lists each graphics card with its use, memory and temperature. For a card on the NVIDIA driver it asks the application's own `nvidia-smi`, through the application. The application and its readers share one gate with one holder at a time: a reader's query, the startup that decides the active driver, or a driver switch. Every write of the active driver, and a reader's read of it, happen while holding that gate. A query is refused, and the card's row then shows dashes and the reason:
+The console's hardware pane lists each graphics card with its use, memory and temperature. For a card on the NVIDIA driver it asks the application's own `nvidia-smi`, through the application. The application and its readers share one gate with one holder at a time: a reader's query, the startup that decides the active driver, or a driver switch. Every write of the active driver made by startup or a switch, and a reader's read of it, happen while holding that gate. Removing the application clears the active driver without the gate, which is harmless: removal unloads no modules, and a reader that sees the cleared value is refused. A query is refused, and the card's row then shows dashes and the reason:
 
 | Row says | When |
 |---|---|
