@@ -49,3 +49,12 @@ incus-osd/internal/rest/server.go
 incus-osd/internal/secureboot/pcrs.go
 incus-osd/internal/systemd/sysupdate.go
 incus-osd/internal/util/uki.go
+# The OS update's UKI check: a damaged or unverified UKI is an error, never a panic, and the
+# publisher refuses one.
+incus-osd/cmd/image-publisher/arca_uki.go
+incus-osd/cmd/image-publisher/arca_uki_test.go
+# The publisher refuses a release file that differs from the build's SHA256SUMS.
+incus-osd/cmd/image-publisher/arca_sums.go
+incus-osd/cmd/image-publisher/arca_sums_test.go
+incus-osd/internal/secureboot/secureboot.go
+incus-osd/internal/update/trust.go

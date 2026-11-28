@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/foxboron/go-uefi/authenticode"
 	"github.com/lxc/incus/v7/shared/subprocess"
 	"golang.org/x/sys/unix"
 
@@ -130,18 +129,7 @@ func ApplySystemUpdate(ctx context.Context, version string) error {
 	}
 
 	// Verify the UKI image.
-	ukiImage, err := os.Open(newUKIFile)
-	if err != nil {
-		return err
-	}
-	defer ukiImage.Close()
-
-	ukiAuthenticode, err := authenticode.Parse(ukiImage)
-	if err != nil {
-		return err
-	}
-
-	_, err = ukiAuthenticode.Verify(trustedCert)
+	err = util.VerifyUKIFile(newUKIFile, version, trustedCert)
 	if err != nil {
 		return err
 	}

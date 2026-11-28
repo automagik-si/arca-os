@@ -64,6 +64,10 @@ type SystemUpdateHealth struct {
 
 	Bake *SystemUpdateBake `json:"bake,omitempty" yaml:"bake,omitempty"`
 
+	// Refused is the OS version last refused before install because its boot image could not be verified.
+	// It stays the update state's last error while the version is held.
+	Refused *SystemUpdateRefusal `json:"refused,omitempty" yaml:"refused,omitempty"`
+
 	// Instances are the "<project>/<name>" instances running before the update restart.
 	Instances []string `json:"instances,omitempty" yaml:"instances,omitempty"`
 
@@ -89,6 +93,14 @@ type SystemUpdateHealth struct {
 	// DeferUntil (RFC 3339) is the latest time a restart deferred by a busy machine may still happen.
 	DeferUntil string `json:"defer_until,omitempty" yaml:"defer_until,omitempty"`
 	Waiting    string `json:"waiting,omitempty"     yaml:"waiting,omitempty"`
+}
+
+// SystemUpdateRefusal is an OS version refused before install: what the owner reads, and why.
+type SystemUpdateRefusal struct {
+	Version string `json:"version"          yaml:"version"`
+	Kind    string `json:"kind"             yaml:"kind"`
+	Message string `json:"message"          yaml:"message"`
+	Detail  string `json:"detail,omitempty" yaml:"detail,omitempty"`
 }
 
 // SystemUpdateBake is the health check of one OS version after it was installed.

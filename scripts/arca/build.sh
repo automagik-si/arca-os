@@ -16,7 +16,9 @@
 # /srv/artifacts/os/<version>/, with this tree's test/metadata.tar.xz for
 # vm-test.sh, the kernel's BUILDINFO as kernel.BUILDINFO with --local-kernel,
 # and /srv/artifacts/os/latest points there, unless --no-latest (unattended
-# builds leave the image vm-test.sh boots by default alone).
+# builds leave the image vm-test.sh boots by default alone). The release folder
+# ends with SHA256SUMS of its files and is made read-only (release-sums.sh
+# write); publish-build.sh refuses a file that no longer matches.
 # It also copies the base image's Wi-Fi firmware list (usr/share/arca-wifi/
 # firmware.txt in the base tree) there as wifi-firmware.txt and the GPU
 # firmware list (usr/share/arca-gpu/firmware.txt) as gpu-firmware.txt, and
@@ -162,6 +164,7 @@ cp -- "$gpulist" "$dest.tmp/gpu-firmware.txt"
 if [ -n "$kdir" ]; then
 	cp -- "$kdir/BUILDINFO" "$dest.tmp/kernel.BUILDINFO"
 fi
+scripts/arca/release-sums.sh write "$dest.tmp"
 rm -rf "$dest"
 mv "$dest.tmp" "$dest"
 if [ "$set_latest" -eq 1 ]; then

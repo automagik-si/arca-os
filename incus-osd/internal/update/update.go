@@ -315,7 +315,7 @@ func checkOSWith(ctx context.Context, s *state.State, p providers.Provider, t *t
 	dismissUpdateModal(t)
 
 	if newInstalledOSVersion == "" {
-		s.System.Update.State.Status = "OS update check completed"
+		s.System.Update.State.Status = checkedStatus(s)
 	} else {
 		s.System.Update.State.Status = s.OS.Name + " has been updated to version " + newInstalledOSVersion
 	}
@@ -700,6 +700,10 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 
 		err = systemd.ApplySystemUpdate(ctx, update.Version())
 		if err != nil {
+			if rejectOSUpdate(ctx, s, update.Version(), err) {
+				dropRejectedDownload(ctx)
+			}
+
 			return "", err
 		}
 

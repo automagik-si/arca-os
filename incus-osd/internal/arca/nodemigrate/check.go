@@ -14,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/foxboron/go-uefi/authenticode"
 	"github.com/google/go-eventlog/tcg"
 	"golang.org/x/sys/unix"
 
@@ -651,7 +650,7 @@ func fileAuthenticode(path string) ([]byte, error) {
 	}
 	defer f.Close()
 
-	a, err := authenticode.Parse(f)
+	a, err := util.ParseAuthenticode(f)
 	if err != nil {
 		return nil, fmt.Errorf("hashing %s: %w", path, err)
 	}
@@ -660,7 +659,7 @@ func fileAuthenticode(path string) ([]byte, error) {
 }
 
 func bytesAuthenticode(data []byte) ([]byte, error) {
-	a, err := authenticode.Parse(bytes.NewReader(data))
+	a, err := util.ParseAuthenticode(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("hashing a PE binary: %w", err)
 	}

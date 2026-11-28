@@ -2149,6 +2149,8 @@ definitions:
             previous_version:
                 type: string
                 x-go-name: PreviousVersion
+            refused:
+                $ref: '#/definitions/SystemUpdateRefusal'
             rollback_boot_id:
                 description: RollbackBootID is the boot an automatic rollback reboot was issued from; there is one per boot.
                 type: string
@@ -2187,6 +2189,23 @@ definitions:
         title: SystemUpdateMaintenanceWindow defines a maintenance window for when it is acceptable to check for and apply updates.
         type: object
         x-go-package: github.com/lxc/incus-os/incus-osd/api
+    SystemUpdateRefusal:
+        properties:
+            detail:
+                type: string
+                x-go-name: Detail
+            kind:
+                type: string
+                x-go-name: Kind
+            message:
+                type: string
+                x-go-name: Message
+            version:
+                type: string
+                x-go-name: Version
+        title: 'SystemUpdateRefusal is an OS version refused before install: what the owner reads, and why.'
+        type: object
+        x-go-package: github.com/lxc/incus-os/incus-osd/api
     SystemUpdateState:
         properties:
             available_version:
@@ -2207,6 +2226,10 @@ definitions:
                 description: LastError is the last check's failure, as reported by the update provider.
                 type: string
                 x-go-name: LastError
+            last_error_detail:
+                description: LastErrorDetail is the engineer's detail of LastError, when it has one.
+                type: string
+                x-go-name: LastErrorDetail
             last_error_kind:
                 description: 'LastErrorKind is why the last check failed: "network", "parse", "signature", "trust", "other", or empty.'
                 type: string

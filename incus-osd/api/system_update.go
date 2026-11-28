@@ -45,6 +45,9 @@ type SystemUpdateState struct {
 	// LastError is the last check's failure, as reported by the update provider.
 	LastError string `json:"last_error,omitempty" yaml:"last_error,omitempty"`
 
+	// LastErrorDetail is the engineer's detail of LastError, when it has one.
+	LastErrorDetail string `json:"last_error_detail,omitempty" yaml:"last_error_detail,omitempty"`
+
 	// EmbeddedCAFingerprint is the SHA-256 of the update CA this system expects.
 	EmbeddedCAFingerprint string `json:"embedded_ca_fingerprint,omitempty" yaml:"embedded_ca_fingerprint,omitempty"`
 

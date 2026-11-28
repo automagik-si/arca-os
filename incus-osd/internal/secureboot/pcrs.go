@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/foxboron/go-uefi/authenticode"
 	"github.com/google/go-eventlog/tcg"
 	"github.com/lxc/incus/v7/shared/subprocess"
 	"github.com/smallstep/pkcs7"
@@ -290,7 +289,7 @@ func computeNewPCR4Value(eventLog []tcg.Event, newUkiImage string) ([]byte, erro
 						}
 						defer peFile.Close() //nolint:revive
 
-						authenticodeContents, err := authenticode.Parse(peFile)
+						authenticodeContents, err := util.ParseAuthenticode(peFile)
 						if err != nil {
 							return nil, err
 						}
@@ -420,7 +419,7 @@ func computeVmlinuzAuthenticodeHash(ukiFile string) ([]byte, error) {
 	}
 
 	// Get the authenticode of the vmlinuz section. We use VirtualSize, since the section is padded with null bytes.
-	authenticodeContents, err := authenticode.Parse(bytes.NewReader(vmlinuzData[0:vmlinuzSection.VirtualSize]))
+	authenticodeContents, err := util.ParseAuthenticode(bytes.NewReader(vmlinuzData[0:vmlinuzSection.VirtualSize]))
 	if err != nil {
 		return nil, err
 	}

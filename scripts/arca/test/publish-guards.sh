@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests the publishing guards without a builder: published-apps.sh (the check
-# publish-build.sh runs on the tree it wrote) and nvidia-packs.sh (which NVIDIA
-# driver packs a build can publish), with objcopy and systemd-dissect stubbed.
+# publish-build.sh runs on the tree it wrote), nvidia-packs.sh (which NVIDIA
+# driver packs a build can publish), with objcopy and systemd-dissect stubbed,
+# and release-sums.sh (the build's SHA256SUMS that publish-build.sh checks).
 #
 #   scripts/arca/test/publish-guards.sh
 #
@@ -81,5 +82,35 @@ rm -f "$t/uki-broken"
 : >"$b/IncusOS_202611100003.efi"
 check nvidia-packs "two UKIs fail the check" runs 1 '' "$np" "$b"
 check nvidia-packs "usage" runs 2 '' "$np"
+
+# release-sums.sh: the build writes SHA256SUMS and makes the release read-only; publishing checks it.
+rs=$here/release-sums.sh
+r=$t/release
+mkdir "$r"
+printf 'uki' >"$r/IncusOS_202611100004.efi"
+printf 'usr' >"$r/IncusOS_202611100004.usr-x86-64.raw"
+printf 'app' >"$r/incus.raw"
+sumof() { sha256sum "$1" | cut -d' ' -f1; }
+uki_sum=$(sumof "$r/IncusOS_202611100004.efi")
+check release-sums "write: exit 0, prints nothing" runs 0 '' "$rs" write "$r"
+check release-sums "write lists every file by name, sorted" test "$(cut -d' ' -f3 "$r/SHA256SUMS")" = $'IncusOS_202611100004.efi\nIncusOS_202611100004.usr-x86-64.raw\nincus.raw'
+check release-sums "write makes the folder and its files read-only" test "$(stat -c %a "$r" "$r/incus.raw" "$r/SHA256SUMS" | sort -u | tr '\n' ' ')" = '444 555 '
+if [ "$(id -u)" -ne 0 ]; then
+	check release-sums "a released file cannot be rewritten in place" sh -c "! { printf x >>'$r/incus.raw'; } 2>/dev/null"
+fi
+check release-sums "check: the files as built pass" runs 0 '' "$rs" check "$r" "$r/IncusOS_202611100004.efi" "$r/incus.raw"
+cp "$r/IncusOS_202611100004.efi" "$t/copy.efi"
+check release-sums "check: a copy is checked under its build name" runs 0 '' "$rs" check "$r" "$t/copy.efi=IncusOS_202611100004.efi"
+chmod u+w "$r" "$r/IncusOS_202611100004.efi"
+printf 'objcopy was here' >"$r/IncusOS_202611100004.efi"
+check release-sums "check: a file changed after the build is named and refused" runs 1 \
+	"changed after the build: IncusOS_202611100004.efi (sha256 $(sumof "$r/IncusOS_202611100004.efi"), the build recorded $uki_sum)" \
+	"$rs" check "$r" "$r/IncusOS_202611100004.efi" "$r/incus.raw"
+printf 'new' >"$r/extra.raw"
+check release-sums "check: a file the build did not list is refused" runs 1 "not in the build's SHA256SUMS: extra.raw" "$rs" check "$r" "$r/extra.raw"
+rm -f "$r/SHA256SUMS"
+check release-sums "check: a release without SHA256SUMS is refused" runs 1 "no SHA256SUMS in $r: it was built before the sums; build it again" "$rs" check "$r" "$r/incus.raw"
+check release-sums "usage" runs 2 '' "$rs" check "$r"
+chmod -R u+w "$r"
 
 [ "$fails" -eq 0 ] || exit 1

@@ -53,6 +53,10 @@ func errorKind(err error) string {
 		return ErrorKindTrust
 	case errors.As(err, &sigErr):
 		return ErrorKindSignature
+	case util.IsUKIRejected(err) && errors.Is(err, util.ErrAuthenticodeUnreadable):
+		return ErrorKindParse
+	case util.IsUKIRejected(err):
+		return ErrorKindSignature
 	case errors.As(err, &urlErr), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded), errors.Is(err, providers.ErrServerResponse):
 		return ErrorKindNetwork
 	case errors.As(err, &syntaxErr), errors.As(err, &typeErr), errors.Is(err, gzip.ErrHeader), errors.Is(err, gzip.ErrChecksum),
@@ -67,6 +71,11 @@ func errorKind(err error) string {
 func failedStatus(err error, fallback string) string {
 	if errorKind(err) == ErrorKindTrust {
 		return TrustStatus
+	}
+
+	uki, ok := errors.AsType[*util.UKIError](err)
+	if ok {
+		return uki.Error()
 	}
 
 	return fallback
@@ -95,8 +104,14 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 	st := &s.System.Update.State
 
 	if err == nil {
-		st.LastErrorKind = ""
-		st.LastError = ""
+		st.LastErrorKind, st.LastError, st.LastErrorDetail = "", "", ""
+
+		// A refused version the check skipped is still the reason nothing was installed.
+		r := heldRefusal(s)
+		if r != nil {
+			st.LastErrorKind, st.LastError, st.LastErrorDetail = r.Kind, r.Message, r.Detail
+		}
+
 		st.EmbeddedCAFingerprint = ""
 		st.PresentedCAFingerprint = ""
 		st.TrustFailures = 0
@@ -107,6 +122,13 @@ func recordCheck(ctx context.Context, s *state.State, err error) bool {
 
 	st.LastErrorKind = errorKind(err)
 	st.LastError = shortError(err)
+	st.LastErrorDetail = ""
+
+	uki, ok := errors.AsType[*util.UKIError](err)
+	if ok {
+		st.LastError = uki.Error()
+		st.LastErrorDetail = shortError(errors.New(uki.Detail()))
+	}
 
 	trustErr, ok := errors.AsType[*util.TrustError](err)
 	if !ok {
