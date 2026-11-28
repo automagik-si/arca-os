@@ -360,6 +360,8 @@ func (n *nvidia) health(ctx context.Context, cards []string) error {
 		}
 	}
 
+	n.markChecked(parent)
+
 	return nil
 }
 
