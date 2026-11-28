@@ -20,6 +20,11 @@
 # downloads only the UKI and usr images; --with-image also publishes the full
 # OS raw (.img.gz), used only for re-imaging.
 #
+# Every file it publishes must match the SHA256SUMS the build wrote (release-sums.sh
+# check): one changed after the build is named, and nothing is published. A build
+# from before the sums is refused; build it again. The archive carries those sums,
+# and image-publisher checks each file it serves against them.
+#
 # It reads the tree back as the node will: both signatures against the update
 # CA, exactly one release for <ver> in the channel, and each file's sha256 and
 # size, and that every --apps application is in it. It fails if anything does
@@ -109,10 +114,20 @@ for a in "${apps[@]}"; do
 	cp "$src/$a.raw" "$tmp/upload/"
 done
 
+# Each file as the build recorded it (the OS raw is published as .img).
+sum_args=()
+for f in "$tmp"/upload/*; do
+	n=$(basename "$f")
+	[ "$n" != "${osname}_${version}.img" ] || n=${osname}_${version}.raw
+	sum_args+=("$f=$n")
+done
+changed=$(scripts/arca/release-sums.sh check "$src" "${sum_args[@]}") || die "refusing to publish $version: ${changed//$'\n'/; }"
+(cd "$tmp/upload" && sha256sum -- *) >"$tmp/SHA256SUMS"
+
 log "compressing $(find "$tmp/upload" -type f | wc -l) files"
 (cd "$tmp/upload" && for f in *; do pigz -1 "$f"; done)
 zipf=$tmp/${osname}-${version}-${zip_arch}.zip
-zip -q -0 -j "$zipf" "$tmp"/upload/*.gz
+zip -q -0 -j "$zipf" "$tmp"/upload/*.gz "$tmp/SHA256SUMS"
 
 install -d -m 0755 "$out"
 log "publishing $version into $out (channel $channel), signed with the persistent update key"

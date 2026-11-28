@@ -96,7 +96,7 @@ check release-sums "write: exit 0, prints nothing" runs 0 '' "$rs" write "$r"
 check release-sums "write lists every file by name, sorted" test "$(cut -d' ' -f3 "$r/SHA256SUMS")" = $'IncusOS_202611100004.efi\nIncusOS_202611100004.usr-x86-64.raw\nincus.raw'
 check release-sums "write makes the folder and its files read-only" test "$(stat -c %a "$r" "$r/incus.raw" "$r/SHA256SUMS" | sort -u | tr '\n' ' ')" = '444 555 '
 if [ "$(id -u)" -ne 0 ]; then
-	check release-sums "a released file cannot be rewritten in place" runs 1 '' sh -c "printf x >>'$r/incus.raw'"
+	check release-sums "a released file cannot be rewritten in place" sh -c "! { printf x >>'$r/incus.raw'; } 2>/dev/null"
 fi
 check release-sums "check: the files as built pass" runs 0 '' "$rs" check "$r" "$r/IncusOS_202611100004.efi" "$r/incus.raw"
 cp "$r/IncusOS_202611100004.efi" "$t/copy.efi"
