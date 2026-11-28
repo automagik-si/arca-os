@@ -17,7 +17,12 @@ import (
 // ErrAuthenticodeUnreadable is a PE image whose Authenticode data cannot be read.
 var ErrAuthenticodeUnreadable = errors.New("the PE image cannot be read")
 
-var authenticodeParse = authenticode.Parse
+// The parsers, as variables so a test can make them panic.
+var (
+	authenticodeParse = authenticode.Parse
+	peNewFile         = pe.NewFile
+	parseSignature    = authenticode.ParseAuthenticode
+)
 
 // ParseAuthenticode reads a PE image's Authenticode data like authenticode.Parse, but a damaged
 // image is an error wrapping ErrAuthenticodeUnreadable, never a panic. GNU objcopy, for example,
@@ -26,7 +31,7 @@ var authenticodeParse = authenticode.Parse
 func ParseAuthenticode(r io.ReaderAt) (*authenticode.PECOFFBinary, error) {
 	size, known := readerSize(r)
 	if known {
-		err := checkCertificateTable(r, size)
+		_, err := guarded(func() (struct{}, error) { return struct{}{}, checkCertificateTable(r, size) })
 		if err != nil {
 			return nil, err
 		}
@@ -89,7 +94,7 @@ func readerSize(r io.ReaderAt) (int64, bool) {
 // checkCertificateTable checks that the image's certificate table lies in the file, after its
 // headers and sections, where authenticode.Parse expects it.
 func checkCertificateTable(r io.ReaderAt, size int64) error {
-	f, err := pe.NewFile(io.NewSectionReader(r, 0, size))
+	f, err := peNewFile(io.NewSectionReader(r, 0, size))
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrAuthenticodeUnreadable, err)
 	}
@@ -153,7 +158,7 @@ func CheckSignedUKI(r io.ReaderAt, fingerprint string) error {
 	}
 
 	for _, sig := range sigs {
-		code, err := authenticode.ParseAuthenticode(sig.Certificate)
+		code, err := guarded(func() (*authenticode.Authenticode, error) { return parseSignature(sig.Certificate) })
 		if err != nil {
 			return fmt.Errorf("%w: a signature cannot be read: %w", ErrAuthenticodeUnreadable, err)
 		}

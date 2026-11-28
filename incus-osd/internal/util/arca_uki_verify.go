@@ -12,7 +12,14 @@ type UKIError struct {
 	Err     error
 }
 
+// Error is the sentence the owner reads.
 func (e *UKIError) Error() string {
+	return "The update " + e.Version + " was refused: its boot image is damaged or was changed after it was built. " +
+		"The server keeps running the version it has."
+}
+
+// Detail is why, for an engineer.
+func (e *UKIError) Detail() string {
 	return "the UKI of OS version " + e.Version + " cannot be verified: " + e.Err.Error()
 }
 
