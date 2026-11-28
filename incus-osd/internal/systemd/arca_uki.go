@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/foxboron/go-uefi/authenticode"
+	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
 // UKIError is an OS update whose UKI cannot be read or verified.
@@ -29,19 +29,28 @@ func IsUKIRejected(err error) bool {
 	return errors.As(err, &u)
 }
 
-func verifyUKI(path string, _ string, cert *x509.Certificate) error {
+// verifyUKI checks that the UKI at path is signed by cert. A UKI that cannot be read or verified is a
+// UKIError; the parser of a damaged image returns an error instead of panicking.
+func verifyUKI(path string, version string, cert *x509.Certificate) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	a, err := authenticode.Parse(f)
+	a, err := util.ParseAuthenticode(f)
 	if err != nil {
-		return err
+		return &UKIError{Version: version, Err: err}
 	}
 
-	_, err = a.Verify(cert)
+	ok, err := util.VerifyAuthenticode(a, cert)
+	if err != nil {
+		return &UKIError{Version: version, Err: err}
+	}
 
-	return err
+	if !ok {
+		return &UKIError{Version: version, Err: errors.New("it is not signed by the trusted certificate")}
+	}
+
+	return nil
 }
