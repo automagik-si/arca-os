@@ -30,6 +30,8 @@ If three checks fail, or no check passes within the bake time, the version is ma
 
 The Incus and Arca applications keep the versions that ran before the rollback rather than going back to older ones, as an older version may not read the newer database.
 
+An OS version whose UKI can't be read, or isn't signed by the Secure Boot certificate its usr image names, is marked failed before anything is installed: the boot entries, the TPM bindings and the running version stay as they were, and the downloaded files are removed. `state.last_error` says "the UKI of OS version <version> cannot be verified: <reason>", with `last_error_kind` `parse` for a damaged file and `signature` for one that doesn't verify.
+
 A failed version is never applied again automatically, but a newer version is. Every choice of the next boot skips failed versions, including a reboot or power-off through the API. The console and `POST /1.0/system/update/:retry` with `{"version": "<version>"}` release a failed version so it can be tried again. The record keeps the 20 newest failed versions.
 
 If the version IncusOS went back to isn't healthy either, or a rollback can't be done, IncusOS stops trying. It shows "Needs you: <reason>" on the console and in the API, and switches automatic updates off. Switching them back on clears it.
