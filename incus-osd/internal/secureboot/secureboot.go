@@ -488,7 +488,7 @@ outer:
 
 						// Second check: PE is properly signed by a trusted certificate or matches a manually enrolled hash.
 						for _, cert := range trustedCerts {
-							_, err := authenticodeContents.Verify(cert)
+							_, err := util.VerifyAuthenticode(authenticodeContents, cert)
 							if err == nil {
 								peProperlySigned = true
 
