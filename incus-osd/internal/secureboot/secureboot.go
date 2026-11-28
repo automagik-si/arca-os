@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/foxboron/go-uefi/authenticode"
 	"github.com/google/go-eventlog/tcg"
 	"github.com/lxc/incus/v7/shared/subprocess"
 	"golang.org/x/sys/unix"
@@ -475,7 +474,7 @@ outer:
 						}
 						defer peFile.Close() //nolint:revive
 
-						authenticodeContents, err := authenticode.Parse(peFile)
+						authenticodeContents, err := util.ParseAuthenticode(peFile)
 						if err != nil {
 							return err
 						}
@@ -587,7 +586,7 @@ func checkUKIValidity(ukiFile string, cert []byte) error {
 		}
 		defer f.Close() //nolint:revive
 
-		authenticodeContents, err := authenticode.Parse(f)
+		authenticodeContents, err := util.ParseAuthenticode(f)
 		if err != nil {
 			return err
 		}
@@ -637,7 +636,7 @@ func checkUKIValidity(ukiFile string, cert []byte) error {
 		}
 		defer f.Close() //nolint:revive
 
-		authenticodeContents, err := authenticode.Parse(f)
+		authenticodeContents, err := util.ParseAuthenticode(f)
 		if err != nil {
 			return err
 		}
