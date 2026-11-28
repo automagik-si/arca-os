@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -40,7 +39,10 @@ func TestVerifyUKIStripped(t *testing.T) {
 	require.True(t, IsUKIRejected(err), "not a rejected UKI: %v", err)
 	require.ErrorIs(t, err, ErrAuthenticodeUnreadable)
 	require.Contains(t, err.Error(), "202611272126")
-	require.Contains(t, err.Error(), "signature table points past the end of the file")
+
+	uki, ok := errors.AsType[*UKIError](err)
+	require.True(t, ok)
+	require.Contains(t, uki.Detail(), "signature table points past the end of the file")
 }
 
 func TestVerifyUKIUnsigned(t *testing.T) {
@@ -75,9 +77,13 @@ func TestVerifyUKIMissing(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
+// The owner reads one plain sentence; the engineer's detail is kept beside it.
 func TestUKIErrorWording(t *testing.T) {
 	t.Parallel()
 
 	err := &UKIError{Version: "202611272126", Err: errors.New("why")}
-	require.True(t, strings.HasPrefix(err.Error(), "the UKI of OS version 202611272126 cannot be verified"), err.Error())
+	require.Equal(t, "The update 202611272126 was refused: its boot image is damaged or was changed after it was built. "+
+		"The server keeps running the version it has.", err.Error())
+	require.Equal(t, "the UKI of OS version 202611272126 cannot be verified: why", err.Detail())
+	require.ErrorContains(t, err.Unwrap(), "why")
 }

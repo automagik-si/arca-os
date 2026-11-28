@@ -3,6 +3,7 @@ package util
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/pe"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -103,6 +104,40 @@ func TestParseAuthenticodeRecoversPanic(t *testing.T) { //nolint:paralleltest //
 	_, err := ParseAuthenticode(bytes.NewReader(petest.Unsigned()))
 	if !errors.Is(err, ErrAuthenticodeUnreadable) || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("a parser panic is not an error: %v", err)
+	}
+}
+
+// debug/pe reads the image before the guarded parser does; a panic there is an error too.
+func TestParseAuthenticodeRecoversPEReaderPanic(t *testing.T) { //nolint:paralleltest // swaps the package PE reader
+	orig := peNewFile
+
+	t.Cleanup(func() { peNewFile = orig })
+
+	peNewFile = func(io.ReaderAt) (*pe.File, error) {
+		panic("pe boom")
+	}
+
+	_, err := ParseAuthenticode(bytes.NewReader(petest.Unsigned()))
+	if !errors.Is(err, ErrAuthenticodeUnreadable) || !strings.Contains(err.Error(), "pe boom") {
+		t.Fatalf("a PE reader panic is not an error: %v", err)
+	}
+}
+
+// The publisher reads each signature's PKCS#7 data; a panic there is an error too.
+func TestCheckSignedUKIRecoversSignatureParserPanic(t *testing.T) { //nolint:paralleltest // swaps the package signature parser
+	orig := parseSignature
+
+	t.Cleanup(func() { parseSignature = orig })
+
+	parseSignature = func([]byte) (*authenticode.Authenticode, error) {
+		panic("pkcs7 boom")
+	}
+
+	b, cert := petest.Signed(t)
+
+	err := CheckSignedUKI(bytes.NewReader(b), fingerprint(cert.Raw))
+	if !errors.Is(err, ErrAuthenticodeUnreadable) || !strings.Contains(err.Error(), "pkcs7 boom") {
+		t.Fatalf("a signature parser panic is not an error: %v", err)
 	}
 }
 
