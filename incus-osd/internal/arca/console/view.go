@@ -41,6 +41,7 @@ type view struct {
 
 	snap        Snapshot
 	hw          hostHardware
+	gpus        []hostGPU
 	kind        layoutKind
 	log         *tview.TextView
 	logRow      int
@@ -68,7 +69,7 @@ func (v *view) Draw(screen tcell.Screen) {
 		return
 	}
 
-	l := chooseLayout(w, h)
+	l := chooseLayout(w, h, gpuRows(len(v.gpus)))
 	if l.kind != v.kind {
 		v.kind = l.kind
 		v.followLog()
@@ -149,12 +150,12 @@ func (v *view) followLog() {
 // drawDashboard draws the layout's boxes.
 func (v *view) drawDashboard(screen tcell.Screen, l layout, x, y int) {
 	if l.kind == layoutWide {
-		drawHardwareBox(screen, shift(l.Hardware, x, y), v.hw)
+		drawHardwareBox(screen, shift(l.Hardware, x, y), v.hw, v.gpus)
 		drawTable(screen, v.snap, shift(l.Instances, x, y), l.kind)
 		v.drawEvents(screen, shift(l.Events, x, y), v.snap.Focus)
-		drawRightColumn(screen, shift(l.Right, x, y), v.hw)
+		drawRightColumn(screen, shift(l.Right, x, y), v.hw, v.gpus)
 	} else {
-		drawHardwareStrip(screen, shift(l.Hardware, x, y), v.hw)
+		drawHardwareStrip(screen, shift(l.Hardware, x, y), v.hw, v.gpus)
 		drawTable(screen, v.snap, shift(l.Instances, x, y), l.kind)
 		drawSummary(screen, v.snap, shift(l.Summary, x, y))
 	}
@@ -177,8 +178,8 @@ func shift(r rect, x, y int) rect {
 }
 
 // drawHardwareBox draws the wide layout's hardware box: the CPU use and the
-// temperature, then the memory and the root filesystem.
-func drawHardwareBox(screen tcell.Screen, r rect, hw hostHardware) {
+// temperature, then the memory and the root filesystem, then a row per card.
+func drawHardwareBox(screen tcell.Screen, r rect, hw hostHardware, gpus []hostGPU) {
 	if r.empty() {
 		return
 	}
@@ -194,33 +195,39 @@ func drawHardwareBox(screen tcell.Screen, r rect, hw hostHardware) {
 		tview.Print(screen, " "+tagDim+"Mem"+tagReset+" "+hostMemText(hw)+" · "+tagDim+"Disk"+tagReset+" "+hostDiskText(hw),
 			r.X+1, r.Y+2, max(r.W-2, 1), tview.AlignLeft, tcell.ColorWhite)
 	}
+
+	drawGPULines(screen, gpuLines(gpus, r.W-2), r.X+1, r.Y+3, max(r.W-2, 1), r.Y+r.H-1)
 }
 
-// drawHardwareStrip draws the compact layout's one-line hardware strip.
-func drawHardwareStrip(screen tcell.Screen, r rect, hw hostHardware) {
+// drawHardwareStrip draws the compact layout's one-line hardware strip, and a
+// row per card under it.
+func drawHardwareStrip(screen tcell.Screen, r rect, hw hostHardware, gpus []hostGPU) {
 	if r.empty() {
 		return
 	}
 
 	line := " " + tagDim + "Hardware" + tagReset + " " + hostCPUText(hw) + " · " + tagDim + "Mem" + tagReset + " " + hostMemText(hw) + " · " + tagDim + "Disk" + tagReset + " " + hostDiskText(hw) + " · " + hostTempText(hw)
 	tview.Print(screen, line, r.X, r.Y, r.W, tview.AlignLeft, tcell.ColorWhite)
+
+	// The strip's last row stays blank, between the figures and the table.
+	drawGPULines(screen, gpuLines(gpus, r.W), r.X, r.Y+1, r.W, r.Y+r.H-1)
 }
 
 // drawRightColumn draws the wide layout's 24-column resources panel with the
-// same host figures stacked for a quick read.
-func drawRightColumn(screen tcell.Screen, r rect, hw hostHardware) {
+// same host figures stacked for a quick read, and each card's use and temperature.
+func drawRightColumn(screen tcell.Screen, r rect, hw hostHardware, gpus []hostGPU) {
 	if r.empty() {
 		return
 	}
 
 	box(screen, r, "Resources")
 
-	lines := []string{
+	lines := append([]string{
 		" " + tagDim + "CPU" + tagReset + " " + hostCPUPercentText(hw),
 		" " + tagDim + "Mem" + tagReset + " " + hostMemText(hw),
 		" " + tagDim + "Disk" + tagReset + " " + hostDiskText(hw),
 		" " + tagDim + "Temp" + tagReset + " " + hostTempText(hw),
-	}
+	}, gpuShortLines(gpus)...)
 
 	for i, line := range lines {
 		y := r.Y + 1 + i

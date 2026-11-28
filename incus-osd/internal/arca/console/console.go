@@ -14,6 +14,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/tui"
 )
@@ -52,6 +53,8 @@ type sources struct {
 	updates   func() Updates
 	seal      func() Seal
 	actions   updateActions
+	// gpus reads the host's cards; every external call in it is bounded.
+	gpus func(ctx context.Context) []hostGPU
 }
 
 // liveSources reads the running system.
@@ -69,6 +72,9 @@ func liveSources(s *state.State) sources {
 		updates:   func() Updates { return liveUpdates(s) },
 		seal:      func() Seal { return liveSeal(s) },
 		actions:   liveActions{s: s},
+		gpus: newGPUReader(func(ctx context.Context, args ...string) (string, error) {
+			return applications.NVIDIAQuery(ctx, s, args...)
+		}).read,
 	}
 }
 
@@ -203,6 +209,10 @@ func (c *console) collect(ctx context.Context) {
 			c.view.setHardware(sampled.hardware)
 		})
 	})
+
+	// The cards have a slower timer of their own, so a slow driver tool never
+	// holds back the other figures.
+	go c.every(ctx, gpuEvery, func() { c.readGPUs(ctx) })
 
 	c.every(ctx, clockEvery, func() {})
 }

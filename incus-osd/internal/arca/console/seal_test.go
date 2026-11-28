@@ -110,7 +110,7 @@ func TestSealAlertOrder(t *testing.T) {
 	snap := sealSnapshot(Seal{Status: api.ResealStatusFailed, Reason: sealReason})
 	snap.Updates = needsYou()
 
-	alertRow := chooseLayout(80, 25).Alert.Y
+	alertRow := chooseLayout(80, 25, 0).Alert.Y
 
 	line := screenLine(draw(t, snap, 80, 25), alertRow)
 	if !strings.HasPrefix(line, " ✗ TPM not re-sealed") {
