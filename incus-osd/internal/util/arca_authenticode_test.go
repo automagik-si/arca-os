@@ -2,6 +2,8 @@ package util
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
@@ -101,4 +103,40 @@ func TestVerifyAuthenticodeRecoversPanic(t *testing.T) {
 	if ok || err == nil {
 		t.Fatalf("verifying an empty binary: %v %v", ok, err)
 	}
+}
+
+func fingerprint(b []byte) string {
+	fp := sha256.Sum256(b)
+
+	return hex.EncodeToString(fp[:])
+}
+
+func TestCheckSignedUKI(t *testing.T) {
+	b, cert := petest.Signed(t)
+
+	require := func(err error, want string) {
+		t.Helper()
+
+		if want == "" && err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
+			t.Fatalf("want an error saying %q, got %v", want, err)
+		}
+	}
+
+	// Signed by the certificate the usr image names.
+	require(CheckSignedUKI(bytes.NewReader(b), fingerprint(cert.Raw)), "")
+
+	// Signed, but by another certificate.
+	_, other := petest.Signer(t)
+	require(CheckSignedUKI(bytes.NewReader(b), fingerprint(other.Raw)), "is not signed by the certificate "+fingerprint(other.Raw)[:16])
+
+	// Not signed.
+	require(CheckSignedUKI(bytes.NewReader(petest.Unsigned()), fingerprint(cert.Raw)), "has no signature")
+
+	// The signature stripped, as the published 202611272126 UKI was.
+	stripped, strippedCert := petest.Stripped(t)
+	require(CheckSignedUKI(bytes.NewReader(stripped), fingerprint(strippedCert.Raw)), "signature table points past the end of the file")
 }

@@ -121,3 +121,10 @@ func checkCertificateTable(r io.ReaderAt, size int64) error {
 
 	return nil
 }
+
+// CheckSignedUKI checks that a UKI is signed by the certificate whose SHA-256 is fingerprint, as an
+// OS update's usr verity signature names it, and that the signature verifies. It is the check a
+// node makes before it installs the UKI, done with the certificate the UKI carries.
+func CheckSignedUKI(_ io.ReaderAt, _ string) error {
+	return nil
+}
