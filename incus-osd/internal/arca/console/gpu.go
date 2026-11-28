@@ -312,6 +312,13 @@ func (b *boundedCall) run(ctx context.Context, bound time.Duration, tool func(co
 		defer b.busy.Store(false)
 		defer cancel()
 
+		// A panic here would end the daemon, not only the console: it becomes a failed read.
+		defer func() {
+			if r := recover(); r != nil {
+				done <- result{err: fmt.Errorf("tool: %v", r)}
+			}
+		}()
+
 		out, err := tool(ctx)
 		done <- result{out, err}
 	}()

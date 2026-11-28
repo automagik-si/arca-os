@@ -441,19 +441,26 @@ func TestBoundedCall(t *testing.T) {
 		return "late", nil
 	}
 
-	began := time.Now()
+	// The call must come back by itself: the test never frees the tool before it does.
+	returned := make(chan error, 1)
 
-	_, err := call.run(context.Background(), 30*time.Millisecond, hung)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a hung tool returned %v, want the deadline", err)
-	}
+	go func() {
+		_, err := call.run(context.Background(), 30*time.Millisecond, hung)
+		returned <- err
+	}()
 
-	if took := time.Since(began); took > 2*time.Second {
-		t.Fatalf("a hung tool held the reader for %v", took)
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a hung tool returned %v, want the deadline", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("a hung tool held the reader past its bound")
 	}
 
 	// The tool is still running: the next call does not start it again.
-	_, err = call.run(context.Background(), 30*time.Millisecond, hung)
+	_, err := call.run(context.Background(), 30*time.Millisecond, hung)
 	if !errors.Is(err, errToolBusy) || starts.Load() != 1 {
 		t.Fatalf("a second call on a hung tool returned %v after %d starts, want busy after 1", err, starts.Load())
 	}
@@ -474,6 +481,12 @@ func TestBoundedCall(t *testing.T) {
 		}
 
 		time.Sleep(5 * time.Millisecond)
+	}
+
+	// A tool that panics is a failed read, and its slot is free again.
+	_, err = call.run(context.Background(), time.Second, func(context.Context) (string, error) { panic("test panic in a tool") })
+	if err == nil || !strings.Contains(err.Error(), "test panic in a tool") {
+		t.Errorf("a panicking tool returned %v", err)
 	}
 
 	// The tool sees the deadline too, so one that honours it is told to stop.
@@ -520,17 +533,24 @@ func TestGPUReaderHungTool(t *testing.T) { //nolint:paralleltest // shortens the
 		},
 	}
 
-	began := time.Now()
+	// The reads must come back by themselves: the tools are only freed when the test ends.
+	read := make(chan []hostGPU, 3)
+
+	go func() {
+		for range 3 {
+			read <- r.read(context.Background())
+		}
+	}()
 
 	for range 3 {
-		gpus := r.read(context.Background())
-		if len(gpus) != 2 || gpus[0].Name != "NVIDIA 2805" || gpus[0].HasUse || gpus[0].HasMem || gpus[0].HasTemp {
-			t.Fatalf("a hung tool read as %+v", gpus)
+		select {
+		case gpus := <-read:
+			if len(gpus) != 2 || gpus[0].Name != "NVIDIA 2805" || gpus[0].HasUse || gpus[0].HasMem || gpus[0].HasTemp {
+				t.Fatalf("a hung tool read as %+v", gpus)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a hung tool held the read past its bound")
 		}
-	}
-
-	if took := time.Since(began); took > 2*time.Second {
-		t.Errorf("three reads with hung tools took %v", took)
 	}
 
 	if starts.Load() != 2 {
