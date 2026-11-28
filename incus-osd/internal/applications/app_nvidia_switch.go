@@ -196,6 +196,10 @@ func (n *nvidia) busy() bool {
 func (n *nvidia) switchBuild(ctx context.Context, target api.ApplicationNVIDIABuild) (result error) {
 	// A reader's nvidia-smi holds the devices for a moment: wait for it, and keep readers out until the switch ends.
 	if !n.gate().hold(nvidiaReaderWait, ErrNVIDIASwitching) {
+		if n.gate().heldFor(ErrNVIDIAStarting) {
+			return n.deferSwitch("the NVIDIA application is still starting; the driver switch will run at the next boot")
+		}
+
 		return n.deferSwitch("NVIDIA devices are in use; the driver switch will run at the next boot")
 	}
 

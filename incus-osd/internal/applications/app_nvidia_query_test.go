@@ -217,6 +217,13 @@ func TestNVIDIASwitchWaitsForAQuery(t *testing.T) { //nolint:paralleltest // sho
 	require.Equal(t, nvidiaStable, s.ActiveBranch)
 	require.Len(t, *commands, before, "a switch ran commands while a query held the driver")
 
+	// While startup holds the gate the switch waits for the next boot too, and says why.
+	require.True(t, n.gate().hold(time.Second, ErrNVIDIAStarting))
+	require.NoError(t, n.switchBuild(t.Context(), api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}))
+	n.gate().leave()
+	require.Equal(t, "the NVIDIA application is still starting; the driver switch will run at the next boot", n.state.Applications.NVIDIA.State.Reason)
+	require.Len(t, *commands, before, "a switch ran commands while startup held the driver")
+
 	// With the gate free the same switch runs live.
 	require.NoError(t, n.switchBuild(t.Context(), api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}))
 	require.Equal(t, nvidiaLTS, n.state.Applications.NVIDIA.State.ActiveBranch)

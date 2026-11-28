@@ -31,7 +31,7 @@ var (
 
 // nvidiaGate keeps a reader's nvidia-smi apart from the driver's startup and from
 // a driver switch. It has one holder at a time, and every write of the active
-// driver and every reader's read of it happen while holding it.
+// driver by startup or a switch and every reader's read of it happen while holding it.
 type nvidiaGate struct {
 	slot chan struct{}
 	// why is what a holder that is not a reader tells a refused reader.
@@ -86,6 +86,13 @@ func (g *nvidiaGate) hold(wait time.Duration, why error) bool {
 	}
 
 	return true
+}
+
+// heldFor reports whether the gate's holder keeps readers out for the reason why.
+func (g *nvidiaGate) heldFor(why error) bool {
+	held := g.why.Load()
+
+	return held != nil && errors.Is(*held, why)
 }
 
 func (g *nvidiaGate) leave() {
