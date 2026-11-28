@@ -53,38 +53,40 @@ func checkBuildSums(zr *zip.Reader, targetPath string, files []apiupdate.UpdateF
 // readBuildSums returns the archive's build sums by file name, or nil when it has none.
 func readBuildSums(zr *zip.Reader) (map[string]string, error) {
 	for _, f := range zr.File {
-		if f.Name != buildSumsName {
-			continue
+		if f.Name == buildSumsName {
+			return parseBuildSums(f)
 		}
-
-		rc, err := f.Open()
-		if err != nil {
-			return nil, err
-		}
-
-		defer rc.Close()
-
-		sums := map[string]string{}
-
-		sc := bufio.NewScanner(rc)
-		for sc.Scan() {
-			parts := strings.Fields(sc.Text())
-			if len(parts) != 2 || len(parts[0]) != sha256.Size*2 {
-				return nil, fmt.Errorf("the build's %s has a bad line: %q", buildSumsName, sc.Text())
-			}
-
-			sums[strings.TrimPrefix(parts[1], "*")] = parts[0]
-		}
-
-		err = sc.Err()
-		if err != nil {
-			return nil, err
-		}
-
-		return sums, nil
 	}
 
 	return nil, nil //nolint:nilnil // no sums is not an error
+}
+
+func parseBuildSums(f *zip.File) (map[string]string, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+
+	defer rc.Close()
+
+	sums := map[string]string{}
+
+	sc := bufio.NewScanner(rc)
+	for sc.Scan() {
+		parts := strings.Fields(sc.Text())
+		if len(parts) != 2 || len(parts[0]) != sha256.Size*2 {
+			return nil, fmt.Errorf("the build's %s has a bad line: %q", buildSumsName, sc.Text())
+		}
+
+		sums[strings.TrimPrefix(parts[1], "*")] = parts[0]
+	}
+
+	err = sc.Err()
+	if err != nil {
+		return nil, err
+	}
+
+	return sums, nil
 }
 
 // uncompressedSHA256 is the SHA-256 of a published file as the build made it.

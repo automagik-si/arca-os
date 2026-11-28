@@ -48,7 +48,7 @@ func summedZip(t *testing.T, files map[string][]byte, built map[string][]byte) s
 
 	var sums strings.Builder
 	for name, body := range built {
-		sums.WriteString(sha(body) + "  " + name + "\n")
+		_, _ = sums.WriteString(sha(body) + "  " + name + "\n")
 	}
 
 	w, err := zw.Create("SHA256SUMS")
