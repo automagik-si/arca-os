@@ -39,6 +39,19 @@ Before any `insmod`, every shipped module's detached CMS signature is verified a
 
 Modules are loaded by full path in dependency order, with base-kernel dependencies loaded by modprobe. This avoids replacing the base image's `modules.dep` with an extension-specific index. NVIDIA variant names are selected at application load and share one implementation and state slot; both curated branches use the same build, signing, verification, health and recovery implementation.
 
+## Readings on the console
+
+The console's hardware pane lists each graphics card with its use, memory and temperature. For a card on the NVIDIA driver it asks the application's own `nvidia-smi`, through the application. The application and its readers share one gate with one holder at a time: a reader's query, the startup that decides the active driver, or a driver switch. Every write of the active driver made by startup or a switch, and a reader's read of it, happen while holding that gate. Removing the application clears the active driver without the gate, which is harmless: removal unloads no modules, and a reader that sees the cleared value is refused. A query is refused, and the card's row then shows dashes and the reason:
+
+| Row says | When |
+|---|---|
+| `driver not checked` | The driver has not passed its health check in this boot. The check writes `/run/incus-os/nvidia-checked` when it passes. |
+| `driver starting` | Startup is deciding the active driver, which includes its health check. |
+| `driver switching` | A driver switch is running. The switch waits up to ten seconds for a running query to end, keeps new ones out until it has finished, and waits for the next boot when the query does not end. |
+| `driver not active` | The NVIDIA driver is not the active one: disabled by configuration, a failed switch, a fallback, or a card that is not on the NVIDIA driver at all. |
+
+So the console never loads, probes or holds a driver that has not been checked. A query that merely fails, or takes longer than its bound, shows dashes with no reason. A card bound to `vfio-pci` says `reserved for a VM`.
+
 ## Sources and licences
 
 `mkosi.images/nvidia/version` and `mkosi.images/nvidia-lts/version` are the driver version sources for their respective branches. Each branch has its own `artifacts.json`; the LTS branch invokes the same build and installer scripts. NVIDIA's official redistributable archives contain the complete open module source, firmware and userspace for that version. SHA256 pins in `artifacts.json` cover those archives and the official NVIDIA repository packages for the toolkit; no generated GitHub tag archive or executable installer is used. The R580 archive pins come from NVIDIA’s [580.196.07 redistributable manifest](https://developer.download.nvidia.com/compute/nvidia-driver/redist/redistrib_580.196.07.json). The modules are built directly without DKMS or a temporary signing key.

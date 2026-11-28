@@ -475,14 +475,15 @@ func (h *serialHost) QueueArcaUpdate(fn func()) {
 	fn()
 }
 
-// TestHardwareTimer fails when the hardware timer is removed from collect: the
-// reader here only runs from the timer's goroutine.
-func TestHardwareTimer(t *testing.T) { //nolint:paralleltest // shortens the package timer and counts its reads
-	oldEvery, oldRead := hardwareEvery, readHostHardware
+// TestHardwareTimer fails when the hardware timer or the cards' timer is removed
+// from collect: the readers here only run from the timers' goroutines.
+func TestHardwareTimer(t *testing.T) { //nolint:paralleltest // shortens the package timers and counts their reads
+	oldEvery, oldRead, oldGPUEvery := hardwareEvery, readHostHardware, gpuEvery
 
-	t.Cleanup(func() { hardwareEvery, readHostHardware = oldEvery, oldRead })
+	t.Cleanup(func() { hardwareEvery, readHostHardware, gpuEvery = oldEvery, oldRead, oldGPUEvery })
 
-	hardwareEvery = 10 * time.Millisecond
+	hardwareEvery, gpuEvery = 10*time.Millisecond, 10*time.Millisecond
+	cards := make(chan struct{}, 8)
 
 	called := make(chan struct{}, 8)
 	readHostHardware = func(prev hostCPUSample, have bool, at, now time.Time) hostHardwareRead {
@@ -505,6 +506,14 @@ func TestHardwareTimer(t *testing.T) { //nolint:paralleltest // shortens the pac
 		instances: func() (instancesResult, error) { return instancesResult{}, nil },
 		updates:   func() Updates { return Updates{} },
 		seal:      func() Seal { return Seal{} },
+		gpus: func(context.Context) []hostGPU {
+			select {
+			case cards <- struct{}{}:
+			default:
+			}
+
+			return testGPUs
+		},
 	}
 
 	c := newConsole(&serialHost{}, src)
@@ -525,6 +534,14 @@ func TestHardwareTimer(t *testing.T) { //nolint:paralleltest // shortens the pac
 			cancel()
 			<-done
 			t.Fatalf("the hardware timer did not tick %d times; it must stay in collect", i)
+		}
+
+		select {
+		case <-cards:
+		case <-time.After(2 * time.Second):
+			cancel()
+			<-done
+			t.Fatalf("the cards' timer did not tick %d times; it must stay in collect", i)
 		}
 	}
 

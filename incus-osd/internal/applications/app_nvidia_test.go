@@ -255,6 +255,7 @@ func newNVIDIAFixture(t *testing.T, tt nvidiaBootTest) (*nvidia, *[]string, stri
 
 	n := &nvidia{common: common{state: s, appState: &s.Applications.NVIDIA.State.ApplicationState}, variant: nvidiaStable, sysroot: root}
 	n.verifyModule = func(string) error { return nil }
+	n.readers = newNVIDIAGate()
 	n.runCommand = nvidiaTestCommand(t, root, tt, firmware, version, addresses, &commands)
 
 	return n, &commands, version

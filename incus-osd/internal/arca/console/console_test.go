@@ -38,6 +38,13 @@ func draw(t *testing.T, snap Snapshot, w, h int) tcell.SimulationScreen {
 func drawWithHardware(t *testing.T, snap Snapshot, hw hostHardware, w, h int) tcell.SimulationScreen {
 	t.Helper()
 
+	return drawWithHardwareAndGPUs(t, snap, hw, nil, w, h)
+}
+
+// drawWithHardwareAndGPUs draws snap with a fixed hardware reading and fixed cards.
+func drawWithHardwareAndGPUs(t *testing.T, snap Snapshot, hw hostHardware, gpus []hostGPU, w, h int) tcell.SimulationScreen {
+	t.Helper()
+
 	screen := tcell.NewSimulationScreen("UTF-8")
 
 	err := screen.Init()
@@ -50,6 +57,7 @@ func drawWithHardware(t *testing.T, snap Snapshot, hw hostHardware, w, h int) tc
 	v := newView()
 	v.update(snap)
 	v.setHardware(hw)
+	v.setGPUs(gpus)
 	v.SetRect(0, 0, w, h)
 	v.Draw(screen)
 

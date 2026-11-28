@@ -39,6 +39,7 @@ type nvidia struct {
 	extensionFiles    *nvidiaExtensionFiles
 	bootRecovery      bool
 	healthTimeout     time.Duration
+	readers           *nvidiaGate
 }
 
 type nvidiaBoot struct {
@@ -212,6 +213,11 @@ func (n *nvidia) Start(ctx context.Context) error {
 		return n.state.SaveDurable()
 	}
 
+	// Readers stay out while startup decides the active driver; one that cannot leave is not waited for.
+	if n.gate().hold(nvidiaReaderWait, ErrNVIDIAStarting) {
+		defer n.gate().leave()
+	}
+
 	n.bootRecovery = true
 	defer func() { n.bootRecovery = false }()
 
@@ -359,6 +365,8 @@ func (n *nvidia) health(ctx context.Context, cards []string) error {
 			return fmt.Errorf("NVIDIA health check failed for %s", address)
 		}
 	}
+
+	n.markChecked(parent)
 
 	return nil
 }

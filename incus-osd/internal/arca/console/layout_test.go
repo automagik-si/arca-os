@@ -20,12 +20,12 @@ func TestLayoutChoice(t *testing.T) {
 		{79, 24, layoutTooSmall},
 		{80, 23, layoutTooSmall},
 	} {
-		if got := chooseLayout(row.w, row.h).kind; got != row.want {
+		if got := chooseLayout(row.w, row.h, 0).kind; got != row.want {
 			t.Errorf("chooseLayout(%d, %d) = %v, want %v", row.w, row.h, got, row.want)
 		}
 	}
 
-	wide := chooseLayout(160, 45)
+	wide := chooseLayout(160, 45, 0)
 	if wide.Hardware.H != hardwareWide || wide.Right.W != rightWidth || wide.Events.H < minEvents {
 		t.Errorf("the wide layout's boxes are %+v", wide)
 	}
@@ -38,7 +38,7 @@ func TestLayoutChoice(t *testing.T) {
 		t.Errorf("the wide layout's alert or key line is misplaced: %+v", wide)
 	}
 
-	compact := chooseLayout(80, 24)
+	compact := chooseLayout(80, 24, 0)
 	if compact.Right.H != 0 || compact.Events.H != 0 || compact.Hardware.H != hardwareRows {
 		t.Errorf("the compact layout keeps a wide box: %+v", compact)
 	}
@@ -104,7 +104,7 @@ func TestColumnDrop(t *testing.T) {
 func TestWide120ShowsAllColumns(t *testing.T) {
 	t.Parallel()
 
-	wide := chooseLayout(120, 36)
+	wide := chooseLayout(120, 36, 0)
 	table := wide.Instances.W - gutter
 	all := []colID{colName, colType, colState, colCPU, colRAM, colDisk, colIP, colUp}
 

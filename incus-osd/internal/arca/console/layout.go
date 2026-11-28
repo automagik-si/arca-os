@@ -52,8 +52,9 @@ type layout struct {
 }
 
 // chooseLayout returns the layout for a w×h screen: wide at 120×36 or more,
-// compact down to 80×24, and too small below that.
-func chooseLayout(w, h int) layout {
+// compact down to 80×24, and too small below that. gpus is the rows the host's
+// cards take in the hardware pane, zero on a host without one.
+func chooseLayout(w, h, gpus int) layout {
 	l := layout{W: w, H: h}
 	l.Header = rect{0, 0, w, min(h, headerRows)}
 
@@ -69,9 +70,9 @@ func chooseLayout(w, h int) layout {
 	}
 
 	if l.kind == layoutWide {
-		chooseWide(&l)
+		chooseWide(&l, gpus)
 	} else {
-		chooseCompact(&l)
+		chooseCompact(&l, gpus)
 	}
 
 	return l
@@ -79,12 +80,14 @@ func chooseLayout(w, h int) layout {
 
 // chooseWide fills the wide layout: a five-row hardware box, then the instances
 // beside a 24-wide right column, the events under the instances, the alert line
-// and the key line. Extra rows go to the instances and the events.
-func chooseWide(l *layout) {
+// and the key line. Extra rows go to the instances and the events. The first
+// card takes the box's spare row and each further one adds a row.
+func chooseWide(l *layout, gpus int) {
 	y := headerRows
+	hardware := hardwareWide + max(gpus-1, 0)
 
-	l.Hardware = rect{0, y, l.W, hardwareWide}
-	y += hardwareWide
+	l.Hardware = rect{0, y, l.W, hardware}
+	y += hardware
 
 	body := max(l.H-y-alertRows-keyRows, minTable+minEvents)
 	events := max(body/3, minEvents)
@@ -106,14 +109,15 @@ func chooseWide(l *layout) {
 	l.Keys = rect{0, l.H - keyRows, l.W, keyRows}
 }
 
-// chooseCompact fills the compact layout: a two-row hardware strip, the instance
-// table, the selected instance's summary, the alert line, the system log's last
-// line and the key line.
-func chooseCompact(l *layout) {
+// chooseCompact fills the compact layout: a two-row hardware strip with a row
+// per card, the instance table, the selected instance's summary, the alert line,
+// the system log's last line and the key line.
+func chooseCompact(l *layout, gpus int) {
 	y := headerRows
+	hardware := hardwareRows + gpus
 
-	l.Hardware = rect{0, y, l.W, hardwareRows}
-	y += hardwareRows
+	l.Hardware = rect{0, y, l.W, hardware}
+	y += hardware
 
 	tail := summaryRows + alertRows + logRows + keyRows
 	table := max(l.H-y-tail, minTable)
