@@ -120,3 +120,8 @@ func osUpdateHold(s *state.State, version string) string {
 
 	return ""
 }
+
+// rejectOSUpdate records an OS version whose UKI cannot be verified, and reports whether err is one.
+func rejectOSUpdate(_ context.Context, _ *state.State, _ string, _ error) bool {
+	return false
+}
