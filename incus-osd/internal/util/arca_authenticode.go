@@ -1,14 +1,17 @@
 package util
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"debug/pe"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/foxboron/go-uefi/authenticode"
+	"github.com/foxboron/go-uefi/efi/signature"
 )
 
 // ErrAuthenticodeUnreadable is a PE image whose Authenticode data cannot be read.
@@ -125,6 +128,58 @@ func checkCertificateTable(r io.ReaderAt, size int64) error {
 // CheckSignedUKI checks that a UKI is signed by the certificate whose SHA-256 is fingerprint, as an
 // OS update's usr verity signature names it, and that the signature verifies. It is the check a
 // node makes before it installs the UKI, done with the certificate the UKI carries.
-func CheckSignedUKI(_ io.ReaderAt, _ string) error {
-	return nil
+func CheckSignedUKI(r io.ReaderAt, fingerprint string) error {
+	a, err := ParseAuthenticode(r)
+	if err != nil {
+		return err
+	}
+
+	sigs, err := signatures(a)
+	if err != nil {
+		return err
+	}
+
+	if len(sigs) == 0 {
+		return errors.New("the UKI has no signature")
+	}
+
+	for _, sig := range sigs {
+		code, err := authenticode.ParseAuthenticode(sig.Certificate)
+		if err != nil {
+			return fmt.Errorf("%w: a signature cannot be read: %w", ErrAuthenticodeUnreadable, err)
+		}
+
+		for _, cert := range code.Pkcs.Certs {
+			fp := sha256.Sum256(cert.Raw)
+			if hex.EncodeToString(fp[:]) != fingerprint {
+				continue
+			}
+
+			_, err := VerifyAuthenticode(a, cert)
+			if err != nil {
+				return fmt.Errorf("the UKI's signature by the certificate %s does not verify: %w", fingerprint, err)
+			}
+
+			return nil
+		}
+	}
+
+	return errors.New("the UKI is not signed by the certificate " + fingerprint + " its usr image names")
+}
+
+func signatures(a *authenticode.PECOFFBinary) (sigs []*signature.WINCertificate, err error) {
+	defer func() {
+		p := recover()
+		if p != nil {
+			sigs = nil
+			err = fmt.Errorf("%w: %v", ErrAuthenticodeUnreadable, p)
+		}
+	}()
+
+	sigs, err = a.Signatures()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrAuthenticodeUnreadable, err)
+	}
+
+	return sigs, nil
 }
