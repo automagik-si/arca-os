@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -576,7 +577,7 @@ func TestBoundedCallBackToBack(t *testing.T) {
 	busy, canceled, wrong := 0, 0, 0
 
 	for i := range calls {
-		want := fmt.Sprint(i)
+		want := strconv.Itoa(i)
 
 		out, err := call.run(context.Background(), time.Minute, func(context.Context) (string, error) { return want, nil })
 
@@ -587,6 +588,7 @@ func TestBoundedCallBackToBack(t *testing.T) {
 			canceled++
 		case err != nil || out != want:
 			wrong++
+		default:
 		}
 	}
 

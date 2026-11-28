@@ -344,6 +344,7 @@ func (b *boundedCall) run(ctx context.Context, bound time.Duration, tool func(co
 			}
 
 			b.busy.Store(false)
+
 			done <- r
 		}()
 
