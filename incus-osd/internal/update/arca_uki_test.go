@@ -3,11 +3,13 @@ package update
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
@@ -48,7 +50,11 @@ func TestUnverifiedUKIIsASignatureError(t *testing.T) {
 func TestRejectedUKIIsNotRetried(t *testing.T) {
 	t.Parallel()
 
-	s := runningState("202611172310")
+	s, err := state.LoadOrCreate(filepath.Join(t.TempDir(), "state.txt"))
+	require.NoError(t, err)
+
+	s.OS.Name = "Arca OS"
+	s.OS.RunningRelease = "202611172310"
 
 	require.True(t, rejectOSUpdate(t.Context(), s, "202611272126", strippedUKIError()))
 	require.True(t, IsFailedVersion(s, "202611272126"))
@@ -59,8 +65,10 @@ func TestRejectedUKIIsNotRetried(t *testing.T) {
 
 	// stubUpdate fails any download, so a check that tried to apply the version again would fail.
 	require.NoError(t, checkOSOn(t, s, &stubProvider{os: "202611272126"}))
-	require.True(t, strings.HasPrefix(s.System.Update.State.Status, "Version 202611272126 failed before (the UKI of OS version 202611272126"),
-		s.System.Update.State.Status)
+	require.False(t, s.System.Update.State.UpdateAvailable)
+	require.Empty(t, s.OS.NextRelease)
+	require.True(t, strings.HasPrefix(osUpdateHold(s, "202611272126"), "Version 202611272126 failed before (the UKI of OS version 202611272126"),
+		osUpdateHold(s, "202611272126"))
 
 	// A newer version is not held.
 	require.Empty(t, osUpdateHold(s, "202611290000"))

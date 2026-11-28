@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/systemd"
+	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
 // automaticUpdatesOff reports whether the owner turned automatic updates off; only a manual check runs then.
@@ -122,6 +125,40 @@ func osUpdateHold(s *state.State, version string) string {
 }
 
 // rejectOSUpdate records an OS version whose UKI cannot be verified, and reports whether err is one.
-func rejectOSUpdate(_ context.Context, _ *state.State, _ string, _ error) bool {
-	return false
+// Nothing of it was installed. The version is held like one that failed its health check, so later
+// checks neither download nor apply it again; a newer version is applied, and the owner can retry it.
+func rejectOSUpdate(ctx context.Context, s *state.State, version string, err error) bool {
+	uki, ok := errors.AsType[*systemd.UKIError](err)
+	if !ok {
+		return false
+	}
+
+	reason := shortError(uki)
+
+	s.LockUpdateHealth()
+	defer s.UnlockUpdateHealth()
+
+	h := &s.UpdateHealth
+	h.FailedVersions = addFailed(h.FailedVersions, version, reason)
+	util.SetFailedBootVersions(FailedVersions(s))
+
+	h.LastResult = "Version " + version + " was not installed"
+	h.LastReason = reason
+
+	slog.ErrorContext(ctx, "OS update rejected, nothing was installed", "version", version, "reason", reason)
+
+	saveErr := s.SaveDurable()
+	if saveErr != nil {
+		slog.WarnContext(ctx, "Update record could not be saved", "error", saveErr)
+	}
+
+	return true
+}
+
+// dropRejectedDownload removes the files of an OS update that was rejected; a retry downloads them again.
+func dropRejectedDownload(ctx context.Context) {
+	err := os.RemoveAll(systemd.SystemUpdatesPath)
+	if err != nil {
+		slog.WarnContext(ctx, "The rejected update's files could not be removed", "error", err)
+	}
 }

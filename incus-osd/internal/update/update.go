@@ -700,6 +700,10 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 
 		err = systemd.ApplySystemUpdate(ctx, update.Version())
 		if err != nil {
+			if rejectOSUpdate(ctx, s, update.Version(), err) {
+				dropRejectedDownload(ctx)
+			}
+
 			return "", err
 		}
 
