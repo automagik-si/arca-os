@@ -17,7 +17,6 @@ import (
 
 	"github.com/lxc/incus-os/incus-osd/internal/providers"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
-	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
@@ -54,9 +53,9 @@ func errorKind(err error) string {
 		return ErrorKindTrust
 	case errors.As(err, &sigErr):
 		return ErrorKindSignature
-	case systemd.IsUKIRejected(err) && errors.Is(err, util.ErrAuthenticodeUnreadable):
+	case util.IsUKIRejected(err) && errors.Is(err, util.ErrAuthenticodeUnreadable):
 		return ErrorKindParse
-	case systemd.IsUKIRejected(err):
+	case util.IsUKIRejected(err):
 		return ErrorKindSignature
 	case errors.As(err, &urlErr), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded), errors.Is(err, providers.ErrServerResponse):
 		return ErrorKindNetwork

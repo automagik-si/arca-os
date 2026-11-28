@@ -129,7 +129,7 @@ func ApplySystemUpdate(ctx context.Context, version string) error {
 	}
 
 	// Verify the UKI image.
-	err = verifyUKI(newUKIFile, version, trustedCert)
+	err = util.VerifyUKIFile(newUKIFile, version, trustedCert)
 	if err != nil {
 		return err
 	}

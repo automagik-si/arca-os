@@ -10,13 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lxc/incus-os/incus-osd/internal/state"
-	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
 // The update that crashed: the UKI of 202611272126 had its signature stripped after the build.
 func strippedUKIError() error {
-	return fmt.Errorf("applying: %w", &systemd.UKIError{
+	return fmt.Errorf("applying: %w", &util.UKIError{
 		Version: "202611272126",
 		Err:     fmt.Errorf("%w: its signature table points past the end of the file", util.ErrAuthenticodeUnreadable),
 	})
@@ -40,7 +39,7 @@ func TestUnverifiedUKIIsASignatureError(t *testing.T) {
 
 	s := runningState("202611172310")
 
-	recordCheck(t.Context(), s, &systemd.UKIError{Version: "202611272126", Err: errors.New("binary has no valid signatures")})
+	recordCheck(t.Context(), s, &util.UKIError{Version: "202611272126", Err: errors.New("binary has no valid signatures")})
 
 	require.Equal(t, ErrorKindSignature, s.System.Update.State.LastErrorKind)
 }

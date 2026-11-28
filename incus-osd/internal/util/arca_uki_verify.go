@@ -1,11 +1,9 @@
-package systemd
+package util
 
 import (
 	"crypto/x509"
 	"errors"
 	"os"
-
-	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
 // UKIError is an OS update whose UKI cannot be read or verified.
@@ -29,21 +27,21 @@ func IsUKIRejected(err error) bool {
 	return errors.As(err, &u)
 }
 
-// verifyUKI checks that the UKI at path is signed by cert. A UKI that cannot be read or verified is a
+// VerifyUKIFile checks that the UKI at path is signed by cert. A UKI that cannot be read or verified is a
 // UKIError; the parser of a damaged image returns an error instead of panicking.
-func verifyUKI(path string, version string, cert *x509.Certificate) error {
+func VerifyUKIFile(path string, version string, cert *x509.Certificate) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	a, err := util.ParseAuthenticode(f)
+	a, err := ParseAuthenticode(f)
 	if err != nil {
 		return &UKIError{Version: version, Err: err}
 	}
 
-	ok, err := util.VerifyAuthenticode(a, cert)
+	ok, err := VerifyAuthenticode(a, cert)
 	if err != nil {
 		return &UKIError{Version: version, Err: err}
 	}

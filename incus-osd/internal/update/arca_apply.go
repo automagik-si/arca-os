@@ -128,7 +128,7 @@ func osUpdateHold(s *state.State, version string) string {
 // Nothing of it was installed. The version is held like one that failed its health check, so later
 // checks neither download nor apply it again; a newer version is applied, and the owner can retry it.
 func rejectOSUpdate(ctx context.Context, s *state.State, version string, err error) bool {
-	uki, ok := errors.AsType[*systemd.UKIError](err)
+	uki, ok := errors.AsType[*util.UKIError](err)
 	if !ok {
 		return false
 	}
