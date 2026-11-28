@@ -73,7 +73,7 @@ func TestVerifyUKIMissing(t *testing.T) {
 	err := verifyUKI(filepath.Join(t.TempDir(), "none.efi"), "202611272126", cert)
 	require.Error(t, err)
 	require.False(t, IsUKIRejected(err))
-	require.True(t, errors.Is(err, os.ErrNotExist))
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestUKIErrorWording(t *testing.T) {

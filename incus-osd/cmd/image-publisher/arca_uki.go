@@ -26,6 +26,7 @@ func checkReleaseUKI(targetPath string, files []apiupdate.UpdateFile) error {
 			uki = f.Filename
 		case apiupdate.UpdateFileTypeUpdateUsrVeritySignature:
 			sig = f.Filename
+		default:
 		}
 	}
 
@@ -105,7 +106,7 @@ func veritySignatureFingerprint(path string) (string, error) {
 	}
 
 	var meta struct {
-		CertificateFingerprint string `json:"certificateFingerprint"`
+		CertificateFingerprint string `json:"certificateFingerprint"` //nolint:tagliatelle
 	}
 
 	err = json.Unmarshal(bytes.Trim(buf.Bytes(), "\x00"), &meta)

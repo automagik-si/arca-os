@@ -23,25 +23,21 @@ var authenticodeParse = authenticode.Parse
 // image is an error wrapping ErrAuthenticodeUnreadable, never a panic. GNU objcopy, for example,
 // drops a signed image's signature when it rewrites the file in place, and leaves the header
 // pointing at it; authenticode.Parse panics on that.
-func ParseAuthenticode(r io.ReaderAt) (a *authenticode.PECOFFBinary, err error) {
+func ParseAuthenticode(r io.ReaderAt) (*authenticode.PECOFFBinary, error) {
 	size, known := readerSize(r)
 	if known {
-		err = checkCertificateTable(r, size)
+		err := checkCertificateTable(r, size)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	defer func() {
-		p := recover()
-		if p != nil {
-			a = nil
-			err = fmt.Errorf("%w: %v", ErrAuthenticodeUnreadable, p)
-		}
-	}()
-
-	a, err = authenticodeParse(r)
+	a, err := guarded(func() (*authenticode.PECOFFBinary, error) { return authenticodeParse(r) })
 	if err != nil {
+		if errors.Is(err, ErrAuthenticodeUnreadable) {
+			return nil, err
+		}
+
 		return nil, fmt.Errorf("%w: %w", ErrAuthenticodeUnreadable, err)
 	}
 
@@ -49,16 +45,29 @@ func ParseAuthenticode(r io.ReaderAt) (a *authenticode.PECOFFBinary, err error) 
 }
 
 // VerifyAuthenticode is a.Verify(cert), with a panic of the parser returned as an error.
-func VerifyAuthenticode(a *authenticode.PECOFFBinary, cert *x509.Certificate) (ok bool, err error) {
-	defer func() {
-		p := recover()
-		if p != nil {
-			ok = false
-			err = fmt.Errorf("%w: %v", ErrAuthenticodeUnreadable, p)
-		}
+func VerifyAuthenticode(a *authenticode.PECOFFBinary, cert *x509.Certificate) (bool, error) {
+	return guarded(func() (bool, error) { return a.Verify(cert) })
+}
+
+// guarded runs f, and returns a panic of f as an error wrapping ErrAuthenticodeUnreadable.
+func guarded[T any](f func() (T, error)) (T, error) {
+	var (
+		v   T
+		err error
+	)
+
+	func() {
+		defer func() {
+			p := recover()
+			if p != nil {
+				err = fmt.Errorf("%w: %v", ErrAuthenticodeUnreadable, p)
+			}
+		}()
+
+		v, err = f()
 	}()
 
-	return a.Verify(cert)
+	return v, err
 }
 
 func readerSize(r io.ReaderAt) (int64, bool) {
@@ -167,17 +176,13 @@ func CheckSignedUKI(r io.ReaderAt, fingerprint string) error {
 	return errors.New("the UKI is not signed by the certificate " + fingerprint + " its usr image names")
 }
 
-func signatures(a *authenticode.PECOFFBinary) (sigs []*signature.WINCertificate, err error) {
-	defer func() {
-		p := recover()
-		if p != nil {
-			sigs = nil
-			err = fmt.Errorf("%w: %v", ErrAuthenticodeUnreadable, p)
-		}
-	}()
-
-	sigs, err = a.Signatures()
+func signatures(a *authenticode.PECOFFBinary) ([]*signature.WINCertificate, error) {
+	sigs, err := guarded(a.Signatures)
 	if err != nil {
+		if errors.Is(err, ErrAuthenticodeUnreadable) {
+			return nil, err
+		}
+
 		return nil, fmt.Errorf("%w: %w", ErrAuthenticodeUnreadable, err)
 	}
 

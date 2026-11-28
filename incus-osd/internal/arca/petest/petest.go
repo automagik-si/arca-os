@@ -51,6 +51,7 @@ func Unsigned() []byte {
 	binary.LittleEndian.PutUint32(b[o+60:], headersSize)
 	binary.LittleEndian.PutUint16(b[o+68:], 10)  // Subsystem: EFI application.
 	binary.LittleEndian.PutUint32(b[o+108:], 16) // NumberOfRvaAndSizes.
+
 	p += optSize
 
 	// Section header.

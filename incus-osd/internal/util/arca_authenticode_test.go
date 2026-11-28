@@ -15,6 +15,8 @@ import (
 )
 
 func TestParseAuthenticodeSigned(t *testing.T) {
+	t.Parallel()
+
 	b, cert := petest.Signed(t)
 
 	a, err := ParseAuthenticode(bytes.NewReader(b))
@@ -29,6 +31,8 @@ func TestParseAuthenticodeSigned(t *testing.T) {
 }
 
 func TestParseAuthenticodeUnsigned(t *testing.T) {
+	t.Parallel()
+
 	a, err := ParseAuthenticode(bytes.NewReader(petest.Unsigned()))
 	if err != nil {
 		t.Fatalf("an unsigned image does not parse: %v", err)
@@ -44,6 +48,8 @@ func TestParseAuthenticodeUnsigned(t *testing.T) {
 
 // The upstream parser panics on the stripped image; this is the crash the update hit.
 func TestUpstreamParsePanicsOnStrippedImage(t *testing.T) {
+	t.Parallel()
+
 	b, _ := petest.Stripped(t)
 
 	defer func() {
@@ -56,6 +62,8 @@ func TestUpstreamParsePanicsOnStrippedImage(t *testing.T) {
 }
 
 func TestParseAuthenticodeStrippedImage(t *testing.T) {
+	t.Parallel()
+
 	b, _ := petest.Stripped(t)
 
 	_, err := ParseAuthenticode(bytes.NewReader(b))
@@ -73,6 +81,8 @@ func TestParseAuthenticodeStrippedImage(t *testing.T) {
 }
 
 func TestParseAuthenticodeTruncatedImage(t *testing.T) {
+	t.Parallel()
+
 	b, _ := petest.Signed(t)
 
 	_, err := ParseAuthenticode(bytes.NewReader(b[:0x100]))
@@ -81,7 +91,7 @@ func TestParseAuthenticodeTruncatedImage(t *testing.T) {
 	}
 }
 
-func TestParseAuthenticodeRecoversPanic(t *testing.T) {
+func TestParseAuthenticodeRecoversPanic(t *testing.T) { //nolint:paralleltest // swaps the package parser
 	orig := authenticodeParse
 
 	t.Cleanup(func() { authenticodeParse = orig })
@@ -97,6 +107,8 @@ func TestParseAuthenticodeRecoversPanic(t *testing.T) {
 }
 
 func TestVerifyAuthenticodeRecoversPanic(t *testing.T) {
+	t.Parallel()
+
 	_, cert := petest.Signer(t)
 
 	ok, err := VerifyAuthenticode(&authenticode.PECOFFBinary{}, cert)
@@ -112,6 +124,8 @@ func fingerprint(b []byte) string {
 }
 
 func TestCheckSignedUKI(t *testing.T) {
+	t.Parallel()
+
 	b, cert := petest.Signed(t)
 
 	require := func(err error, want string) {
