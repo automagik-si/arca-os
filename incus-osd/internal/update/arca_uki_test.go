@@ -32,6 +32,9 @@ func TestRejectedUKIIsTheLastError(t *testing.T) {
 	require.Equal(t, refusedWords, st.LastError)
 	require.Contains(t, st.LastErrorDetail, "the UKI of OS version 202611272126 cannot be verified")
 	require.Contains(t, st.LastErrorDetail, "signature table points past the end of the file")
+
+	// The check's status says it too, from the first refusal on.
+	require.Equal(t, refusedWords, failedStatus(strippedUKIError(), "Failed to check for OS updates"))
 }
 
 // What the owner reads about the update that was refused.
