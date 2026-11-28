@@ -39,6 +39,10 @@ Before any `insmod`, every shipped module's detached CMS signature is verified a
 
 Modules are loaded by full path in dependency order, with base-kernel dependencies loaded by modprobe. This avoids replacing the base image's `modules.dep` with an extension-specific index. NVIDIA variant names are selected at application load and share one implementation and state slot; both curated branches use the same build, signing, verification, health and recovery implementation.
 
+## Readings on the console
+
+The console's hardware pane lists each graphics card with its use, memory and temperature. For a card on the NVIDIA driver it asks the application's own `nvidia-smi`, through the application, which refuses the query unless the driver passed its health check in this boot (`/run/incus-os/nvidia-checked`, written when the check passes) and is the active driver. One query runs at a time. A driver switch waits up to ten seconds for a running query to end, keeps new ones out until the switch has finished, and waits for the next boot when the query does not end. So the console never loads, probes or holds a driver that has not been checked, and a refused or failed query shows dashes. An NVIDIA card that is not on the NVIDIA driver is listed by name with `driver not active`, and a card bound to `vfio-pci` with `reserved for a VM`.
+
 ## Sources and licences
 
 `mkosi.images/nvidia/version` and `mkosi.images/nvidia-lts/version` are the driver version sources for their respective branches. Each branch has its own `artifacts.json`; the LTS branch invokes the same build and installer scripts. NVIDIA's official redistributable archives contain the complete open module source, firmware and userspace for that version. SHA256 pins in `artifacts.json` cover those archives and the official NVIDIA repository packages for the toolkit; no generated GitHub tag archive or executable installer is used. The R580 archive pins come from NVIDIA’s [580.196.07 redistributable manifest](https://developer.download.nvidia.com/compute/nvidia-driver/redist/redistrib_580.196.07.json). The modules are built directly without DKMS or a temporary signing key.
