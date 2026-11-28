@@ -12,7 +12,7 @@ import (
 )
 
 // queryFixture is a checked, active driver with its own gate and a counted nvidia-smi.
-func queryFixture(t *testing.T) (*nvidia, nvidiaGate, *int) {
+func queryFixture(t *testing.T) (*nvidia, *nvidiaGate, *int) {
 	t.Helper()
 
 	n, _, _ := newNVIDIAFixture(t, nvidiaBootTest{})
@@ -28,7 +28,7 @@ func queryFixture(t *testing.T) (*nvidia, nvidiaGate, *int) {
 		return "answer", nil
 	}
 
-	return n, make(nvidiaGate, 1), &calls
+	return n, n.gate(), &calls
 }
 
 func TestNVIDIAQueryNeedsACheckedActiveDriver(t *testing.T) {
@@ -44,6 +44,7 @@ func TestNVIDIAQueryNeedsACheckedActiveDriver(t *testing.T) {
 	require.NoError(t, os.Remove(n.path(nvidiaCheckedFile)))
 
 	_, err = n.query(context.Background(), gate)
+	require.ErrorIs(t, err, ErrNVIDIAUnchecked)
 	require.ErrorIs(t, err, ErrNVIDIANotReady)
 
 	// A switch clears the active driver before it unloads the modules.
@@ -53,6 +54,7 @@ func TestNVIDIAQueryNeedsACheckedActiveDriver(t *testing.T) {
 		n.state.Applications.NVIDIA.State.ActiveDriver = driver
 
 		_, err = n.query(context.Background(), gate)
+		require.ErrorIs(t, err, ErrNVIDIAInactive)
 		require.ErrorIs(t, err, ErrNVIDIANotReady)
 	}
 
@@ -64,10 +66,11 @@ func TestNVIDIAQueryAndSwitchExcludeEachOther(t *testing.T) {
 
 	n, gate, calls := queryFixture(t)
 
-	// While a switch holds the gate no query starts.
-	require.True(t, gate.hold(time.Second))
+	// While a switch holds the gate no query starts, and the reader is told why.
+	require.True(t, gate.hold(time.Second, ErrNVIDIASwitching))
 
 	_, err := n.query(context.Background(), gate)
+	require.ErrorIs(t, err, ErrNVIDIASwitching)
 	require.ErrorIs(t, err, ErrNVIDIANotReady)
 	require.Zero(t, *calls)
 
@@ -93,11 +96,74 @@ func TestNVIDIAQueryAndSwitchExcludeEachOther(t *testing.T) {
 
 	_, err = n.query(context.Background(), gate)
 	require.ErrorIs(t, err, ErrNVIDIANotReady)
-	require.False(t, gate.hold(20*time.Millisecond))
+	require.NotErrorIs(t, err, ErrNVIDIASwitching)
+	require.False(t, gate.hold(20*time.Millisecond, ErrNVIDIASwitching))
 
 	close(release)
 	require.NoError(t, <-done)
-	require.True(t, gate.hold(time.Second))
+	require.True(t, gate.hold(time.Second, ErrNVIDIASwitching))
+	gate.leave()
+
+	// A gate that was left lets the next reader in.
+	n.runCommand = func(context.Context, string, ...string) (string, error) { return "", nil }
+
+	_, err = n.query(context.Background(), gate)
+	require.NoError(t, err)
+}
+
+// TestNVIDIAStartKeepsReadersOut checks that startup decides the active driver with readers held off.
+func TestNVIDIAStartKeepsReadersOut(t *testing.T) {
+	t.Parallel()
+
+	n, _, _ := newNVIDIAFixture(t, nvidiaBootTest{})
+	require.NoError(t, n.prepare(t.Context(), true))
+
+	// The state still names the driver of the boot before this one.
+	n.state.Applications.NVIDIA.State.ActiveDriver = "nvidia"
+
+	_, err := n.query(t.Context(), n.gate())
+	require.ErrorIs(t, err, ErrNVIDIAUnchecked)
+
+	original := n.runCommand
+	during := []error{}
+	n.runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "/usr/bin/nvidia-smi" && len(during) == 0 {
+			// The health check is running: a reader is refused and told the driver is starting.
+			_, err := n.query(ctx, n.gate())
+			during = append(during, err)
+		}
+
+		return original(ctx, name, args...)
+	}
+
+	// A reader that keeps asking while startup runs: under -race this is the pair that must not race.
+	stop, asked := make(chan struct{}), make(chan struct{})
+
+	go func() {
+		defer close(asked)
+
+		reader := &nvidia{common: common{state: n.state}, sysroot: n.sysroot, readers: n.gate()}
+		reader.runCommand = func(context.Context, string, ...string) (string, error) { return "", nil }
+
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = reader.query(context.Background(), reader.gate())
+			}
+		}
+	}()
+
+	require.NoError(t, n.Start(t.Context()))
+	close(stop)
+	<-asked
+	require.Len(t, during, 1)
+	require.ErrorIs(t, during[0], ErrNVIDIAStarting)
+
+	// Startup is over and the check passed: the same reader is answered.
+	_, err = n.query(t.Context(), n.gate())
+	require.NoError(t, err)
 }
 
 func TestNVIDIAHealthMarksTheDriverChecked(t *testing.T) {
@@ -127,7 +193,7 @@ func TestNVIDIAHealthMarksTheDriverChecked(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestNVIDIASwitchWaitsForAQuery(t *testing.T) { //nolint:paralleltest // holds the package gate and shortens its wait
+func TestNVIDIASwitchWaitsForAQuery(t *testing.T) { //nolint:paralleltest // shortens the package's wait for a reader
 	n, commands, _ := switchFixture(t, nvidiaStable)
 	n.SetVersions("002", []string{"001", "002"})
 	n.state.Applications.NVIDIA.State.RequestedBranch = nvidiaLTS
@@ -138,12 +204,12 @@ func TestNVIDIASwitchWaitsForAQuery(t *testing.T) { //nolint:paralleltest // hol
 
 	nvidiaReaderWait = 20 * time.Millisecond
 
-	require.True(t, nvidiaReaders.hold(time.Second))
+	require.True(t, n.gate().hold(time.Second, nil))
 
 	before := len(*commands)
 
 	require.NoError(t, n.switchBuild(t.Context(), api.ApplicationNVIDIABuild{Branch: nvidiaLTS, Version: "002"}))
-	nvidiaReaders.leave()
+	n.gate().leave()
 
 	s := n.state.Applications.NVIDIA.State
 	require.Equal(t, "NVIDIA devices are in use; the driver switch will run at the next boot", s.Reason)
