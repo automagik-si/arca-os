@@ -565,6 +565,36 @@ func TestBoundedCall(t *testing.T) {
 	}
 }
 
+// TestBoundedCallBackToBack checks that an answer the tool gave is never lost and that the next call finds the slot free.
+func TestBoundedCallBackToBack(t *testing.T) {
+	t.Parallel()
+
+	const calls = 20000
+
+	var call boundedCall
+
+	busy, canceled, wrong := 0, 0, 0
+
+	for i := range calls {
+		want := fmt.Sprint(i)
+
+		out, err := call.run(context.Background(), time.Minute, func(context.Context) (string, error) { return want, nil })
+
+		switch {
+		case errors.Is(err, errToolBusy):
+			busy++
+		case errors.Is(err, context.Canceled):
+			canceled++
+		case err != nil || out != want:
+			wrong++
+		}
+	}
+
+	if busy != 0 || canceled != 0 || wrong != 0 {
+		t.Errorf("%d calls to an instant tool: %d busy, %d canceled, %d otherwise wrong", calls, busy, canceled, wrong)
+	}
+}
+
 // TestGPUReaderHungTool checks the whole read against a tool that never answers.
 func TestGPUReaderHungTool(t *testing.T) { //nolint:paralleltest // shortens the package bound
 	old := gpuCallBound
