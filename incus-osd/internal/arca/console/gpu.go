@@ -328,28 +328,39 @@ func (b *boundedCall) run(ctx context.Context, bound time.Duration, tool func(co
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+
 	done := make(chan result, 1)
 
 	go func() {
-		defer b.busy.Store(false)
-		defer cancel()
+		var r result
 
-		// A panic here would end the daemon, not only the console: it becomes a failed read.
+		// Only the call that took the slot frees it, once, before its answer is handed back.
 		defer func() {
-			if r := recover(); r != nil {
-				done <- result{err: fmt.Errorf("tool: %v", r)}
+			// A panic here would end the daemon, not only the console: it becomes a failed read.
+			p := recover()
+			if p != nil {
+				r = result{err: fmt.Errorf("tool: %v", p)}
 			}
+
+			b.busy.Store(false)
+			done <- r
 		}()
 
-		out, err := tool(ctx)
-		done <- result{out, err}
+		r.out, r.err = tool(ctx)
 	}()
 
 	select {
 	case r := <-done:
 		return r.out, r.err
 	case <-ctx.Done():
-		return "", ctx.Err()
+		// An answer that is already there wins over the bound.
+		select {
+		case r := <-done:
+			return r.out, r.err
+		default:
+			return "", ctx.Err()
+		}
 	}
 }
 
