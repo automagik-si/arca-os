@@ -535,6 +535,11 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 		})
 	}
 
+	err = checkBuildSums(&zr.Reader, targetPath, files)
+	if err != nil {
+		return nil, err
+	}
+
 	err = checkReleaseUKI(targetPath, files)
 	if err != nil {
 		return nil, err
